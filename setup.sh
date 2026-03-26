@@ -151,6 +151,25 @@ else
         err "uv installation failed. Try manually: pip install uv"
         exit 1
     fi
+
+    # Add ~/.local/bin to PATH in shell config if not already there
+    UV_PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
+    SHELL_RC=""
+    if [[ "$SHELL" == *"zsh"* ]]; then
+        SHELL_RC="$HOME/.zshrc"
+    elif [[ "$SHELL" == *"bash"* ]]; then
+        SHELL_RC="$HOME/.bashrc"
+    fi
+
+    if [[ -n "$SHELL_RC" ]] && [[ -f "$SHELL_RC" ]]; then
+        if ! grep -qF '$HOME/.local/bin' "$SHELL_RC"; then
+            echo "" >> "$SHELL_RC"
+            echo "# Added by Archon setup" >> "$SHELL_RC"
+            echo "$UV_PATH_LINE" >> "$SHELL_RC"
+            ok "Added ~/.local/bin to PATH in $SHELL_RC"
+            info "Run: source $SHELL_RC"
+        fi
+    fi
 fi
 
 # -- tmux (required for parallel agent teams) --
