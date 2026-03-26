@@ -115,7 +115,7 @@ if [ "$LEAN_MISSING" = true ]; then
     warn "Archon requires elan, lean, and lake to work."
     warn ""
     warn "If not installed, choose one of:"
-    warn "  curl https://elan-init.github.io/elan/elan-init.sh -sSf | sh"
+    warn "  curl https://elan.lean-lang.org/elan-init.sh -sSf | sh"
     warn "  brew install elan-init    (macOS)"
     warn ""
     warn "If already installed but not in PATH, add to your shell profile:"
