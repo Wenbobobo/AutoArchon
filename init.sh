@@ -157,7 +157,7 @@ fi
 
 # Install Archon's lean-lsp MCP under the name archon-lean-lsp
 MCP_OUTPUT=$(claude mcp add archon-lean-lsp -s project -- uv run --directory "${LEAN_LSP_MCP_DIR}" lean-lsp-mcp 2>&1) || true
-if echo "$MCP_OUTPUT" | grep -qi "success"; then
+if echo "$MCP_OUTPUT" | grep -qi "success\|added.*mcp server"; then
     ok "archon-lean-lsp MCP server added (project scope)"
 elif echo "$MCP_OUTPUT" | grep -qi "already exists"; then
     ok "archon-lean-lsp MCP server already configured"
