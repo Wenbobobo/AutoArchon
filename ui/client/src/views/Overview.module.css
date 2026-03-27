@@ -1,0 +1,30 @@
+.root { max-width: 960px; display: flex; flex-direction: column; gap: 20px; }
+
+.stages { font-family: var(--font-mono); font-size: 13px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.sep { color: var(--text-muted); }
+.current { color: var(--blue); font-weight: 600; }
+.done { color: var(--green); }
+.future { color: var(--text-muted); }
+
+.summaryLine { font-family: var(--font-mono); font-size: 13px; color: var(--text-secondary); }
+
+.sorrySection { font-family: var(--font-mono); font-size: 13px; display: flex; align-items: baseline; gap: 8px; }
+.sorryCount { color: var(--orange); font-weight: 600; }
+.sorryDetail { color: var(--text-muted); font-size: 12px; }
+.sorryDone { color: var(--green); font-weight: 600; }
+
+.section {}
+.sectionLabel { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+.list { list-style: none; padding: 0; }
+.list li { padding: 3px 0; color: var(--text-secondary); font-size: 13px; }
+.checkDone { color: var(--green) !important; }
+
+.table { width: 100%; border-collapse: collapse; font-size: 12px; font-family: var(--font-mono); }
+.table th { text-align: left; padding: 6px 8px; color: var(--text-muted); font-weight: 500; border-bottom: 1px solid var(--border); }
+.table td { padding: 6px 8px; color: var(--text-secondary); border-bottom: 1px solid var(--bg-tertiary); }
+
+.taskList { display: flex; flex-direction: column; }
+.task { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; font-size: 13px; }
+.taskStatus { flex-shrink: 0; font-size: 8px; }
+.taskTheorem { color: var(--text-primary); }
+.taskFile { color: var(--text-muted); font-family: var(--font-mono); font-size: 11px; }
