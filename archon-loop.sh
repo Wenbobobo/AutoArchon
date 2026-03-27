@@ -22,6 +22,7 @@ ARCHON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # -- Defaults --
 MAX_ITERATIONS=10
+MAX_PARALLEL=8
 FORCE_STAGE=""
 DRY_RUN=false
 PARALLEL=true
@@ -53,6 +54,7 @@ PROJECT_ARG=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --max-iterations) MAX_ITERATIONS="$2"; shift 2 ;;
+        --max-parallel)   MAX_PARALLEL="$2";   shift 2 ;;
         --stage)          FORCE_STAGE="$2";    shift 2 ;;
         --dry-run)        DRY_RUN=true;        shift   ;;
         --serial)         PARALLEL=false;      shift   ;;
@@ -65,6 +67,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --max-iterations N   Max loop iterations (default: 10)"
+            echo "  --max-parallel N     Max concurrent provers in parallel mode (default: 4)"
             echo "  --stage STAGE        Override stage (autoformalize|prover|polish)"
             echo "  --serial             Use a single prover (default: parallel, one per sorry-file)"
             echo "  --verbose-logs       Also save raw Claude stream events to .raw.jsonl"
@@ -211,7 +214,7 @@ RAW = open('$raw_log', 'a') if VERBOSE else None
 JSONL = open('$jsonl', 'a')
 
 def emit(event_type, **fields):
-    row = {'ts': datetime.datetime.now().isoformat(), 'event': event_type, **fields}
+    row = {'ts': datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z'), 'event': event_type, **fields}
     JSONL.write(json.dumps(row) + '\n')
     JSONL.flush()
 
@@ -316,25 +319,72 @@ if RAW: RAW.close()
 }
 
 # ============================================================
+#  Iteration directory helpers
+# ============================================================
+
+next_iter_num() {
+    local max_n=0
+    if [[ -d "$LOG_DIR" ]]; then
+        for d in "$LOG_DIR"/iter-*; do
+            [[ -d "$d" ]] || continue
+            local n="${d##*iter-}"
+            n="${n#"${n%%[!0]*}"}"  # strip leading zeros
+            [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_n )) && max_n=$n
+        done
+    fi
+    echo $(( max_n + 1 ))
+}
+
+write_meta() {
+    local meta_file="$1"
+    shift
+    # Accepts key=value pairs, writes/updates JSON via python
+    python3 -c "
+import json, sys, os
+path = '$meta_file'
+data = {}
+if os.path.exists(path):
+    with open(path) as f:
+        try: data = json.load(f)
+        except: pass
+for arg in sys.argv[1:]:
+    k, v = arg.split('=', 1)
+    # Parse nested keys like provers.File.status
+    keys = k.split('.')
+    d = data
+    for part in keys[:-1]:
+        if part not in d or not isinstance(d[part], dict):
+            d[part] = {}
+        d = d[part]
+    # Try to parse as JSON value (number, bool, null, list, dict)
+    try:
+        d[keys[-1]] = json.loads(v)
+    except (json.JSONDecodeError, ValueError):
+        d[keys[-1]] = v
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2)
+" "$@" 2>/dev/null || true
+}
+
+# ============================================================
 #  Cost summary helpers
 # ============================================================
 
 show_cost_summary() {
     local label="$1"
-    local offset="${2:-0}"
-    local jsonl="${LOG_BASE:-}.jsonl"
-    [[ -f "$jsonl" ]] || return 0
+    local iter_dir="${2:-}"
+    [[ -n "$iter_dir" && -d "$iter_dir" ]] || return 0
     python3 -c "
-import sys, json
+import sys, json, os, glob
 rows = []
-for l in open('$jsonl'):
-    l = l.strip()
-    if not l: continue
-    try:
-        r = json.loads(l)
-        if r.get('event') == 'session_end': rows.append(r)
-    except: pass
-rows = rows[${offset}:]
+for jsonl in glob.glob(os.path.join('$iter_dir', '**', '*.jsonl'), recursive=True):
+    for l in open(jsonl):
+        l = l.strip()
+        if not l: continue
+        try:
+            r = json.loads(l)
+            if r.get('event') == 'session_end': rows.append(r)
+        except: pass
 if not rows: sys.exit(0)
 cost  = sum(r.get('total_cost_usd', 0) or 0 for r in rows)
 dur   = sum(r.get('duration_ms', 0) or 0 for r in rows)
@@ -358,11 +408,6 @@ print('$label ' + ' | '.join(parts))
 for m, u in models.items():
     print(f'  {m}: in={u[\"in\"]} out={u[\"out\"]} \${u[\"cost\"]:.4f}')
 " 2>/dev/null || true
-}
-
-cost_log_lines() {
-    local jsonl="${LOG_BASE:-}.jsonl"
-    [[ -f "$jsonl" ]] && grep -c '"event":"session_end"' "$jsonl" 2>/dev/null || echo 0
 }
 
 # ============================================================
@@ -432,20 +477,35 @@ EOF
 
     info ""
     info "Watch progress:"
-    info "  tail -f ${LOG_DIR}/archon-*.jsonl"
+    info "  tail -f ${ITER_DIR}/provers/*.jsonl"
     info "  watch -n10 'ls -lt ${STATE_DIR}/task_results/'"
     info ""
 
-    # Launch each prover as a separate background claude process
+    # Launch provers as background processes, respecting MAX_PARALLEL
     local pids=()
     local prover_files=()
+    local running=0
     while IFS= read -r f; do
         local rel
         rel=$(relpath "$f" "$PROJECT_PATH")
         local prover_prompt="${prover_prompt_base}"$'\n'"Your assigned file: ${rel}"
-        local prover_log="${LOG_BASE}-prover-$(echo "$rel" | sed 's|/|_|g; s|\.lean$||')"
+        local file_slug
+        file_slug=$(echo "$rel" | sed 's|/|_|g; s|\.lean$||')
+        local prover_log="${ITER_DIR}/provers/${file_slug}"
 
-        info "  Starting prover for ${rel} (log: $(basename "${prover_log}").jsonl)"
+        # Wait for a slot if at capacity
+        while (( running >= MAX_PARALLEL )); do
+            # Wait for any child to finish, then recount
+            wait -n 2>/dev/null || true
+            running=0
+            for pid in "${pids[@]}"; do
+                kill -0 "$pid" 2>/dev/null && (( running++ )) || true
+            done
+        done
+
+        info "  Starting prover for ${rel} (log: provers/${file_slug}.jsonl)"
+
+        write_meta "$ITER_META" "provers.${file_slug}.file=${rel}" "provers.${file_slug}.status=running"
 
         # Run each prover in a subshell with its own LOG_BASE
         (
@@ -454,19 +514,24 @@ EOF
         ) &
         pids+=($!)
         prover_files+=("$rel")
+        (( running++ )) || true
     done <<< "$sorry_files"
 
-    info "Launched ${#pids[@]} prover process(es). Waiting for all to finish..."
+    info "Launched ${#pids[@]} prover process(es) (max ${MAX_PARALLEL} concurrent). Waiting for all to finish..."
 
     # Wait for all provers and report results
     local failed=0
     for idx in "${!pids[@]}"; do
         local pid="${pids[$idx]}"
         local pfile="${prover_files[$idx]}"
+        local file_slug
+        file_slug=$(echo "$pfile" | sed 's|/|_|g; s|\.lean$||')
         if wait "$pid"; then
             info "  Prover for ${pfile} finished (pid ${pid})"
+            write_meta "$ITER_META" "provers.${file_slug}.status=done"
         else
             warn "  Prover for ${pfile} exited with error (pid ${pid})"
+            write_meta "$ITER_META" "provers.${file_slug}.status=error"
             (( failed++ )) || true
         fi
     done
@@ -487,7 +552,7 @@ EOF
     if [[ -n "${LOG_BASE:-}" ]]; then
         python3 -c "
 import json, datetime
-row = {'ts': datetime.datetime.now().isoformat(), 'event': 'parallel_round_end', 'teammate_count': ${file_count}}
+row = {'ts': datetime.datetime.now().isoformat(), 'event': 'parallel_round_end', 'prover_count': ${file_count}, 'failed': ${failed}}
 with open('${LOG_BASE}.jsonl', 'a') as f:
     f.write(json.dumps(row) + '\n')
 " 2>/dev/null || true
@@ -524,9 +589,17 @@ run_review_phase() {
     mkdir -p "$session_dir" "$current_session_dir"
 
     # Phase 3a: Extract attempt data from prover log (deterministic, no LLM)
-    info "Extracting attempt data from prover log..."
+    info "Extracting attempt data from prover logs..."
+
+    # Concatenate all prover logs from this iteration for the extract script
+    local combined_prover_log="${ITER_DIR}/prover.jsonl"
+    if [[ -d "${ITER_DIR}/provers" ]] && ls "${ITER_DIR}/provers/"*.jsonl &>/dev/null; then
+        combined_prover_log="${ITER_DIR}/provers-combined.jsonl"
+        cat "${ITER_DIR}/provers/"*.jsonl > "$combined_prover_log" 2>/dev/null || true
+    fi
+
     python3 "${ARCHON_DIR}/scripts/extract-attempts.py" \
-        "${LOG_BASE}.jsonl" "$attempts_file" 2>&1 || true
+        "$combined_prover_log" "$attempts_file" 2>&1 || true
 
     # Phase 3b: Run review agent
     local review_prompt
@@ -537,11 +610,17 @@ Project state directory: ${STATE_DIR}
 Read ${STATE_DIR}/CLAUDE.md for your role, then read ${STATE_DIR}/prompts/review.md.
 Session number: ${session_num}.
 Pre-processed attempt data: ${attempts_file} (READ THIS FIRST).
-Prover log: ${LOG_BASE}.jsonl
-Write your output to: ${session_dir}/
+Prover log: ${combined_prover_log}
+
+CRITICAL — Write your output files to EXACTLY these paths:
+  ${session_dir}/milestones.jsonl
+  ${session_dir}/summary.md
+  ${session_dir}/recommendations.md
+  ${STATE_DIR}/PROJECT_STATUS.md
 EOF
     )
 
+    LOG_BASE="${ITER_DIR}/review"
     run_claude "$review_prompt" || true
 
     # Phase 3c: Validate review output
@@ -585,7 +664,6 @@ fi
 if [[ "$DRY_RUN" != true ]]; then
     mkdir -p "$LOG_DIR" "${STATE_DIR}/task_results" \
              "${STATE_DIR}/proof-journal/sessions" "${STATE_DIR}/proof-journal/current_session"
-    LOG_BASE="${LOG_DIR}/archon-$(date +%Y%m%d-%H%M%S)"
 fi
 
 info "Archon Loop starting"
@@ -593,16 +671,17 @@ info "Project: ${PROJECT_PATH}"
 info "State: ${STATE_DIR}"
 info "Max iterations: ${MAX_ITERATIONS}"
 [[ -n "$FORCE_STAGE" ]] && info "Forced stage: ${FORCE_STAGE}"
-[[ "$PARALLEL" == true ]] && info "Prover mode: parallel (agent teams)"
+[[ "$PARALLEL" == true ]] && info "Prover mode: parallel (max ${MAX_PARALLEL} concurrent)"
 [[ "$PARALLEL" != true ]] && info "Prover mode: serial"
 [[ "$ENABLE_REVIEW" == true ]] && info "Review: enabled"
 [[ "$ENABLE_REVIEW" != true ]] && info "Review: disabled (--no-review)"
 [[ "$DRY_RUN" == true ]] && warn "DRY RUN mode"
-[[ -n "$LOG_BASE" ]] && info "Log: ${LOG_BASE}.jsonl"
-[[ "$VERBOSE_LOGS" == true && -n "$LOG_BASE" ]] && info "Raw: ${LOG_BASE}.raw.jsonl" || true
+info "Logs: ${LOG_DIR}/"
 info ""
 info "User hints: ${STATE_DIR}/USER_HINTS.md"
 info "Or add /- USER: ... -/ comments in .lean files"
+info ""
+info "Dashboard: bash ${ARCHON_DIR}/ui/start.sh --project ${PROJECT_PATH}"
 echo ""
 
 # -- COMPLETE check --
@@ -634,7 +713,23 @@ for (( i=0; i<MAX_ITERATIONS; i++ )); do
     info "════════════════════════════════════════"
 
     ITER_START=$SECONDS
-    ITER_COST_OFFSET=$(cost_log_lines)
+
+    # -- Set up iteration directory --
+    if [[ "$DRY_RUN" != true ]]; then
+        ITER_NUM=$(next_iter_num)
+        ITER_DIR="${LOG_DIR}/iter-$(printf '%03d' "$ITER_NUM")"
+        ITER_META="${ITER_DIR}/meta.json"
+        mkdir -p "${ITER_DIR}"
+        [[ "$PARALLEL" == true ]] && mkdir -p "${ITER_DIR}/provers"
+        LOG_BASE="${ITER_DIR}/plan"
+        write_meta "$ITER_META" \
+            "iteration=${ITER_NUM}" \
+            "stage=${STAGE}" \
+            "mode=$( [[ "$PARALLEL" == true ]] && echo parallel || echo serial )" \
+            "startedAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "plan.status=running"
+        info "Log dir: ${ITER_DIR}"
+    fi
 
     # --- Plan phase ---
     info "Phase 1: Plan agent"
@@ -650,6 +745,7 @@ for (( i=0; i<MAX_ITERATIONS; i++ )); do
 
     PLAN_SECS=$(( SECONDS - PLAN_START ))
     info "Plan phase finished. (${PLAN_SECS}s)"
+    [[ "$DRY_RUN" != true ]] && write_meta "$ITER_META" "plan.status=done" "plan.durationSecs=${PLAN_SECS}"
     echo ""
 
     if is_complete; then
@@ -661,13 +757,15 @@ for (( i=0; i<MAX_ITERATIONS; i++ )); do
 
     # --- Prover phase ---
     info "Phase 2: Prover agent(s)"
-    [[ "$PARALLEL" == true ]] && info "Mode: parallel (agent teams)"
+    [[ "$PARALLEL" == true ]] && info "Mode: parallel"
     info "────────────────────────────────────────"
 
     PROVER_START=$SECONDS
+    [[ "$DRY_RUN" != true ]] && write_meta "$ITER_META" "prover.status=running"
     if [[ "$PARALLEL" == true ]]; then
         run_parallel_provers "$STAGE" || true
     else
+        LOG_BASE="${ITER_DIR}/prover"
         PROVER_PROMPT=$(build_prompt "prover" "$STAGE")
         if [[ "$DRY_RUN" == true ]]; then
             echo "$PROVER_PROMPT"
@@ -678,6 +776,7 @@ for (( i=0; i<MAX_ITERATIONS; i++ )); do
 
     PROVER_SECS=$(( SECONDS - PROVER_START ))
     info "Prover phase finished. (${PROVER_SECS}s)"
+    [[ "$DRY_RUN" != true ]] && write_meta "$ITER_META" "prover.status=done" "prover.durationSecs=${PROVER_SECS}"
     echo ""
 
     # --- Review phase ---
@@ -686,16 +785,19 @@ for (( i=0; i<MAX_ITERATIONS; i++ )); do
         info "────────────────────────────────────────"
 
         REVIEW_START=$SECONDS
+        write_meta "$ITER_META" "review.status=running"
         run_review_phase "$STAGE" || true
 
         REVIEW_SECS=$(( SECONDS - REVIEW_START ))
         info "Review phase finished. (${REVIEW_SECS}s)"
+        write_meta "$ITER_META" "review.status=done" "review.durationSecs=${REVIEW_SECS}"
         echo ""
     fi
 
     ITER_SECS=$(( SECONDS - ITER_START ))
     info "Iteration $((i+1)) complete. Wall time: ${ITER_SECS}s"
-    show_cost_summary "  Iteration $((i+1)) totals:" "$ITER_COST_OFFSET"
+    [[ "$DRY_RUN" != true ]] && write_meta "$ITER_META" "completedAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" "wallTimeSecs=${ITER_SECS}"
+    show_cost_summary "  Iteration $((i+1)) totals:" "${ITER_DIR:-}"
     echo ""
 done
 
@@ -704,4 +806,6 @@ if ! is_complete; then
     warn "Reached max iterations (${MAX_ITERATIONS}). Stopping."
 fi
 info "Total wall time: ${LOOP_SECS}s"
-show_cost_summary "  Loop totals:" 0
+show_cost_summary "  Loop totals:" "${LOG_DIR}"
+echo ""
+info "View results: bash ${ARCHON_DIR}/ui/start.sh --project ${PROJECT_PATH}"

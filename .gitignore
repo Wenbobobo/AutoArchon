@@ -4,3 +4,17 @@ workspace/*
 
 .archon-src/tools/lean4/
 .archon-src/docs/lean4/
+
+# Runtime caches
+__pycache__/
+*.pyc
+uv.lock
+
+# UI build artifacts
+ui/client/dist/
+ui/client/node_modules/
+ui/server/node_modules/
+ui/.archon-ui.pid
+
+# Test files
+sample-log.jsonl

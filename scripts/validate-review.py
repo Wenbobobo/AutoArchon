@@ -65,7 +65,7 @@ def validate(session_dir: str, attempts_path: str = None):
             warnings.append(f"WARN: milestone {i} missing target.theorem")
 
         status = m.get('status', '')
-        valid_statuses = {'solved', 'partial', 'blocked', 'not_started'}
+        valid_statuses = {'solved', 'partial', 'blocked', 'not_started', 'failed_retry'}
         if status not in valid_statuses:
             warnings.append(f"WARN: milestone {i} has non-standard status '{status}' (expected: {valid_statuses})")
 

@@ -165,7 +165,7 @@ def classify_event(event: dict) -> dict:
         else:
             out['result_preview'] = truncate_str(result, 300)
 
-    elif tool.startswith('mcp__lean-lsp__') or tool.startswith('mcp__lean_lsp__'):
+    elif tool.startswith('mcp__lean-lsp__') or tool.startswith('mcp__lean_lsp__') or tool.startswith('mcp__archon-lean-lsp__'):
         lean_tool = tool.split('__', 2)[-1] if '__' in tool else tool
         out['lean_tool'] = lean_tool
 

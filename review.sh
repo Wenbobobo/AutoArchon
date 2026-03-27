@@ -80,8 +80,22 @@ if [[ -n "$LOG_FILE" ]]; then
         exit 1
     fi
 else
-    # Find the latest .jsonl log
-    LOG_FILE=$(ls -t "${STATE_DIR}/logs/"archon-*.jsonl 2>/dev/null | head -1)
+    # Find the latest prover log — check iter-NNN/ directories first, fall back to flat layout
+    LATEST_ITER=$(ls -d "${STATE_DIR}/logs/"iter-* 2>/dev/null | sort -V | tail -1)
+    if [[ -n "$LATEST_ITER" ]]; then
+        # Structured layout: prefer provers-combined.jsonl, then prover.jsonl
+        if [[ -f "${LATEST_ITER}/provers-combined.jsonl" ]] && [[ -s "${LATEST_ITER}/provers-combined.jsonl" ]]; then
+            LOG_FILE="${LATEST_ITER}/provers-combined.jsonl"
+        elif [[ -f "${LATEST_ITER}/prover.jsonl" ]]; then
+            LOG_FILE="${LATEST_ITER}/prover.jsonl"
+        else
+            err "No prover log found in ${LATEST_ITER}/"
+            exit 1
+        fi
+    else
+        # Legacy flat layout
+        LOG_FILE=$(ls -t "${STATE_DIR}/logs/"archon-*.jsonl 2>/dev/null | head -1)
+    fi
     if [[ -z "$LOG_FILE" ]]; then
         err "No log files found in ${STATE_DIR}/logs/"
         err "Run archon-loop.sh first to generate prover logs."
@@ -138,7 +152,12 @@ Read ${STATE_DIR}/CLAUDE.md for your role, then read ${STATE_DIR}/prompts/review
 Session number: ${SESSION_NUM}.
 Pre-processed attempt data: ${ATTEMPTS_FILE} (READ THIS FIRST).
 Prover log: ${LOG_FILE}
-Write your output to: ${SESSION_DIR}/
+
+CRITICAL — Write your output files to EXACTLY these paths:
+  ${SESSION_DIR}/milestones.jsonl
+  ${SESSION_DIR}/summary.md
+  ${SESSION_DIR}/recommendations.md
+  ${STATE_DIR}/PROJECT_STATUS.md
 EOF
 )
 
