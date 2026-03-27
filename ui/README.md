@@ -104,7 +104,7 @@ The server reads directly from the project's `.archon/` directory:
             └── recommendations.md  # Next steps
 ```
 
-Both the legacy flat layout (`.archon/logs/*.jsonl`) and the structured iteration directory layout are supported.
+Both the serial layout (`iter-NNN/prover.jsonl`) and parallel layout (`iter-NNN/provers/*.jsonl`) are supported.
 
 ## API Reference
 
@@ -142,19 +142,3 @@ bash ui/start.sh --project PATH [OPTIONS]
 ```
 
 Port detection works on macOS (`lsof`), Linux (`ss`), and minimal containers (`/proc/net/tcp`).
-
-## Development
-
-```bash
-# Dev mode — hot reload for both client and server
-bash ui/start.sh --project /path/to/project --dev
-
-# Or manually:
-cd ui/server && npx tsx watch src/index.ts --project /path/to/project
-cd ui/client && npx vite  # separate terminal
-```
-
-Adding a new API route:
-1. Create `server/src/routes/myfeature.ts` exporting `register(fastify, paths)`
-2. Import and register in `server/src/index.ts`
-3. Add corresponding hook in `client/src/hooks/useApi.ts`
