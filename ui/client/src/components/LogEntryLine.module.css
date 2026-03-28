@@ -1,0 +1,16 @@
+.line { padding: 1px 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.line:hover { background: rgba(0,0,0,0.02); }
+.ts { color: var(--text-muted); flex-shrink: 0; user-select: none; }
+.event { flex-shrink: 0; min-width: 85px; font-weight: 500; }
+.text { color: var(--text-secondary); word-break: break-word; white-space: pre-wrap; }
+.expandable { cursor: pointer; }
+.expandable:hover { color: var(--text-primary); }
+.expandHint { color: var(--text-muted); font-size: 10px; }
+.detail {
+  width: 100%;
+  padding: 6px 8px; margin: 2px 0 4px 0;
+  background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 3px;
+  font-size: 11px; color: var(--text-secondary);
+  overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+  max-height: 400px; overflow-y: auto;
+}

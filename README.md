@@ -139,6 +139,30 @@ To check how the formalization is going, look at these files in your project:
 
 These are updated automatically by the review agent after each iteration. If the loop has finished with `--no-review` and you want to generate a review manually, run `./review.sh /path/to/your-project`.
 
+### Dashboard
+
+Archon includes a web dashboard for real-time monitoring. Start it alongside `archon-loop.sh`:
+
+```bash
+bash ui/start.sh --project /path/to/your-lean-project
+```
+
+The dashboard shows iteration progress, parallel prover status, agent logs with live streaming, and proof journal milestones — all updating in real time.
+
+<p align="center">
+<img src="docs/dashboard-logs.jpg" alt="Archon Dashboard — Logs view" width="800">
+</p>
+
+The **Logs** view groups logs by iteration with phase timing (plan → prover → review) and per-prover completion status.
+
+The **Journal** view tracks proof milestones across sessions — see which theorems were solved, blocked, or retried, with condensed reasoning traces that let you follow how the agents approached each proof.
+
+<p align="center">
+<img src="docs/dashboard-journal.jpg" alt="Archon Dashboard — Journal view" width="800">
+</p>
+
+See [`ui/README.md`](ui/README.md) for more details.
+
 ### Existing lean4-skills and lean-lsp MCP installations
 
 If you already have `lean4-skills` or `lean-lsp` MCP installed globally, `init.sh` detects them and disables them **for this project only** — so only Archon's modified versions are active. Your global installations are untouched and continue working in all other projects.
