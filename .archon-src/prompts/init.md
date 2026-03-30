@@ -59,12 +59,12 @@ autoformalize
 Use the bundled sorry analyzer script:
 
 ```bash
-python3 .claude/skills/lean4/lib/scripts/sorry_analyzer.py . --format=summary
+${LEAN4_PYTHON_BIN:-python3} "$LEAN4_SCRIPTS/sorry_analyzer.py" . --format=summary
 ```
 
 For per-file detail:
 ```bash
-python3 .claude/skills/lean4/lib/scripts/sorry_analyzer.py . --format=markdown
+${LEAN4_PYTHON_BIN:-python3} "$LEAN4_SCRIPTS/sorry_analyzer.py" . --format=markdown
 ```
 
 ## Updating PROGRESS.md stages

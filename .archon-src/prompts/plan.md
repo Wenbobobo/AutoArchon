@@ -99,7 +99,7 @@ Line count unchanged + sorry count unchanged = zero progress.
 ## Verification
 
 After a prover reports completion, always verify independently:
-1. Check sorry count: `python3 .claude/skills/lean4/lib/scripts/sorry_analyzer.py <file> --format=summary`
+1. Check sorry count: `${LEAN4_PYTHON_BIN:-python3} "$LEAN4_SCRIPTS/sorry_analyzer.py" <file> --format=summary`
 2. Check compilation: `lean_diagnostic_messages(file)` or `lake env lean <file>`
 3. Check axioms: no new `axiom` declarations
 
