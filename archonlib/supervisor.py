@@ -9,8 +9,7 @@ from pathlib import Path
 DECL_RE = re.compile(r"^(theorem|lemma)\s+([A-Za-z0-9_'.]+)\b")
 PROCESS_PATTERNS = (
     re.compile(r"archon-loop\.sh"),
-    re.compile(r"codex exec"),
-    re.compile(r"lake serve"),
+    re.compile(r"codex exec --json"),
 )
 
 
@@ -147,6 +146,8 @@ def classify_header_mutation(source_header: str, workspace_header: str) -> str:
     workspace_parts = _parse_header(workspace_header)
     if source_parts is None or workspace_parts is None:
         return "header_drift"
+    if source_parts == workspace_parts:
+        return "none"
 
     source_name, source_binders, source_conclusion = source_parts
     workspace_name, workspace_binders, workspace_conclusion = workspace_parts
@@ -227,6 +228,40 @@ def list_runtime_process_lines(ps_output: str) -> list[str]:
         if any(pattern.search(line) for pattern in PROCESS_PATTERNS):
             lines.append(line)
     return lines
+
+
+def latest_iteration_meta(workspace_root: Path) -> tuple[str | None, dict[str, object] | None]:
+    log_root = workspace_root / ".archon" / "logs"
+    meta_paths = sorted(log_root.glob("iter-*/meta.json"))
+    if not meta_paths:
+        return None, None
+    latest = meta_paths[-1]
+    try:
+        payload = json.loads(latest.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return latest.parent.name, None
+    return latest.parent.name, payload
+
+
+def collect_meta_prover_errors(meta: dict[str, object] | None) -> list[str]:
+    if not isinstance(meta, dict):
+        return []
+    provers = meta.get("provers")
+    if not isinstance(provers, dict):
+        return []
+
+    failures: list[str] = []
+    for prover_slug, payload in sorted(provers.items()):
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("status") != "error":
+            continue
+        rel_path = payload.get("file")
+        if isinstance(rel_path, str) and rel_path:
+            failures.append(rel_path)
+        else:
+            failures.append(str(prover_slug))
+    return failures
 
 
 def dumps_jsonl(events: list[dict[str, object]]) -> str:

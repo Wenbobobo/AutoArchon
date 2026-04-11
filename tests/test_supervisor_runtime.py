@@ -102,6 +102,16 @@ def test_classify_header_mutation_flags_added_hypotheses():
     assert classify_header_mutation(source, workspace) == "added_hypothesis"
 
 
+def test_classify_header_mutation_ignores_same_header_with_different_inline_proof_body():
+    source = "theorem int_eq_five_seven_span : ∀ z : ℤ, ∃ a b : ℤ, z = a * 5 + b * 7 := by sorry"
+    workspace = (
+        "theorem int_eq_five_seven_span : ∀ z : ℤ, ∃ a b : ℤ, z = a * 5 + b * 7 := by "
+        "intro z; refine ⟨-4 * z, 3 * z, ?_⟩; ring"
+    )
+
+    assert classify_header_mutation(source, workspace) == "none"
+
+
 def test_collect_header_drifts_reports_theorem_mutation(tmp_path: Path):
     source, workspace = make_workspace_pair(tmp_path)
 
@@ -111,6 +121,21 @@ def test_collect_header_drifts_reports_theorem_mutation(tmp_path: Path):
     assert drifts[0].rel_path == "FATEM/42.lean"
     assert drifts[0].declaration_name == "orderOf_prod_lt_orderOf_mul"
     assert drifts[0].mutation_class == "added_hypothesis"
+
+
+def test_collect_header_drifts_ignores_single_line_theorem_with_only_proof_body_change(tmp_path: Path):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+
+    write(source / "FATEM" / "40.lean", "theorem int_eq_five_seven_span : ∀ z : ℤ, ∃ a b : ℤ, z = a * 5 + b * 7 := by sorry\n")
+    write(
+        workspace / "FATEM" / "40.lean",
+        "theorem int_eq_five_seven_span : ∀ z : ℤ, ∃ a b : ℤ, z = a * 5 + b * 7 := by intro z; refine ⟨-4 * z, 3 * z, ?_⟩; ring\n",
+    )
+
+    drifts = collect_header_drifts(source, workspace, allowed_files=["FATEM/40.lean"])
+
+    assert drifts == []
 
 
 def test_latest_iteration_meta_reads_highest_iter_directory(tmp_path: Path):
@@ -738,6 +763,184 @@ def test_supervised_cycle_recovers_durable_task_result_after_idle_timeout(tmp_pa
     hot_notes = (workspace / ".archon" / "supervisor" / "HOT_NOTES.md").read_text(encoding="utf-8")
     assert "- Status: clean" in hot_notes
     assert "durable task results already existed" in hot_notes
+
+
+def test_supervised_cycle_synthesizes_blocker_note_after_idle_when_route_is_prevalidated(tmp_path: Path):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    write(source / "FATEM" / "42.lean", "theorem foo : True := by\n  sorry\n")
+    write(workspace / "FATEM" / "42.lean", "theorem foo : True := by\n  sorry\n")
+    write(
+        workspace / ".archon" / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        ## Allowed Files
+
+        1. `FATEM/42.lean`
+        """,
+    )
+    write(
+        workspace / ".archon" / "PROGRESS.md",
+        """
+        ## Current Objectives
+
+        1. **FATEM/42.lean** — Keep the theorem header frozen. Write `.archon/task_results/FATEM_42.lean.md` immediately with a durable blocker report. The obstruction route is already Lean-validated.
+        """,
+    )
+    write(
+        workspace / ".archon" / "task_pending.md",
+        """
+        - `FATEM/42.lean` — Lean-validated blocker route: the statement is false as written. Notes in `.archon/informal/fatem_42_blocker.md`.
+        """,
+    )
+    write(
+        workspace / ".archon" / "informal" / "fatem_42_blocker.md",
+        """
+        # FATEM/42 Blocker Notes
+
+        The theorem is false as written.
+
+        Lean-validated obstruction route:
+        - `c := Multiplicative.ofAdd (1 : ℤ)`
+        - `d := Multiplicative.ofAdd (1 : ZMod 2)`
+        """,
+    )
+    fake_loop = tmp_path / "fake-archon-loop.sh"
+    write(
+        fake_loop,
+        f"""
+        #!/usr/bin/env bash
+        mkdir -p "{workspace}/.archon/logs/iter-001/provers"
+        cat > "{workspace}/.archon/logs/iter-001/meta.json" <<'EOF'
+        {{
+          "iteration": 1,
+          "plan": {{"status": "done"}},
+          "prover": {{"status": "running"}},
+          "provers": {{
+            "FATEM_42": {{"file": "FATEM/42.lean", "status": "running"}}
+          }}
+        }}
+        EOF
+        cat > "{workspace}/.archon/logs/iter-001/provers/FATEM_42.jsonl" <<'EOF'
+        {{"ts":"2026-04-11T00:00:00Z","event":"text","content":"starting"}}
+        EOF
+        sleep 30
+        """,
+    )
+    fake_loop.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(SUPERVISED_CYCLE),
+            "--workspace",
+            str(workspace),
+            "--source",
+            str(source),
+            "--archon-loop",
+            str(fake_loop),
+            "--skip-process-check",
+            "--prover-idle-seconds",
+            "1",
+            "--monitor-poll-seconds",
+            "0.1",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0
+    note_path = workspace / ".archon" / "task_results" / "FATEM_42.lean.md"
+    assert note_path.exists()
+    note_text = note_path.read_text(encoding="utf-8")
+    assert "Supervisor Recovery" in note_text
+    assert "**Concrete blocker:**" in note_text
+    assert ".archon/informal/fatem_42_blocker.md" in note_text
+
+    hot_notes = (workspace / ".archon" / "supervisor" / "HOT_NOTES.md").read_text(encoding="utf-8")
+    assert "- Status: clean" in hot_notes
+    assert "synthesized durable blocker note" in hot_notes
+
+    violations = (workspace / ".archon" / "supervisor" / "violations.jsonl").read_text(encoding="utf-8")
+    assert "prover_idle_timeout" in violations
+    assert "synthesized_blocker_after_idle" in violations
+
+
+def test_supervised_cycle_recovers_durable_task_result_after_prover_error(tmp_path: Path):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    write(source / "FATEM" / "42.lean", "theorem foo : True := by\n  sorry\n")
+    write(workspace / "FATEM" / "42.lean", "theorem foo : True := by\n  sorry\n")
+    write(
+        workspace / ".archon" / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        ## Allowed Files
+
+        1. `FATEM/42.lean`
+        """,
+    )
+    fake_loop = tmp_path / "fake-archon-loop.sh"
+    write(
+        fake_loop,
+        f"""
+        #!/usr/bin/env bash
+        mkdir -p "{workspace}/.archon/logs/iter-001/provers"
+        mkdir -p "{workspace}/.archon/task_results"
+        cat > "{workspace}/.archon/logs/iter-001/meta.json" <<'EOF'
+        {{
+          "iteration": 1,
+          "plan": {{"status": "done"}},
+          "prover": {{"status": "done"}},
+          "provers": {{
+            "FATEM_42": {{"file": "FATEM/42.lean", "status": "error"}}
+          }}
+        }}
+        EOF
+        cat > "{workspace}/.archon/task_results/FATEM_42.lean.md" <<'EOF'
+        # FATEM/42.lean
+
+        ## foo
+        ### Attempt 1
+        - **Result:** FAILED
+        - **Concrete blocker:** This theorem is false as stated.
+        EOF
+        exit 0
+        """,
+    )
+    fake_loop.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(SUPERVISED_CYCLE),
+            "--workspace",
+            str(workspace),
+            "--source",
+            str(source),
+            "--archon-loop",
+            str(fake_loop),
+            "--skip-process-check",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    hot_notes = (workspace / ".archon" / "supervisor" / "HOT_NOTES.md").read_text(encoding="utf-8")
+    assert "- Status: clean" in hot_notes
+    assert "Recovered after prover stall: durable task results already existed" in hot_notes
+
+    violations = (workspace / ".archon" / "supervisor" / "violations.jsonl").read_text(encoding="utf-8")
+    assert "prover_error" in violations
+    assert "verified_after_stall" in violations
 
 
 def test_supervised_cycle_does_not_recover_nondurable_task_result_after_idle_timeout(tmp_path: Path):

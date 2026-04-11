@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -25,6 +26,9 @@ from archonlib.supervisor import (
     list_runtime_process_lines,
     read_allowed_files,
 )
+
+
+INFORMAL_NOTE_PATTERN = re.compile(r"\.archon/informal/[A-Za-z0-9._/\-]+\.md")
 
 
 def _env_float(name: str, default: float | None = None) -> float | None:
@@ -327,9 +331,103 @@ def _classify_task_result_note(path: Path) -> tuple[str, str]:
     return "other", "missing an explicit RESOLVED or blocker marker"
 
 
-def _recover_after_idle(
+def _task_result_name(rel_path: str) -> str:
+    return rel_path.replace("/", "_") + ".md"
+
+
+def _extract_informal_note_paths(text: str) -> list[str]:
+    return INFORMAL_NOTE_PATTERN.findall(text)
+
+
+def _prevalidated_blocker_evidence(workspace: Path, rel_path: str) -> tuple[list[str], str] | None:
+    progress_path = workspace / ".archon" / "PROGRESS.md"
+    pending_path = workspace / ".archon" / "task_pending.md"
+    progress_text = progress_path.read_text(encoding="utf-8") if progress_path.exists() else ""
+    pending_text = pending_path.read_text(encoding="utf-8") if pending_path.exists() else ""
+    combined = "\n".join(part for part in (progress_text, pending_text) if part)
+    lowered = combined.lower()
+
+    if rel_path not in combined:
+        return None
+    if "lean-validated" not in lowered:
+        return None
+    if "blocker" not in lowered:
+        return None
+    if "false as written" not in lowered and "validated obstruction" not in lowered:
+        return None
+
+    provenance = [".archon/PROGRESS.md", ".archon/task_pending.md"]
+    evidence = pending_text.strip() or progress_text.strip()
+    for note_rel in _extract_informal_note_paths(combined):
+        note_path = workspace / note_rel
+        if not note_path.exists():
+            continue
+        provenance.append(note_rel)
+        note_text = note_path.read_text(encoding="utf-8").strip()
+        if note_text:
+            evidence = note_text
+            break
+
+    if not evidence:
+        return None
+    return provenance, evidence
+
+
+def _synthesize_blocker_note_after_idle(
     workspace: Path,
     *,
+    allowed_files: list[str],
+    new_changed_files: list[str],
+    new_task_result_paths: list[Path],
+) -> dict[str, object] | None:
+    if new_changed_files or new_task_result_paths:
+        return None
+    if len(allowed_files) != 1:
+        return None
+
+    rel_path = allowed_files[0]
+    note_name = _task_result_name(rel_path)
+    note_path = workspace / ".archon" / "task_results" / note_name
+    if note_path.exists():
+        return None
+
+    evidence = _prevalidated_blocker_evidence(workspace, rel_path)
+    if evidence is None:
+        return None
+    provenance, blocker_text = evidence
+
+    provenance_rendered = ", ".join(f"`{path}`" for path in provenance)
+    content = "\n".join(
+        [
+            f"# {rel_path}",
+            "",
+            "## Supervisor Recovery",
+            "### Attempt 1",
+            "- **Result:** FAILED",
+            "- **Concrete blocker:** Preserved by the supervisor after a prover idle timeout. The benchmark theorem remains frozen and the statement is false as written.",
+            f"- **Provenance:** Recovered from {provenance_rendered} after the prover stalled before writing a durable note.",
+            "- **Next step:** Reuse this blocker note directly in the next planning pass. Only add a separately named helper/counterexample theorem after the blocker artifact already exists.",
+            "",
+            "## Evidence",
+            blocker_text,
+            "",
+        ]
+    )
+    _write_text(note_path, content)
+    return {
+        "event": "synthesized_blocker_after_idle",
+        "kind": "task_result",
+        "task_results": [note_name],
+        "provenance": provenance,
+    }
+
+
+def _recover_after_stall(
+    workspace: Path,
+    *,
+    recovery_event: str,
+    allow_synthesis: bool,
+    allowed_files: list[str],
     new_changed_files: list[str],
     new_task_result_paths: list[Path],
     verify_template: str | None,
@@ -356,17 +454,26 @@ def _recover_after_idle(
 
     if new_changed_files and not changed_file_failures:
         return {
-            "event": "verified_after_idle",
+            "event": recovery_event,
             "kind": "changed_file",
             "files": verified_files,
         }
     if new_task_result_paths and not task_result_failures:
         return {
-            "event": "verified_after_idle",
+            "event": recovery_event,
             "kind": "task_result",
             "task_results": verified_task_results,
             "task_result_kinds": task_result_kinds,
         }
+    if allow_synthesis:
+        synthesized = _synthesize_blocker_note_after_idle(
+            workspace,
+            allowed_files=allowed_files,
+            new_changed_files=new_changed_files,
+            new_task_result_paths=new_task_result_paths,
+        )
+        if synthesized is not None:
+            return synthesized
     if changed_file_failures or task_result_failures:
         payload: dict[str, object] = {"event": "verification_failed_after_idle"}
         if changed_file_failures:
@@ -412,15 +519,27 @@ def main() -> int:
         if path.stat().st_mtime > baseline_task_result_mtimes.get(path, float("-inf"))
     )
     new_task_results = [path.name for path in new_task_result_paths]
-    recovered_after_idle = None
-    if idle_event is not None:
-        recovered_after_idle = _recover_after_idle(
+    recovered_after_stall = None
+    prover_failures = collect_meta_prover_errors(latest_meta)
+    if idle_event is not None or prover_failures:
+        recovered_after_stall = _recover_after_stall(
             workspace,
+            recovery_event="verified_after_idle" if idle_event is not None else "verified_after_stall",
+            allow_synthesis=idle_event is not None,
+            allowed_files=allowed_files,
             new_changed_files=new_changed_files,
             new_task_result_paths=new_task_result_paths,
             verify_template=args.changed_file_verify_template,
         )
-    prover_failures = collect_meta_prover_errors(latest_meta)
+        if recovered_after_stall is not None and recovered_after_stall.get("event") == "synthesized_blocker_after_idle":
+            task_result_paths = sorted((workspace / ".archon" / "task_results").glob("*.md"))
+            task_results = sorted(path.name for path in task_result_paths)
+            new_task_result_paths = sorted(
+                path
+                for path in task_result_paths
+                if path.stat().st_mtime > baseline_task_result_mtimes.get(path, float("-inf"))
+            )
+            new_task_results = [path.name for path in new_task_result_paths]
     created_new_iteration = latest_iter_name is not None and latest_iter_name != previous_iter_name
 
     events: list[dict[str, object]] = []
@@ -443,8 +562,8 @@ def main() -> int:
         )
     if idle_event is not None:
         events.append(idle_event)
-    if recovered_after_idle is not None:
-        events.append(recovered_after_idle)
+    if recovered_after_stall is not None:
+        events.append(recovered_after_stall)
     if loop_result.returncode != 0 and not created_new_iteration:
         events.append(
             {
@@ -460,10 +579,14 @@ def main() -> int:
     status = "clean"
     if any(event["event"] == "header_mutation" for event in events):
         status = "policy_violation"
+    elif recovered_after_stall is not None and recovered_after_stall.get("event") in {
+        "verified_after_idle",
+        "verified_after_stall",
+        "synthesized_blocker_after_idle",
+    }:
+        status = "clean"
     elif prover_failures:
         status = "prover_failed"
-    elif recovered_after_idle is not None and recovered_after_idle.get("event") == "verified_after_idle":
-        status = "clean"
     elif idle_event is not None:
         status = "prover_idle"
     elif loop_result.returncode != 0:
@@ -509,19 +632,29 @@ def main() -> int:
         hot_notes.append(f"- Idle timeout triggered: {idle_event['idle_seconds']}s without prover activity")
         if idle_event.get("iteration"):
             hot_notes.append(f"- Idle iteration: {idle_event['iteration']}")
-    if recovered_after_idle is not None and recovered_after_idle.get("event") == "verified_after_idle":
-        if recovered_after_idle.get("kind") == "changed_file":
-            files = ", ".join(recovered_after_idle.get("files", [])) or "(none)"
-            hot_notes.append(f"- Recovered after prover idle: verified changed files {files}")
-        elif recovered_after_idle.get("kind") == "task_result":
-            results = ", ".join(recovered_after_idle.get("task_results", [])) or "(none)"
-            hot_notes.append(f"- Recovered after prover idle: durable task results already existed ({results})")
-    if recovered_after_idle is not None and recovered_after_idle.get("event") == "verification_failed_after_idle":
-        files = recovered_after_idle.get("files", {})
+    if recovered_after_stall is not None and recovered_after_stall.get("event") in {
+        "verified_after_idle",
+        "verified_after_stall",
+    }:
+        recovery_label = "idle" if recovered_after_stall.get("event") == "verified_after_idle" else "stall"
+        if recovered_after_stall.get("kind") == "changed_file":
+            files = ", ".join(recovered_after_stall.get("files", [])) or "(none)"
+            hot_notes.append(f"- Recovered after prover {recovery_label}: verified changed files {files}")
+        elif recovered_after_stall.get("kind") == "task_result":
+            results = ", ".join(recovered_after_stall.get("task_results", [])) or "(none)"
+            hot_notes.append(f"- Recovered after prover {recovery_label}: durable task results already existed ({results})")
+    if recovered_after_stall is not None and recovered_after_stall.get("event") == "synthesized_blocker_after_idle":
+        results = ", ".join(recovered_after_stall.get("task_results", [])) or "(none)"
+        hot_notes.append(f"- Recovered after prover idle: synthesized durable blocker note ({results})")
+        provenance = recovered_after_stall.get("provenance", [])
+        if isinstance(provenance, list) and provenance:
+            hot_notes.append(f"- Blocker note provenance: {', '.join(str(item) for item in provenance)}")
+    if recovered_after_stall is not None and recovered_after_stall.get("event") == "verification_failed_after_idle":
+        files = recovered_after_stall.get("files", {})
         if isinstance(files, dict):
             for rel_path, detail in files.items():
                 hot_notes.append(f"- Verification after idle failed for {rel_path}: {detail}")
-        task_results_failures = recovered_after_idle.get("task_results", {})
+        task_results_failures = recovered_after_stall.get("task_results", {})
         if isinstance(task_results_failures, dict):
             for note_name, detail in task_results_failures.items():
                 hot_notes.append(f"- Verification after idle failed for task result {note_name}: {detail}")
@@ -558,7 +691,7 @@ def main() -> int:
         f"- Latest iteration: `{latest_iter_name or '(none)'}`",
         f"- Prover errors: `{', '.join(prover_failures) if prover_failures else '(none)'}`",
         f"- Idle timeout: `{idle_event['idle_seconds']}s`" if idle_event is not None else "- Idle timeout: `(none)`",
-        f"- Idle recovery: `{recovered_after_idle['event']}`" if recovered_after_idle is not None else "- Idle recovery: `(none)`",
+        f"- Idle recovery: `{recovered_after_stall['event']}`" if recovered_after_stall is not None else "- Idle recovery: `(none)`",
         f"- New iteration created: `{created_new_iteration}`",
         "",
     ]

@@ -24,6 +24,7 @@ def test_plan_prompt_keeps_heavy_proof_search_out_of_default_path():
     assert "bare theorem with one top-level `sorry`" in plan_prompt
     assert "Do not sit and wait on toolchain installs or lock contention during the plan phase." in plan_prompt
     assert "Do not independently re-prove every theorem during planning." in plan_prompt
+    assert "Do not spend the whole plan budget re-checking already-resolved files one by one" in plan_prompt
 
 
 def test_plan_prompt_fast_paths_fresh_small_bare_subset_batches():
@@ -48,6 +49,14 @@ def test_plan_prompt_ignores_archived_state_outside_live_scope():
 
     assert "Do not treat `.archon/logs/` or archived `task_results-*` directories as live state." in plan_prompt
     assert "Only reuse `.archon/informal/` notes that still match the current `RUN_SCOPE.md`." in plan_prompt
+
+
+def test_plan_prompt_fast_paths_live_results_and_single_remaining_blocker():
+    plan_prompt = read(".archon-src/prompts/plan.md")
+
+    assert "When live `task_results/` already resolve most of a small scoped batch" in plan_prompt
+    assert "If only one scoped file remains unresolved" in plan_prompt
+    assert "do not spend the entire plan phase re-validating it" in plan_prompt
 
 
 def test_plan_prompt_keeps_false_theorems_frozen_and_routes_to_blockers():
@@ -102,4 +111,14 @@ def test_prover_prompt_forces_fast_blocker_artifacts_when_route_is_prevalidated(
 
     assert "blocker candidate" in prover_prompt
     assert "your next substantive action must be producing a durable artifact" in prover_prompt
-    assert "Do not spend more than 3 additional theorem-search or `lean_run_code` attempts" in prover_prompt
+    assert "write `task_results/<your_file>.md` first" in prover_prompt
+    assert "before any optional helper theorem work" in prover_prompt
+    assert "Do not spend more than 1 additional theorem-search or `lean_run_code` attempt" in prover_prompt
+
+
+def test_prover_prompt_makes_written_blocker_note_the_primary_completion_path():
+    prover_prompt = read(".archon-src/prompts/prover-prover.md")
+
+    assert "write `task_results/<file>.md` immediately before any optional edits to the `.lean` file" in prover_prompt
+    assert "only after that note exists may you add separately named helper/counterexample declarations" in prover_prompt
+    assert "once the note exists, you may stop the session" in prover_prompt

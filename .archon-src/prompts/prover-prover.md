@@ -23,9 +23,9 @@ You are the prover agent in the proving stage. Your job: fill `sorry` placeholde
 If the current project state already contains an exact proof route, your first substantive action after the initial diagnostics call should be editing the `.lean` file to try that route.
 
 If `PROGRESS.md`, `task_pending.md`, or `.archon/informal/` marks the theorem as a blocker candidate or says the statement is false as written, your next substantive action must be producing a durable artifact:
-- either edit the `.lean` file to add the separately named helper / counterexample theorem, or
-- write `task_results/<your_file>.md` with the blocker and the validated counterexample route.
-Do not spend more than 3 additional theorem-search or `lean_run_code` attempts after reading that blocker route before you create one of those artifacts.
+- write `task_results/<your_file>.md` first with the blocker and the validated counterexample route. This note is mandatory before any optional helper theorem work.
+- only after the blocker note exists may you edit the `.lean` file to add a separately named helper / counterexample theorem.
+If the blocker route is already validated in `PROGRESS.md`, `task_pending.md`, `.archon/informal/`, or your first scratch check, stop treating it as an open-ended proof search. Do not spend more than 1 additional theorem-search or `lean_run_code` attempt after that point. If that scratch helper attempt fails or times out, stop and write the blocker note immediately.
 
 If the first Lean MCP call times out or the language server fails to start, treat that as an infrastructure failure, not a proof failure. Switch immediately to the recorded local proof route, bounded shell verification, and non-LSP theorem lookup if needed. Do not spend the rest of the session retrying LSP-dependent searches.
 
@@ -82,8 +82,9 @@ Do NOT just report "Mathlib lacks X" and stop. Before giving up on a sorry, you 
 - **Initial definitions and final theorem/lemma statements are frozen** — do not modify them. If a statement appears wrong, keep the file compilable (use scoped `sorry`), explain why in `task_pending.md`, and let the plan agent decide.
 - Do not add assumptions to an existing theorem, weaken its conclusion, or otherwise "fix" a false benchmark by mutating the original statement. If the theorem is false as written, leave the original theorem statement unchanged, add separately named helper theorem(s) only if they clarify the corrected mathematics, and record the blocker in `task_results/<file>.md`.
 - If you obtain a Lean-validated counterexample, a Lean-validated proof that the hypotheses are insufficient, or a direct proof that the benchmark statement is false, your very next substantive action must be creating a durable blocker artifact:
-  - write `task_results/<file>.md` immediately, and
-  - if useful, add only separately named helper/counterexample declarations while keeping the original theorem frozen.
+  - write `task_results/<file>.md` immediately before any optional edits to the `.lean` file,
+  - only after that note exists may you add separately named helper/counterexample declarations while keeping the original theorem frozen, and
+  - once the note exists, you may stop the session instead of continuing theorem search.
   Do not spend the rest of the session on extra theorem search after the obstruction has already been validated.
 - **Intermediate helper lemmas you introduced** may be modified if they turn out to be incorrect or need adjustment.
 - Add concise, informative comments above helper lemmas to make later reuse easy
