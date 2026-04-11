@@ -1,225 +1,194 @@
 # Archon
 
-Archon is an agentic system that autonomously formalizes research-level mathematics in Lean 4. A **plan agent** provides strategic guidance while **prover agents** write and verify proofs — separating analysis from execution to avoid context explosion. The system handles repository-scale formalization through three phases: scaffolding, proving, and polish. Built on Claude Code and Claude Opus 4.6, with a modified fork of [lean-lsp-mcp](https://github.com/oOo0oOo/lean-lsp-mcp) and [lean4-skills](https://github.com/cameronfreer/lean4-skills). Archon originated from orchestrating Claude Code with OpenClaw — see [Standard vs. orchestrator-scheduled mode](#standard-vs-orchestrator-scheduled-mode). See also our [blog](https://frenzymath.com/blog/archon-firstproof/) and [announcement](https://frenzymath.com/news/archon-firstproof/).
+Archon is an agentic Lean 4 orchestration system for repository-scale formalization. This fork runs on **Codex CLI** while preserving the original `plan -> prover -> review` workflow and `.archon/` state layout.
 
-Archon is designed and optimized for **project-level formalization** — multi-file repositories with interdependent theorems, not isolated competition problems. As such, single-problem benchmarks are not a specific optimization target. For model choice, **Opus 4.6 is strongly recommended**; Sonnet also works well but is less capable. Other models have not been tested — weaker models may struggle with the complex skills and prompt structures, in which case Archon's system design could hurt performance rather than help it.                                                          
+## Status
 
-**Security note:** `archon-loop.sh` runs Claude Code with `--dangerously-skip-permissions --permission-mode bypassPermissions`, meaning the model can execute arbitrary shell commands, read/write any file the process can access, and make network requests — all without asking for confirmation. This is necessary for unattended operation but carries real risk: a misbehaving model could delete files, overwrite code, or run unintended commands. **While Opus 4.6 NEVER caused harm across all of our experiments,** the following measures can further reduce exposure:
+- Codex runtime migration is in place across setup, init, loop, review, prompts, and state templates.
+- Lean 4.28.0 is the pinned benchmark toolchain.
+- The upstream repository is still hard-wired to `claude`, so this fork is the runnable baseline in the current environment.
 
-- **Commit and push your project before running Archon, so any unintended changes can be easily reverted.**
-- Run Archon under a **dedicated, low-privilege user** that only has access to the project directory
-- Run inside a **Docker container** or VM with no access to sensitive data or credentials
-- Avoid running as root or with access to production systems
-- Review `.archon/proof-journal/` after each run to audit what the agents did
-
-## Setup
-
-Prerequisites: git, Python 3.10+, curl, elan (Lean toolchain).
-
-**Note:** `archon-loop.sh` runs Claude Code with `--dangerously-skip-permissions`, which Claude Code refuses when running as root on Linux. Two workarounds:
-1. **Use a non-root account** (RECOMMENDED) (e.g. create one with `adduser`) so you are not running with excessive root privileges.
-2. **Set `export IS_SANDBOX=1`** so Claude Code is allowed to start with this high-risk option.
+## Quick Start
 
 ```bash
-cd /path/where/you/want/Archon
-git clone https://github.com/frenzymath/Archon.git
+git clone <your-public-fork-url>
 cd Archon
 ./setup.sh
 ```
 
-`setup.sh` installs system-level dependencies (uv, tmux, Claude Code) and verifies your Lean toolchain. It also checks for API keys needed by the informal agent (`OPENAI_API_KEY`, `GEMINI_API_KEY`, or `OPENROUTER_API_KEY`) — at least one is recommended but not required.
+`setup.sh` verifies or installs:
 
-Note: the bundled informal agent is a simplified demonstration — it makes a single API call to an external model for proof sketches. Our internal implementation is more involved but not yet ready for open-sourcing. In practice, the one-shot approach does not show an obvious performance drop, likely because Claude Code performs its own verification and refinement on the returned sketches.
+- `git`
+- `python3`
+- `uv`
+- `elan`, `lean`, `lake`
+- `codex`
 
-## Usage
+It prefers Lean 4.28.0 to match FATE. If `elan` downloads are unreliable, it falls back to a direct Lean release archive install.
 
-All commands below assume you are inside the Archon directory:
+## Repository Layout
 
-```bash
-cd /path/to/Archon
+```text
+Archon/
+├── archon-loop.sh
+├── archonlib/
+├── docs/
+├── scripts/
+├── skills/archon-supervisor/
+├── tests/
+└── ui/
 ```
 
-### 1. Initialize a project
+## Workflow Snapshot
 
-The project path must point to the directory containing your `lakefile.lean` or `lakefile.toml` — this is what defines a Lean project.
+```mermaid
+flowchart LR
+    S[source] --> W[workspace]
+    W --> A[.archon state]
+    A --> P[plan]
+    P --> R[prover pool]
+    R --> T[task_results and logs]
+    T --> V[supervisor checks]
+    V --> E[artifacts export]
+```
 
-**Option A — Initialize an existing project**:
+## Install The Supervisor Skill
+
+```bash
+bash scripts/install_repo_skill.sh
+```
+
+This installs the repo-owned skill into `$CODEX_HOME/skills/archon-supervisor`. Launch a fresh `codex exec` session after installing it.
+
+## Quick Supervisor Soak Test
+
+Create an isolated run root, prewarm it, initialize the scoped workspace, and then start a fresh Codex session that explicitly invokes `$archon-supervisor`.
+
+```bash
+python3 scripts/create_run_workspace.py \
+  --source-root /path/to/benchmark-or-project \
+  --run-root /path/to/run-root \
+  --reuse-lake-from /path/to/warmed-project
+
+python3 scripts/prewarm_project.py /path/to/run-root/workspace
+
+./init.sh --objective-limit 5 --objective-regex '^FATEM/(39|40|41|42|43)\\.lean$' \
+  /path/to/run-root/workspace
+
+codex exec --skip-git-repo-check --sandbox danger-full-access \
+  -c approval_policy=never --model gpt-5.4 - <<'EOF'
+Use $archon-supervisor to supervise this Archon run.
+Run root: /path/to/run-root
+Source root: /path/to/run-root/source
+Workspace root: /path/to/run-root/workspace
+Do not stop to give an interim report; keep updating workspace/.archon/supervisor/HOT_NOTES.md and LEDGER.md instead.
+EOF
+```
+
+The full long-run procedure, monitoring commands, and recovery rules live in [docs/operations.md](docs/operations.md).
+
+## Initialize A Lean Project
+
 ```bash
 ./init.sh /path/to/your-lean-project
 ```
 
-**Option B — Create a new project in Archon's workspace**:
+Useful options:
+
 ```bash
-./init.sh workspace/my-project
+./init.sh --objective-limit 1 /path/to/project
+./init.sh --objective-limit 5 --objective-regex '^FATEM/(39|40|41|42|43)\\.lean$' /path/to/project
 ```
 
-If no path is given, `init.sh` prompts you for a project name and creates it under `workspace/`.
+Init creates and links:
 
-`init.sh` does the following inside your project:
-- Creates `.archon/` with runtime state files and symlinked prompts
-- Installs Archon's lean4 skills as the `lean4@archon-local` plugin (live-linked to Archon source)
-- Symlinks the informal agent into `.claude/tools/archon-informal-agent.py`
-- Installs Archon's lean-lsp MCP server as `archon-lean-lsp` at project scope
-- Detects and disables any conflicting global lean4-skills and lean-lsp MCP (see [Existing lean4-skills and lean-lsp MCP installations](#existing-lean4-skills-and-lean-lsp-mcp-installations))
-- Launches Claude Code interactively to detect project state, set up lakefile/Mathlib if needed, and write initial objectives
+- `.archon/PROGRESS.md`
+- `.archon/AGENTS.md`
+- `.archon/RUN_SCOPE.md`
+- `.archon/prompts/`
+- `.archon/lean4/`
+- `.archon/tools/archon-informal-agent.py`
+- `.archon/logs/`
 
-Init automatically runs `/archon-lean4:doctor` at the end to verify the full setup (Lean environment, MCP, skills, state files).
-
-### 2. Start the automated loop
+## Run The Loop
 
 ```bash
 ./archon-loop.sh /path/to/your-lean-project
 ```
 
-The loop alternates plan and prover agents through stages:
-
-| Stage | What happens |
-|-------|-------------|
-| `autoformalize` | Scaffolding — translate informal math into Lean declarations with `sorry` |
-| `prover` | Proving — fill `sorry` placeholders with verified proofs |
-| `polish` | Verification and polish — golf, refactor, extract reusable lemmas |
-
-**NOTE:** The prover agent is instructed to push formalization as far as possible, so the first few runs typically take **several hours** as it clears all low-hanging fruits. Once only genuinely difficult sorrys remain, each iteration becomes much shorter. To confirm the agent is running, check the latest log in `.archon/logs/archon-<timestamp>.jsonl` in your project directory; the agent also writes Lean files when running, which you can see directly.
-
-The loop exits automatically when the stage reaches `COMPLETE`. You can run `archon-loop.sh` on multiple projects in parallel from separate terminals — each project's state is independent.
-
-### Guiding agents
-
-Archon runs fully autonomously, but guiding it with your expertise will speed it up, align it with your preferred proof style, and help it overcome mathematical and Lean challenges.
-
-There are three ways to influence Archon's behavior. Each serves a different purpose:
-
-| Mechanism | When to use | Lifetime | Who reads it |
-|-----------|-------------|----------|-------------|
-| **USER_HINTS.md** | Mid-run course corrections | One-shot — cleared after each plan cycle | Plan agent |
-| **/- USER: ... -/ comments** | File-specific proof guidance | Persistent — stays in the `.lean` file | Prover agent |
-| **Prompts and skills** | Change how agents think and operate | Permanent — applies every iteration | All agents |
-
-**USER_HINTS.md** — for things that change between iterations. Examples: "prioritize theorem X next", "stop trying approach Y, it's a dead end". The plan agent reads this once, acts on it, and clears the file. Don't put permanent instructions here — they'll be lost.
-
-**/- USER: ... -/ comments** — for proof-level guidance tied to a specific `.lean` file. Examples: "try using Finset.sum_comm here", "this sorry depends on the helper lemma above". These persist in the source file and are visible to whichever prover agent owns that file.
-
-**Prompts and skills** — for changing how agents behave across all iterations. Edit prompts when you want to change the plan agent's strategy, the prover's proof style, or the review agent's analysis. Create or extend skills for reusable workflows in specific situations. For a deeper treatment — including which changes are short-lived vs. permanent, how skills and prompts differ, the recommended order of adjustments, and how to evolve them as you encounter recurring issues — see [Section 5 (Skills and Prompts) in ORCHESTRATOR_GUIDE.md](ORCHESTRATOR_GUIDE.md#5-skills-and-prompts).
-
-Archon has two layers — local overrides global:
-
-| Layer | Location | Scope |
-|-------|----------|-------|
-| **Global** | `Archon/.archon-src/prompts/*.md` | All projects |
-| **Local** | `<project>/.archon/prompts/*.md` | One project only |
-
-By default, local prompts are symlinks to the global ones — so edits to the global prompt are picked up automatically by every project on the next iteration. To override a prompt for one project, replace the symlink with a copy and edit it. Note that once you do this, future updates to the global prompt will no longer propagate to that project — you are responsible for keeping the local copy up to date.
-
-### Customizing skills
-
-Archon ships with a modified fork of [lean4-skills](https://github.com/cameronfreer/lean4-skills), installed as `archon-lean4` (providing `/archon-lean4:prove`, `/archon-lean4:doctor`, etc.). Skills follow a global-vs-local layering:
-
-| Layer | Location | What it provides |
-|-------|----------|-----------------|
-| **Global** | `Archon/.archon-src/skills/*/` | Installed as a plugin; cache symlinked to Archon source |
-| **Local** | `<project>/.claude/skills/<name>/` | Project-specific skills you create |
-
-**Modifying global skills**: You can edit files directly under `Archon/.archon-src/skills/lean4/`. The plugin cache is a symlink back to this directory, so changes take effect on the next Claude Code session in any project. Be aware that this affects all projects.
-
-**Adding new global skills**: Create a new directory under `Archon/.archon-src/skills/<your-skill-name>/` with a `SKILL.md` or `.claude-plugin/plugin.json` inside, and add it to `.archon-src/skills/.claude-plugin/marketplace.json`. Run `./init.sh` again on your project to pick up the new skill.
-
-**We encourage you to customize.** If you notice the prover repeatedly making the same mistakes, or a proof strategy that consistently works for your project, codify it — add a skill or adjust a prompt. Archon improves as its skills and prompts accumulate lessons from your specific formalization work.
-
-**Modifying local (project-only) skills**: To customize a global skill for one project without affecting others, replace the cache symlink with a real copy (`cp -rL` the symlink target). As with prompts, once you do this, future updates to the global skill will no longer propagate to that project.
-
-**Adding local skills**: Place them in `<project>/.claude/skills/<your-skill-name>/SKILL.md`. They are discovered by Claude Code automatically and won't conflict with Archon's `/archon-lean4:*` commands. No re-init needed.
-
-### Monitoring progress
-
-To check how the formalization is going, look at these files in your project:
-
-- **`.archon/logs/archon-<timestamp>.jsonl`** — running log of agent activity. Check the latest timestamp to monitor whether agents are still working.
-- **`.archon/PROJECT_STATUS.md`** — overall progress: total sorries, what's solved, what's blocked, and reusable proof patterns. This is the best starting point.
-- **`.archon/proof-journal/sessions/session_N/summary.md`** — detailed record of a specific iteration: what was attempted, what succeeded, what failed, and why.
-
-These are updated automatically by the review agent after each iteration. If the loop has finished with `--no-review` and you want to generate a review manually, run `./review.sh /path/to/your-project`.
-
-### Dashboard
-
-Archon includes a web dashboard for real-time monitoring. Start it alongside `archon-loop.sh`:
+Useful options:
 
 ```bash
-bash ui/start.sh --project /path/to/your-lean-project
+./archon-loop.sh --dry-run /path/to/project
+./archon-loop.sh --max-iterations 1 /path/to/project
+./archon-loop.sh --max-parallel 4 /path/to/project
+./archon-loop.sh --no-review /path/to/project
 ```
 
-The dashboard shows iteration progress, parallel prover status, a file-centric Diffs view backed by recorded code snapshots, agent logs with live streaming, and proof journal milestones — all updating in real time.
+The loop reads the scoped objectives from `.archon/PROGRESS.md`, launches one prover process per target file by default, and writes structured logs under `.archon/logs/iter-*`.
 
-<p align="center">
-<img src="docs/dashboard-logs.jpg" alt="Archon Dashboard — Logs view" width="800">
-</p>
+## Review
 
-The **Logs** view groups logs by iteration with phase timing (plan → prover → review) and per-prover completion status.
-
-The **Journal** view tracks proof milestones across sessions — see which theorems were solved, blocked, or retried, with condensed reasoning traces that let you follow how the agents approached each proof.
-
-<p align="center">
-<img src="docs/dashboard-journal.jpg" alt="Archon Dashboard — Journal view" width="800">
-</p>
-
-See [`ui/README.md`](ui/README.md) for more details on Overview / Diffs / Logs / Journal and the supporting API surface.
-
-### Existing lean4-skills and lean-lsp MCP installations
-
-If you already have `lean4-skills` or `lean-lsp` MCP installed globally, `init.sh` detects them and disables them **for this project only** — so only Archon's modified versions are active. Your global installations are untouched and continue working in all other projects.
-
-To restore the originals in an Archon project:
 ```bash
-cd /path/to/your-project
-claude plugin enable lean4-skills --scope project     # re-enable standard skills
-claude mcp add lean-lsp -s project -- uvx lean-lsp-mcp  # re-enable standard MCP
+./review.sh /path/to/your-lean-project
 ```
 
-### CLI options
+This extracts attempt data from the latest prover log, runs the review agent through Codex, and validates the generated proof journal.
 
-| Flag | Description |
-|------|-------------|
-| `--max-iterations N` | Max plan→prover→review cycles (default: 10). Exits early if stage reaches `COMPLETE`. |
-| `--stage STAGE` | Force a stage (`autoformalize`, `prover`, `polish`) instead of reading from PROGRESS.md. |
-| `--serial` | One prover at a time instead of parallel (one per file). |
-| `--verbose-logs` | Save raw Claude stream events to `.raw.jsonl` for debugging. |
-| `--no-review` | Skip review phase. Saves time/cost; plan agent still works without it. |
-| `--dry-run` | Print prompts without launching Claude. |
+## Where To Find Generated Proofs
 
-## Supplying informal material
+The source of truth is always the isolated run itself, not the dashboard and not the planner notes.
 
-Formalization quality improves materially when the agents have access to the original informal mathematics. Supply as much source material as you can — place files in the repository root or a clearly documented top-level folder (e.g. `references/`):
+- Final generated proofs live in the target `.lean` files inside `run-root/workspace/`. Example: `runs/fate-m-compare-codex-rerun-20260411/FATEM/39.lean`.
+- Immutable originals live in `run-root/source/`.
+- Iteration logs live under `.archon/logs/iter-*`, with per-file prover logs in `.archon/logs/iter-*/provers/*.jsonl`.
+- Snapshot diffs for replay live under `.archon/logs/iter-*/snapshots/`.
+- Unresolved blockers or theorem-level failure reports live under `.archon/task_results/`.
+- Review summaries, milestones, and recommendations live under `.archon/proof-journal/`.
+- Supervisor summaries live under `.archon/supervisor/`.
+- Exported review bundles live under `run-root/artifacts/`.
 
-1. **Papers and manuscripts** — the primary text being formalized (PDF, LaTeX source, or both). This is the single most important input after the Lean project itself.
-2. **Blueprints** — if you have a [LeanBlueprint](https://github.com/PatrickMassot/leanblueprint) or similar dependency graph, include it. Blueprints give the agents a clear picture of the logical structure and what depends on what.
-3. **Key definitions and lemma references** — for important definitions or lemmas, note where they first appear (e.g. "Definition 3.2 in [Author, Year]" or "Lemma 2 of arXiv:XXXX.XXXXX"). If the main paper cites important theorems whose proofs appear elsewhere, include those papers too — either add them yourself or ask Claude Code to fetch them. This helps the agents choose correct formalizations and find existing Mathlib content instead of reinventing it.
+To inspect a run in the UI:
 
-Even rough or incomplete material is valuable — partial references are far better than none. The more context the agents have, the better they can disambiguate notation, pick appropriate Mathlib abstractions, and produce proofs that match the mathematical intent.
+```bash
+bash ui/start.sh --project /path/to/run-root/workspace
+```
 
-## Standard vs. orchestrator-scheduled mode
+The dashboard reads directly from the run's `.archon/` directory. It is a browser for the artifacts above, not a separate source of truth.
 
-`archon-loop.sh` is the **standard mode** — a fixed plan→prover→review loop that runs unattended. It is sufficient for most formalization tasks.
+## FATE Workflow
 
-In our experiments, replacing the fixed loop with an **orchestrator-scheduled mode** — where an outer orchestrator like OpenClaw drives Claude Code directly — yielded stronger results. Instead of following a rigid pipeline, the orchestrator can freely choose when to plan, prove, or review based on the current state, and can supervise the model continuously to prevent premature termination.
+Recommended execution order:
 
-### How to use orchestrator-scheduled mode
+1. Keep one pristine benchmark checkout, for example `benchmarks/FATE-M-upstream`.
+2. Create a fresh isolated run with `python3 scripts/create_run_workspace.py`.
+3. Optionally reuse a warmed `.lake/` cache, but do not reuse another run's `.archon/` state.
+4. Prewarm `run-root/workspace/` with `python3 scripts/prewarm_project.py`.
+5. Run `./init.sh` with a narrow scope against `run-root/workspace/`.
+6. Prefer supervised cycles over blind long loops.
+7. Export milestone artifacts with `python3 scripts/export_run_artifacts.py --run-root /path/to/run-root`.
+8. Verify solved files with `lake env lean` or the fixed Lake binary before counting them as benchmark results.
 
-Ensure your orchestrator has access to the project directory, and ask it to read README.md for an overview of the project.
+For the current FATE-M benchmark notes and result hygiene rules, see [docs/benchmarking.md](docs/benchmarking.md).
 
-We provide [`ORCHESTRATOR_GUIDE.md`](ORCHESTRATOR_GUIDE.md) as a companion guide for your orchestrator. It was authored by our own OpenClaw based on its accumulated experience orchestrating Claude Code across multiple formalization projects. The guide covers how to read Archon's state files, decide which stage to run next, compose prompts from `.archon/prompts/`, and invoke `claude -p` — including prompt composition, adaptive scheduling logic, failure recovery, and operational rules learned from production use.
+## Runtime Notes
 
-### What changes compared to the standard loop
+- Main model: `ARCHON_CODEX_MODEL` (default `gpt-5.4`)
+- Extra Codex flags: `ARCHON_CODEX_EXEC_ARGS`
+- Optional search toggle: `ARCHON_CODEX_ENABLE_SEARCH=1`
+- Informal provider default: OpenAI via `.archon/tools/archon-informal-agent.py`
+- `scripts/prewarm_project.py` removes broken manifest package checkouts before retrying `lake exe cache get` and `lake build`
 
-In standard mode, `archon-loop.sh` enforces a fixed cycle: plan→prover→review, repeated up to `--max-iterations`. The orchestrator-scheduled mode differs in several ways:
+## Docs Map
 
-- **Environment management** — the orchestrator handles setup and debugging: installing dependencies, resolving Mathlib cache issues, verifying that skills and MCP work correctly. These tasks often require back-and-forth troubleshooting that a fixed script cannot do.
-- **Flexible phase ordering** — the orchestrator decides when to plan, prove, or review based on what it observes, rather than following a fixed sequence. It might skip planning when the current objectives are still valid.
-- **Real-time intervention** — the orchestrator can step in the moment the model is stuck. It detects surrender patterns (e.g., "Mathlib lacks infrastructure") and pushes the prover back in with refined hints or alternative strategies.
-- **Richer cross-session context** — the orchestrator has its own memory. It can retain whatever state matters for adaptive routing — failure histories, proof patterns, mathematical context — accumulating richer context over time than a script that only persists a few markdown artifacts between iterations.
+- [docs/architecture.md](docs/architecture.md): system workflow, Mermaid, state flow, observability, and extension points
+- [docs/benchmarking.md](docs/benchmarking.md): benchmark workflow, artifact hygiene, and current compare-run interpretation
+- [docs/agent-registry.md](docs/agent-registry.md): lightweight agent contract registry and proposed future agents
+- [docs/operations.md](docs/operations.md): isolated-run workflow, supervisor soak-test commands, monitoring, and recovery
+- [docs/roadmaps/supervisor-phase2.md](docs/roadmaps/supervisor-phase2.md): saved implementation roadmap for the supervisor phase
+- [ORCHESTRATOR_GUIDE.md](ORCHESTRATOR_GUIDE.md): manual stage orchestration for advanced users
+- [ui/README.md](ui/README.md): dashboard behavior and API surface
 
-### Why orchestrator-scheduled mode is more effective
+## Safety
 
-**Flexibility** — the orchestrator decides when to plan, prove, or review based on current state rather than following a fixed sequence, making it adaptable to a wider range of formalization tasks.
-
-**Stability** — a supervisor layer catches errors that a fixed loop cannot: crashed sessions, malformed state files, stuck provers, or plan agents that set unreasonable objectives. The orchestrator acts as a safety net that keeps the process running correctly over hours or days without manual intervention.
-
-**Evolvability** - by design, orchestrators like OpenClaw can author and refine skills and prompts over time. The global/local skill and prompt slots are designed not only for human experts but also for orchestrators: they can analyze failure modes and update skills or prompts accordingly (with your permission), making the system progressively more powerful.
+This fork uses `codex exec --dangerously-bypass-approvals-and-sandbox` for unattended execution. Run it only in a workspace you are prepared to fully trust, snapshot, and restore.
