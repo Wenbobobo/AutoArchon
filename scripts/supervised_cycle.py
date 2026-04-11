@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import signal
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,9 +19,18 @@ if str(ROOT) not in sys.path:
 from archonlib.supervisor import (
     collect_changed_files,
     collect_header_drifts,
+    collect_meta_prover_errors,
+    latest_iteration_meta,
     list_runtime_process_lines,
     read_allowed_files,
 )
+
+
+def _env_float(name: str, default: float | None = None) -> float | None:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return float(raw)
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,9 +44,24 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-iterations", type=int, default=1, help="Iterations to pass through to archon-loop.sh")
     parser.add_argument("--max-parallel", type=int, default=4, help="Parallel prover limit")
+    parser.add_argument("--plan-timeout-seconds", type=int, help="Set ARCHON_PLAN_TIMEOUT_SECONDS for this cycle")
+    parser.add_argument("--prover-timeout-seconds", type=int, help="Set ARCHON_PROVER_TIMEOUT_SECONDS for this cycle")
+    parser.add_argument("--review-timeout-seconds", type=int, help="Set ARCHON_REVIEW_TIMEOUT_SECONDS for this cycle")
     parser.add_argument("--skip-process-check", action="store_true", help="Skip the pre-cycle ps scan")
     parser.add_argument("--dry-run", action="store_true", help="Pass --dry-run through to archon-loop.sh")
     parser.add_argument("--no-review", action="store_true", help="Pass --no-review through to archon-loop.sh")
+    parser.add_argument(
+        "--prover-idle-seconds",
+        type=float,
+        default=_env_float("ARCHON_SUPERVISOR_PROVER_IDLE_SECONDS"),
+        help="Kill the loop if prover activity stays idle for this many seconds",
+    )
+    parser.add_argument(
+        "--monitor-poll-seconds",
+        type=float,
+        default=_env_float("ARCHON_SUPERVISOR_MONITOR_POLL_SECONDS", 5.0) or 5.0,
+        help="Polling interval for supervisor runtime monitoring",
+    )
     return parser.parse_args()
 
 
@@ -61,7 +88,7 @@ def _run_process_check(skip: bool) -> list[str]:
     return list_runtime_process_lines(result.stdout)
 
 
-def _run_archon_loop(args: argparse.Namespace) -> subprocess.CompletedProcess[str]:
+def _build_loop_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str] | None]:
     command = [
         "bash",
         str(Path(args.archon_loop).resolve()),
@@ -75,13 +102,195 @@ def _run_archon_loop(args: argparse.Namespace) -> subprocess.CompletedProcess[st
     if args.no_review:
         command.append("--no-review")
     command.append(str(Path(args.workspace).resolve()))
-    return subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=str(ROOT),
-    )
+    env = None
+    if any(
+        timeout is not None
+        for timeout in (args.plan_timeout_seconds, args.prover_timeout_seconds, args.review_timeout_seconds)
+    ):
+        env = dict(os.environ)
+        if args.plan_timeout_seconds is not None:
+            env["ARCHON_PLAN_TIMEOUT_SECONDS"] = str(args.plan_timeout_seconds)
+        if args.prover_timeout_seconds is not None:
+            env["ARCHON_PROVER_TIMEOUT_SECONDS"] = str(args.prover_timeout_seconds)
+        if args.review_timeout_seconds is not None:
+            env["ARCHON_REVIEW_TIMEOUT_SECONDS"] = str(args.review_timeout_seconds)
+    return command, env
+
+
+def _tracked_activity_paths(workspace: Path, iteration: str | None, allowed_files: list[str]) -> list[Path]:
+    paths: list[Path] = []
+    if iteration:
+        iter_dir = workspace / ".archon" / "logs" / iteration
+        provers_dir = iter_dir / "provers"
+        if provers_dir.exists():
+            paths.extend(sorted(provers_dir.glob("*.jsonl")))
+        prover_log = iter_dir / "prover.jsonl"
+        if prover_log.exists():
+            paths.append(prover_log)
+
+    results_dir = workspace / ".archon" / "task_results"
+    if results_dir.exists():
+        paths.extend(sorted(results_dir.glob("*.md")))
+
+    for rel_path in allowed_files:
+        target = workspace / rel_path
+        if target.exists():
+            paths.append(target)
+
+    return paths
+
+
+def _latest_mtime(paths: list[Path]) -> float | None:
+    mtimes = [path.stat().st_mtime for path in paths if path.exists()]
+    if not mtimes:
+        return None
+    return max(mtimes)
+
+
+def _terminate_process_group(proc: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+
+    deadline = time.monotonic() + 5.0
+    while proc.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.1)
+
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+
+
+def _monitor_for_idle_prover(
+    proc: subprocess.Popen[str],
+    workspace: Path,
+    allowed_files: list[str],
+    *,
+    idle_seconds: float,
+    poll_seconds: float,
+) -> dict[str, object] | None:
+    tracked_iteration: str | None = None
+    last_seen_mtime: float | None = None
+    last_activity_at: float | None = None
+
+    while proc.poll() is None:
+        latest_iter_name, latest_meta = latest_iteration_meta(workspace)
+        if latest_iter_name != tracked_iteration:
+            tracked_iteration = latest_iter_name
+            last_seen_mtime = None
+            last_activity_at = None
+
+        prover_status = None
+        if isinstance(latest_meta, dict):
+            prover_payload = latest_meta.get("prover")
+            if isinstance(prover_payload, dict):
+                prover_status = prover_payload.get("status")
+
+        if prover_status == "running":
+            if last_activity_at is None:
+                last_activity_at = time.monotonic()
+
+            tracked_paths = _tracked_activity_paths(workspace, tracked_iteration, allowed_files)
+            newest_mtime = _latest_mtime(tracked_paths)
+            if newest_mtime is not None and (last_seen_mtime is None or newest_mtime > last_seen_mtime):
+                last_seen_mtime = newest_mtime
+                last_activity_at = time.monotonic()
+
+            if last_activity_at is not None and time.monotonic() - last_activity_at > idle_seconds:
+                _terminate_process_group(proc)
+                return {
+                    "event": "prover_idle_timeout",
+                    "iteration": tracked_iteration,
+                    "idle_seconds": idle_seconds,
+                    "tracked_path_count": len(tracked_paths),
+                }
+
+        time.sleep(max(poll_seconds, 0.05))
+
+    return None
+
+
+def _run_archon_loop(
+    args: argparse.Namespace,
+    workspace: Path,
+    allowed_files: list[str],
+) -> tuple[subprocess.CompletedProcess[str], dict[str, object] | None]:
+    command, env = _build_loop_command(args)
+
+    if not args.prover_idle_seconds or args.prover_idle_seconds <= 0:
+        return (
+            subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=str(ROOT),
+                env=env,
+            ),
+            None,
+        )
+
+    supervisor_dir = workspace / ".archon" / "supervisor"
+    stdout_tmp = supervisor_dir / ".supervised-cycle.stdout.tmp"
+    stderr_tmp = supervisor_dir / ".supervised-cycle.stderr.tmp"
+    supervisor_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with stdout_tmp.open("w", encoding="utf-8") as stdout_handle, stderr_tmp.open(
+            "w", encoding="utf-8"
+        ) as stderr_handle:
+            proc = subprocess.Popen(
+                command,
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+                text=True,
+                cwd=str(ROOT),
+                env=env,
+                start_new_session=True,
+            )
+            idle_event = _monitor_for_idle_prover(
+                proc,
+                workspace,
+                allowed_files,
+                idle_seconds=args.prover_idle_seconds,
+                poll_seconds=args.monitor_poll_seconds,
+            )
+            returncode = proc.wait()
+
+        return (
+            subprocess.CompletedProcess(
+                command,
+                returncode,
+                stdout_tmp.read_text(encoding="utf-8"),
+                stderr_tmp.read_text(encoding="utf-8"),
+            ),
+            idle_event,
+        )
+    finally:
+        stdout_tmp.unlink(missing_ok=True)
+        stderr_tmp.unlink(missing_ok=True)
+
+
+def _tail_text(text: str, max_lines: int = 8) -> str:
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    return "\n".join(lines[-max_lines:])
+
+
+def _write_loop_output(supervisor_dir: Path, loop_result: subprocess.CompletedProcess[str]) -> tuple[Path, Path]:
+    stdout_path = supervisor_dir / "last_loop.stdout.log"
+    stderr_path = supervisor_dir / "last_loop.stderr.log"
+    _write_text(stdout_path, loop_result.stdout)
+    _write_text(stderr_path, loop_result.stderr)
+    return stdout_path, stderr_path
+
+
+def _path_mtimes(paths: list[Path]) -> dict[Path, float]:
+    return {path: path.stat().st_mtime for path in paths if path.exists()}
 
 
 def main() -> int:
@@ -95,11 +304,31 @@ def main() -> int:
 
     started_at = datetime.now(timezone.utc).isoformat()
     allowed_files = read_allowed_files(workspace)
+    baseline_changed_files = collect_changed_files(source, workspace, allowed_files=allowed_files or None)
+    baseline_changed_mtimes = _path_mtimes([workspace / rel_path for rel_path in baseline_changed_files])
+    baseline_blocker_paths = sorted((workspace / ".archon" / "task_results").glob("*.md"))
+    baseline_blocker_mtimes = _path_mtimes(baseline_blocker_paths)
     process_lines = _run_process_check(args.skip_process_check)
-    loop_result = _run_archon_loop(args)
+    previous_iter_name, _ = latest_iteration_meta(workspace)
+    loop_result, idle_event = _run_archon_loop(args, workspace, allowed_files)
+    stdout_path, stderr_path = _write_loop_output(supervisor_dir, loop_result)
+    latest_iter_name, latest_meta = latest_iteration_meta(workspace)
     drifts = collect_header_drifts(source, workspace, allowed_files=allowed_files or None)
     changed_files = collect_changed_files(source, workspace, allowed_files=allowed_files or None)
-    blocker_notes = sorted(path.name for path in (workspace / ".archon" / "task_results").glob("*.md"))
+    blocker_paths = sorted((workspace / ".archon" / "task_results").glob("*.md"))
+    blocker_notes = sorted(path.name for path in blocker_paths)
+    new_changed_files = sorted(
+        rel_path
+        for rel_path in changed_files
+        if (workspace / rel_path).stat().st_mtime > baseline_changed_mtimes.get(workspace / rel_path, float("-inf"))
+    )
+    new_blocker_notes = sorted(
+        path.name
+        for path in blocker_paths
+        if path.stat().st_mtime > baseline_blocker_mtimes.get(path, float("-inf"))
+    )
+    prover_failures = collect_meta_prover_errors(latest_meta)
+    created_new_iteration = latest_iter_name is not None and latest_iter_name != previous_iter_name
 
     events: list[dict[str, object]] = []
     for line in process_lines:
@@ -111,15 +340,39 @@ def main() -> int:
         )
     for drift in drifts:
         events.append(drift.to_event())
+    if prover_failures:
+        events.append(
+            {
+                "event": "prover_error",
+                "files": prover_failures,
+                "iteration": latest_iter_name,
+            }
+        )
+    if idle_event is not None:
+        events.append(idle_event)
+    if loop_result.returncode != 0 and not created_new_iteration:
+        events.append(
+            {
+                "event": "no_new_iteration_meta",
+                "previous_iteration": previous_iter_name,
+                "latest_iteration": latest_iter_name,
+            }
+        )
 
-    if not changed_files and not blocker_notes:
+    if not new_changed_files and not new_blocker_notes:
         events.append({"event": "no_progress"})
 
     status = "clean"
-    if loop_result.returncode != 0:
-        status = "loop_failed"
     if any(event["event"] == "header_mutation" for event in events):
         status = "policy_violation"
+    elif prover_failures:
+        status = "prover_failed"
+    elif idle_event is not None:
+        status = "prover_idle"
+    elif loop_result.returncode != 0:
+        status = "loop_failed"
+    elif not new_changed_files and not new_blocker_notes:
+        status = "no_progress"
 
     if events:
         _append_text(
@@ -140,12 +393,43 @@ def main() -> int:
         f"- Loop exit code: {loop_result.returncode}",
         f"- Changed files: {', '.join(changed_files) if changed_files else '(none)'}",
         f"- Blocker notes: {', '.join(blocker_notes) if blocker_notes else '(none)'}",
+        f"- New changed files: {', '.join(new_changed_files) if new_changed_files else '(none)'}",
+        f"- New blocker notes: {', '.join(new_blocker_notes) if new_blocker_notes else '(none)'}",
         f"- Policy violations: {len([event for event in events if event['event'] == 'header_mutation'])}",
     ]
+    if latest_iter_name is not None:
+        hot_notes.append(f"- Latest iteration: {latest_iter_name}")
+    if isinstance(latest_meta, dict):
+        plan_status = latest_meta.get("plan", {}).get("status") if isinstance(latest_meta.get("plan"), dict) else None
+        prover_status = latest_meta.get("prover", {}).get("status") if isinstance(latest_meta.get("prover"), dict) else None
+        if isinstance(plan_status, str):
+            hot_notes.append(f"- Latest plan status: {plan_status}")
+        if isinstance(prover_status, str):
+            hot_notes.append(f"- Latest prover status: {prover_status}")
+    if prover_failures:
+        hot_notes.append(f"- Prover errors: {', '.join(prover_failures)}")
+    if idle_event is not None:
+        hot_notes.append(f"- Idle timeout triggered: {idle_event['idle_seconds']}s without prover activity")
+        if idle_event.get("iteration"):
+            hot_notes.append(f"- Idle iteration: {idle_event['iteration']}")
     for drift in drifts:
         hot_notes.append(f"- Violation: {drift.rel_path}::{drift.declaration_name} -> {drift.mutation_class}")
     if process_lines:
         hot_notes.append(f"- Runtime processes already present: {len(process_lines)}")
+    if loop_result.returncode != 0 and not created_new_iteration:
+        hot_notes.append("- No new iteration metadata was created during this cycle; the failure happened before Archon initialized a fresh iter-* directory.")
+    stdout_tail = _tail_text(loop_result.stdout)
+    stderr_tail = _tail_text(loop_result.stderr)
+    if stdout_tail:
+        hot_notes.append(f"- Last archon-loop stdout log: {stdout_path}")
+        hot_notes.append("```")
+        hot_notes.extend(stdout_tail.splitlines())
+        hot_notes.append("```")
+    if stderr_tail:
+        hot_notes.append(f"- Last archon-loop stderr log: {stderr_path}")
+        hot_notes.append("```")
+        hot_notes.extend(stderr_tail.splitlines())
+        hot_notes.append("```")
     _write_text(hot_notes_path, "\n".join(hot_notes) + "\n")
 
     ledger_lines = [
@@ -155,18 +439,32 @@ def main() -> int:
         f"- Loop exit code: `{loop_result.returncode}`",
         f"- Changed files: `{', '.join(changed_files) if changed_files else '(none)'}`",
         f"- Blocker notes: `{', '.join(blocker_notes) if blocker_notes else '(none)'}`",
+        f"- New changed files: `{', '.join(new_changed_files) if new_changed_files else '(none)'}`",
+        f"- New blocker notes: `{', '.join(new_blocker_notes) if new_blocker_notes else '(none)'}`",
         f"- Policy events: `{len(events)}`",
+        f"- Latest iteration: `{latest_iter_name or '(none)'}`",
+        f"- Prover errors: `{', '.join(prover_failures) if prover_failures else '(none)'}`",
+        f"- Idle timeout: `{idle_event['idle_seconds']}s`" if idle_event is not None else "- Idle timeout: `(none)`",
+        f"- New iteration created: `{created_new_iteration}`",
         "",
     ]
     _append_text(ledger_path, "\n".join(ledger_lines))
 
     print(f"status={status}")
     print(f"changed_files={len(changed_files)}")
+    print(f"new_changed_files={len(new_changed_files)}")
     print(f"blocker_notes={len(blocker_notes)}")
+    print(f"new_blocker_notes={len(new_blocker_notes)}")
     print(f"policy_events={len(events)}")
 
     if status == "policy_violation":
         return 2
+    if status == "prover_failed":
+        return 3
+    if status == "no_progress":
+        return 4
+    if status == "prover_idle":
+        return 5
     if status == "loop_failed":
         return loop_result.returncode or 1
     return 0

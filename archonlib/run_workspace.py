@@ -9,6 +9,7 @@ from pathlib import Path
 
 SCHEMA_VERSION = 1
 IGNORED_DIRS = {".archon", ".git", "build", "lake-packages", "__pycache__"}
+IGNORED_EXPORT_DIRS = IGNORED_DIRS | {".lake"}
 
 
 def _copy_ignore(include_lake: bool):
@@ -93,7 +94,7 @@ def create_isolated_run(
 def _iter_relative_lean_files(root: Path) -> set[str]:
     files: set[str] = set()
     for path in root.rglob("*.lean"):
-        if ".archon" in path.parts:
+        if any(part in IGNORED_EXPORT_DIRS for part in path.parts):
             continue
         files.add(path.relative_to(root).as_posix())
     return files

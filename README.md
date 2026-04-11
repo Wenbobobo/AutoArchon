@@ -85,6 +85,20 @@ Do not stop to give an interim report; keep updating workspace/.archon/superviso
 EOF
 ```
 
+For focused single-file supervision, prefer bounded stage budgets so the teacher can cut off unproductive searches and immediately start the next correction cycle:
+
+```bash
+python3 scripts/supervised_cycle.py \
+  --workspace /path/to/run-root/workspace \
+  --source /path/to/run-root/source \
+  --plan-timeout-seconds 180 \
+  --prover-timeout-seconds 240 \
+  --prover-idle-seconds 90 \
+  --no-review
+```
+
+`--prover-idle-seconds` lets the outer supervisor kill a stalled prover that stops producing log or file activity, which is useful for blocker-focused benchmark slices.
+
 The full long-run procedure, monitoring commands, and recovery rules live in [docs/operations.md](docs/operations.md).
 
 ## Initialize A Lean Project
@@ -176,8 +190,10 @@ For the current FATE-M benchmark notes and result hygiene rules, see [docs/bench
 - Main model: `ARCHON_CODEX_MODEL` (default `gpt-5.4`)
 - Extra Codex flags: `ARCHON_CODEX_EXEC_ARGS`
 - Optional search toggle: `ARCHON_CODEX_ENABLE_SEARCH=1`
+- Codex preflight retries: `ARCHON_CODEX_READY_RETRIES` and `ARCHON_CODEX_READY_RETRY_DELAY_SECONDS`
 - Informal provider default: OpenAI via `.archon/tools/archon-informal-agent.py`
 - `scripts/prewarm_project.py` removes broken manifest package checkouts before retrying `lake exe cache get` and `lake build`
+- `scripts/prewarm_project.py` automatically skips `lake exe cache get` when a copied `.lake/` already contains a warmed mathlib cache
 
 ## Docs Map
 
