@@ -37,7 +37,7 @@ python3 scripts/supervised_cycle.py \
 python3 scripts/export_run_artifacts.py --run-root /path/to/run-root
 ```
 
-`export_run_artifacts.py` only exports changed Lean files from the run's `source/` tree; warmed `.lake/` packages are ignored.
+`export_run_artifacts.py` only exports changed Lean files from the run's `source/` tree; warmed `.lake/` packages are ignored, and `task_results/` notes are exported under `artifacts/task-results/`.
 
 ```bash
 tail -f /path/to/run-root/workspace/.archon/supervisor/HOT_NOTES.md

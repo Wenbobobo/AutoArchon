@@ -98,6 +98,7 @@ python3 scripts/supervised_cycle.py \
 ```
 
 `--prover-idle-seconds` lets the outer supervisor kill a stalled prover that stops producing log or file activity, which is useful for blocker-focused benchmark slices.
+If the prover goes idle after already writing a clean changed file or a durable `task_results/` note, the supervisor re-verifies that artifact and can recover the cycle as `clean` instead of misclassifying it as idle.
 
 The full long-run procedure, monitoring commands, and recovery rules live in [docs/operations.md](docs/operations.md).
 
@@ -157,10 +158,10 @@ The source of truth is always the isolated run itself, not the dashboard and not
 - Immutable originals live in `run-root/source/`.
 - Iteration logs live under `.archon/logs/iter-*`, with per-file prover logs in `.archon/logs/iter-*/provers/*.jsonl`.
 - Snapshot diffs for replay live under `.archon/logs/iter-*/snapshots/`.
-- Unresolved blockers or theorem-level failure reports live under `.archon/task_results/`.
+- Per-file handoff notes live under `.archon/task_results/`; they can record resolved proofs, validated blockers, or next-step guidance for the next iteration.
 - Review summaries, milestones, and recommendations live under `.archon/proof-journal/`.
 - Supervisor summaries live under `.archon/supervisor/`.
-- Exported review bundles live under `run-root/artifacts/`.
+- Exported review bundles live under `run-root/artifacts/`, including `proofs/`, `diffs/`, `task-results/`, and `supervisor/`.
 
 To inspect a run in the UI:
 

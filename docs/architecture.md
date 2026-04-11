@@ -109,7 +109,7 @@ For benchmark-faithful work, prefer a three-root run:
 
 - `source/`: immutable comparison baseline
 - `workspace/`: mutable Lean project edited by Archon
-- `artifacts/`: exported proofs, diffs, blocker notes, and supervisor notes
+- `artifacts/`: exported proofs, diffs, task-result notes, and supervisor notes
 
 The dashboard still points at `workspace/.archon/`. It does not replace the source/artifact boundary.
 

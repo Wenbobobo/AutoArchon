@@ -101,6 +101,8 @@ python3 scripts/supervised_cycle.py \
 
 `--prover-idle-seconds` watches prover logs, scoped `.lean` files, and live `task_results/`; if none of them move while the prover is marked `running`, the supervisor kills the whole loop and records a `prover_idle_timeout` event.
 
+If the idle cutoff happens after the prover has already written a clean changed file or a durable `task_results/` note, `scripts/supervised_cycle.py` now re-verifies that artifact before deciding the final status. Use `--changed-file-verify-template` when the default `timeout 30s lake env lean {file}` check is not the right verifier for your project.
+
 ## Monitoring
 
 Use these from another shell while the supervisor is running:
@@ -120,7 +122,7 @@ watch -n10 'ls -lt /path/to/run-root/workspace/.archon/task_results/'
 - If repeated stale `archon-loop.sh`, `codex exec`, or `lake serve` processes remain, stop trusting the current run until the supervisor has recorded the contamination and restarted cleanly.
 - If the prover keeps a process alive but stops emitting log or file activity, rerun with `--prover-idle-seconds` so the supervisor can cut the loop and preserve a concrete idle-timeout record instead of waiting indefinitely.
 - If a supervised cycle fails before a new `iter-*` directory appears, inspect `workspace/.archon/supervisor/last_loop.stderr.log` first. This usually means a transient Codex/network preflight failure rather than a mathematical blocker.
-- If the scope keeps spinning with no Lean-file changes and no blocker notes, shrink the scope and continue from a single-file supervised cycle.
+- If the scope keeps spinning with no Lean-file changes and no task results, shrink the scope and continue from a single-file supervised cycle.
 
 ## Export Artifacts
 
@@ -134,7 +136,7 @@ This exports:
 
 - changed Lean files from the run `source/` tree only under `artifacts/proofs/`
 - unified diffs under `artifacts/diffs/`
-- blocker notes under `artifacts/blockers/`
+- exported task-result notes under `artifacts/task-results/`
 - supervisor notes under `artifacts/supervisor/`
 
 The artifact index is written to `artifacts/artifact-index.json`.

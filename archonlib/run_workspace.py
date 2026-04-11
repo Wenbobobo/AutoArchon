@@ -117,7 +117,7 @@ def export_run_artifacts(run_root: Path) -> dict[str, object]:
     workspace_root = run_root / "workspace"
     artifacts_root = run_root / "artifacts"
     manifest_path = run_root / "RUN_MANIFEST.json"
-    blockers_root = workspace_root / ".archon" / "task_results"
+    task_results_root = workspace_root / ".archon" / "task_results"
     supervisor_root = workspace_root / ".archon" / "supervisor"
 
     if not source_root.exists() or not workspace_root.exists():
@@ -126,7 +126,7 @@ def export_run_artifacts(run_root: Path) -> dict[str, object]:
     artifacts_root.mkdir(parents=True, exist_ok=True)
     proofs_root = artifacts_root / "proofs"
     diffs_root = artifacts_root / "diffs"
-    exported_blockers_root = artifacts_root / "blockers"
+    exported_task_results_root = artifacts_root / "task-results"
     exported_supervisor_root = artifacts_root / "supervisor"
 
     changed_files: list[str] = []
@@ -148,11 +148,11 @@ def export_run_artifacts(run_root: Path) -> dict[str, object]:
         diff_path.parent.mkdir(parents=True, exist_ok=True)
         diff_path.write_text("".join(diff_lines), encoding="utf-8")
 
-    blocker_notes: list[str] = []
-    if blockers_root.exists():
-        for path in sorted(blockers_root.glob("*.md")):
-            blocker_notes.append(path.name)
-            _copy_file(path, exported_blockers_root / path.name)
+    task_results: list[str] = []
+    if task_results_root.exists():
+        for path in sorted(task_results_root.glob("*.md")):
+            task_results.append(path.name)
+            _copy_file(path, exported_task_results_root / path.name)
 
     supervisor_files: list[str] = []
     if supervisor_root.exists():
@@ -169,7 +169,8 @@ def export_run_artifacts(run_root: Path) -> dict[str, object]:
         "schemaVersion": SCHEMA_VERSION,
         "exportedAt": datetime.now(timezone.utc).isoformat(),
         "changedFiles": changed_files,
-        "blockerNotes": blocker_notes,
+        "taskResults": task_results,
+        "blockerNotes": task_results,
         "supervisorFiles": supervisor_files,
         "manifestPresent": manifest_path.exists(),
     }

@@ -15,7 +15,7 @@ from archonlib.run_workspace import export_run_artifacts
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Export proofs, diffs, blockers, and supervisor notes from a run root.")
+    parser = argparse.ArgumentParser(description="Export proofs, diffs, task-result notes, and supervisor notes from a run root.")
     parser.add_argument("--run-root", required=True, help="Path to the isolated run root")
     return parser.parse_args()
 

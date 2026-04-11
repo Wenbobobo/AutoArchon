@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -61,6 +62,11 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=_env_float("ARCHON_SUPERVISOR_MONITOR_POLL_SECONDS", 5.0) or 5.0,
         help="Polling interval for supervisor runtime monitoring",
+    )
+    parser.add_argument(
+        "--changed-file-verify-template",
+        default=os.environ.get("ARCHON_SUPERVISOR_VERIFY_TEMPLATE"),
+        help="Optional shell template used to verify changed files after an idle timeout; use {file} as placeholder",
     )
     return parser.parse_args()
 
@@ -293,6 +299,84 @@ def _path_mtimes(paths: list[Path]) -> dict[Path, float]:
     return {path: path.stat().st_mtime for path in paths if path.exists()}
 
 
+def _verify_changed_file(workspace: Path, file_path: Path, template: str | None) -> tuple[bool, str]:
+    command = template or "timeout 30s lake env lean {file}"
+    rendered = command.format(file=shlex.quote(str(file_path)))
+    result = subprocess.run(
+        ["bash", "-lc", rendered],
+        cwd=str(workspace),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part).strip()
+    if result.returncode != 0:
+        return False, output or f"verify command failed with exit code {result.returncode}"
+    if "declaration uses `sorry`" in output:
+        return False, output
+    return True, output
+
+
+def _classify_task_result_note(path: Path) -> tuple[str, str]:
+    text = path.read_text(encoding="utf-8")
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("concrete blocker:", "validated blocker", "genuine blocker")):
+        return "blocker", "contains an explicit blocker marker"
+    if "**result:** resolved" in lowered:
+        return "resolved", "contains a RESOLVED result marker"
+    return "other", "missing an explicit RESOLVED or blocker marker"
+
+
+def _recover_after_idle(
+    workspace: Path,
+    *,
+    new_changed_files: list[str],
+    new_task_result_paths: list[Path],
+    verify_template: str | None,
+) -> dict[str, object] | None:
+    verified_files: list[str] = []
+    changed_file_failures: dict[str, str] = {}
+    for rel_path in new_changed_files:
+        ok, detail = _verify_changed_file(workspace, workspace / rel_path, verify_template)
+        if ok:
+            verified_files.append(rel_path)
+        else:
+            changed_file_failures[rel_path] = detail
+
+    verified_task_results: list[str] = []
+    task_result_kinds: dict[str, str] = {}
+    task_result_failures: dict[str, str] = {}
+    for path in new_task_result_paths:
+        kind, detail = _classify_task_result_note(path)
+        if kind in {"resolved", "blocker"}:
+            verified_task_results.append(path.name)
+            task_result_kinds[path.name] = kind
+        else:
+            task_result_failures[path.name] = detail
+
+    if new_changed_files and not changed_file_failures:
+        return {
+            "event": "verified_after_idle",
+            "kind": "changed_file",
+            "files": verified_files,
+        }
+    if new_task_result_paths and not task_result_failures:
+        return {
+            "event": "verified_after_idle",
+            "kind": "task_result",
+            "task_results": verified_task_results,
+            "task_result_kinds": task_result_kinds,
+        }
+    if changed_file_failures or task_result_failures:
+        payload: dict[str, object] = {"event": "verification_failed_after_idle"}
+        if changed_file_failures:
+            payload["files"] = changed_file_failures
+        if task_result_failures:
+            payload["task_results"] = task_result_failures
+        return payload
+    return None
+
+
 def main() -> int:
     args = parse_args()
     workspace = Path(args.workspace).resolve()
@@ -306,8 +390,8 @@ def main() -> int:
     allowed_files = read_allowed_files(workspace)
     baseline_changed_files = collect_changed_files(source, workspace, allowed_files=allowed_files or None)
     baseline_changed_mtimes = _path_mtimes([workspace / rel_path for rel_path in baseline_changed_files])
-    baseline_blocker_paths = sorted((workspace / ".archon" / "task_results").glob("*.md"))
-    baseline_blocker_mtimes = _path_mtimes(baseline_blocker_paths)
+    baseline_task_result_paths = sorted((workspace / ".archon" / "task_results").glob("*.md"))
+    baseline_task_result_mtimes = _path_mtimes(baseline_task_result_paths)
     process_lines = _run_process_check(args.skip_process_check)
     previous_iter_name, _ = latest_iteration_meta(workspace)
     loop_result, idle_event = _run_archon_loop(args, workspace, allowed_files)
@@ -315,18 +399,27 @@ def main() -> int:
     latest_iter_name, latest_meta = latest_iteration_meta(workspace)
     drifts = collect_header_drifts(source, workspace, allowed_files=allowed_files or None)
     changed_files = collect_changed_files(source, workspace, allowed_files=allowed_files or None)
-    blocker_paths = sorted((workspace / ".archon" / "task_results").glob("*.md"))
-    blocker_notes = sorted(path.name for path in blocker_paths)
+    task_result_paths = sorted((workspace / ".archon" / "task_results").glob("*.md"))
+    task_results = sorted(path.name for path in task_result_paths)
     new_changed_files = sorted(
         rel_path
         for rel_path in changed_files
         if (workspace / rel_path).stat().st_mtime > baseline_changed_mtimes.get(workspace / rel_path, float("-inf"))
     )
-    new_blocker_notes = sorted(
-        path.name
-        for path in blocker_paths
-        if path.stat().st_mtime > baseline_blocker_mtimes.get(path, float("-inf"))
+    new_task_result_paths = sorted(
+        path
+        for path in task_result_paths
+        if path.stat().st_mtime > baseline_task_result_mtimes.get(path, float("-inf"))
     )
+    new_task_results = [path.name for path in new_task_result_paths]
+    recovered_after_idle = None
+    if idle_event is not None:
+        recovered_after_idle = _recover_after_idle(
+            workspace,
+            new_changed_files=new_changed_files,
+            new_task_result_paths=new_task_result_paths,
+            verify_template=args.changed_file_verify_template,
+        )
     prover_failures = collect_meta_prover_errors(latest_meta)
     created_new_iteration = latest_iter_name is not None and latest_iter_name != previous_iter_name
 
@@ -350,6 +443,8 @@ def main() -> int:
         )
     if idle_event is not None:
         events.append(idle_event)
+    if recovered_after_idle is not None:
+        events.append(recovered_after_idle)
     if loop_result.returncode != 0 and not created_new_iteration:
         events.append(
             {
@@ -359,7 +454,7 @@ def main() -> int:
             }
         )
 
-    if not new_changed_files and not new_blocker_notes:
+    if not new_changed_files and not new_task_results:
         events.append({"event": "no_progress"})
 
     status = "clean"
@@ -367,11 +462,13 @@ def main() -> int:
         status = "policy_violation"
     elif prover_failures:
         status = "prover_failed"
+    elif recovered_after_idle is not None and recovered_after_idle.get("event") == "verified_after_idle":
+        status = "clean"
     elif idle_event is not None:
         status = "prover_idle"
     elif loop_result.returncode != 0:
         status = "loop_failed"
-    elif not new_changed_files and not new_blocker_notes:
+    elif not new_changed_files and not new_task_results:
         status = "no_progress"
 
     if events:
@@ -392,9 +489,9 @@ def main() -> int:
         f"- Allowed files: {', '.join(allowed_files) if allowed_files else '(all .lean files)'}",
         f"- Loop exit code: {loop_result.returncode}",
         f"- Changed files: {', '.join(changed_files) if changed_files else '(none)'}",
-        f"- Blocker notes: {', '.join(blocker_notes) if blocker_notes else '(none)'}",
+        f"- Task results: {', '.join(task_results) if task_results else '(none)'}",
         f"- New changed files: {', '.join(new_changed_files) if new_changed_files else '(none)'}",
-        f"- New blocker notes: {', '.join(new_blocker_notes) if new_blocker_notes else '(none)'}",
+        f"- New task results: {', '.join(new_task_results) if new_task_results else '(none)'}",
         f"- Policy violations: {len([event for event in events if event['event'] == 'header_mutation'])}",
     ]
     if latest_iter_name is not None:
@@ -412,6 +509,22 @@ def main() -> int:
         hot_notes.append(f"- Idle timeout triggered: {idle_event['idle_seconds']}s without prover activity")
         if idle_event.get("iteration"):
             hot_notes.append(f"- Idle iteration: {idle_event['iteration']}")
+    if recovered_after_idle is not None and recovered_after_idle.get("event") == "verified_after_idle":
+        if recovered_after_idle.get("kind") == "changed_file":
+            files = ", ".join(recovered_after_idle.get("files", [])) or "(none)"
+            hot_notes.append(f"- Recovered after prover idle: verified changed files {files}")
+        elif recovered_after_idle.get("kind") == "task_result":
+            results = ", ".join(recovered_after_idle.get("task_results", [])) or "(none)"
+            hot_notes.append(f"- Recovered after prover idle: durable task results already existed ({results})")
+    if recovered_after_idle is not None and recovered_after_idle.get("event") == "verification_failed_after_idle":
+        files = recovered_after_idle.get("files", {})
+        if isinstance(files, dict):
+            for rel_path, detail in files.items():
+                hot_notes.append(f"- Verification after idle failed for {rel_path}: {detail}")
+        task_results_failures = recovered_after_idle.get("task_results", {})
+        if isinstance(task_results_failures, dict):
+            for note_name, detail in task_results_failures.items():
+                hot_notes.append(f"- Verification after idle failed for task result {note_name}: {detail}")
     for drift in drifts:
         hot_notes.append(f"- Violation: {drift.rel_path}::{drift.declaration_name} -> {drift.mutation_class}")
     if process_lines:
@@ -438,13 +551,14 @@ def main() -> int:
         f"- Status: `{status}`",
         f"- Loop exit code: `{loop_result.returncode}`",
         f"- Changed files: `{', '.join(changed_files) if changed_files else '(none)'}`",
-        f"- Blocker notes: `{', '.join(blocker_notes) if blocker_notes else '(none)'}`",
+        f"- Task results: `{', '.join(task_results) if task_results else '(none)'}`",
         f"- New changed files: `{', '.join(new_changed_files) if new_changed_files else '(none)'}`",
-        f"- New blocker notes: `{', '.join(new_blocker_notes) if new_blocker_notes else '(none)'}`",
+        f"- New task results: `{', '.join(new_task_results) if new_task_results else '(none)'}`",
         f"- Policy events: `{len(events)}`",
         f"- Latest iteration: `{latest_iter_name or '(none)'}`",
         f"- Prover errors: `{', '.join(prover_failures) if prover_failures else '(none)'}`",
         f"- Idle timeout: `{idle_event['idle_seconds']}s`" if idle_event is not None else "- Idle timeout: `(none)`",
+        f"- Idle recovery: `{recovered_after_idle['event']}`" if recovered_after_idle is not None else "- Idle recovery: `(none)`",
         f"- New iteration created: `{created_new_iteration}`",
         "",
     ]
@@ -453,8 +567,8 @@ def main() -> int:
     print(f"status={status}")
     print(f"changed_files={len(changed_files)}")
     print(f"new_changed_files={len(new_changed_files)}")
-    print(f"blocker_notes={len(blocker_notes)}")
-    print(f"new_blocker_notes={len(new_blocker_notes)}")
+    print(f"task_results={len(task_results)}")
+    print(f"new_task_results={len(new_task_results)}")
     print(f"policy_events={len(events)}")
 
     if status == "policy_violation":

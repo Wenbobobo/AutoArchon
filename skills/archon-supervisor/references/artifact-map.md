@@ -9,7 +9,7 @@ Authoritative locations inside an isolated run:
 - `run-root/workspace/.archon/logs/`
   - live plan and prover logs
 - `run-root/workspace/.archon/task_results/`
-  - per-file blocker or progress notes
+  - per-file handoff notes for resolved proofs, blockers, or next steps
 - `run-root/workspace/.archon/supervisor/HOT_NOTES.md`
   - short restart summary
 - `run-root/workspace/.archon/supervisor/LEDGER.md`
@@ -20,7 +20,7 @@ Authoritative locations inside an isolated run:
   - exported changed Lean files
 - `run-root/artifacts/diffs/`
   - unified diffs against `source/`
-- `run-root/artifacts/blockers/`
-  - exported blocker notes
+- `run-root/artifacts/task-results/`
+  - exported task-result notes
 
 The dashboard is a browser over workspace artifacts. It is not a hidden source of truth.

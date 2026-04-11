@@ -161,7 +161,7 @@ def test_create_isolated_run_copies_source_and_workspace_without_archon(tmp_path
     assert payload["scopeHint"] == "FATEM/42.lean"
 
 
-def test_export_run_artifacts_writes_diff_proof_blocker_and_supervisor_snapshot(tmp_path: Path):
+def test_export_run_artifacts_writes_diff_proof_task_results_and_supervisor_snapshot(tmp_path: Path):
     run_root = tmp_path / "run-root"
     source = run_root / "source"
     workspace = run_root / "workspace"
@@ -179,10 +179,11 @@ def test_export_run_artifacts_writes_diff_proof_blocker_and_supervisor_snapshot(
     summary = export_run_artifacts(run_root)
 
     assert summary["changedFiles"] == ["FATEM/39.lean"]
+    assert summary["taskResults"] == ["FATEM_42.lean.md"]
     assert summary["blockerNotes"] == ["FATEM_42.lean.md"]
     assert (artifacts / "proofs" / "FATEM" / "39.lean").exists()
     assert (artifacts / "diffs" / "FATEM" / "39.lean.diff").exists()
-    assert (artifacts / "blockers" / "FATEM_42.lean.md").exists()
+    assert (artifacts / "task-results" / "FATEM_42.lean.md").exists()
     assert (artifacts / "supervisor" / "HOT_NOTES.md").exists()
     assert (artifacts / "artifact-index.json").exists()
     assert not (artifacts / "proofs" / ".lake" / "packages" / "mathlib" / "Mathlib" / "Ignored.lean").exists()
@@ -565,4 +566,253 @@ def test_supervised_cycle_does_not_count_preexisting_artifacts_as_new_progress(t
     hot_notes = (workspace / ".archon" / "supervisor" / "HOT_NOTES.md").read_text(encoding="utf-8")
     assert "no_progress" in hot_notes
     assert "New changed files: (none)" in hot_notes
-    assert "New blocker notes: (none)" in hot_notes
+    assert "New task results: (none)" in hot_notes
+
+
+def test_supervised_cycle_recovers_verified_changed_file_after_idle_timeout(tmp_path: Path):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    write(source / "FATEM" / "2.lean", "theorem foo : True\n    := by\n  sorry\n")
+    write(workspace / "FATEM" / "2.lean", "theorem foo : True\n    := by\n  sorry\n")
+    write(
+        workspace / ".archon" / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        ## Allowed Files
+
+        1. `FATEM/2.lean`
+        """,
+    )
+    verify_script = tmp_path / "verify_changed.py"
+    write(
+        verify_script,
+        """
+        from pathlib import Path
+        import sys
+
+        text = Path(sys.argv[1]).read_text(encoding="utf-8")
+        if "sorry" in text:
+            raise SystemExit(1)
+        print("verified clean")
+        """,
+    )
+    fake_loop = tmp_path / "fake-archon-loop.sh"
+    write(
+        fake_loop,
+        f"""
+        #!/usr/bin/env bash
+        mkdir -p "{workspace}/.archon/logs/iter-001/provers"
+        cat > "{workspace}/.archon/logs/iter-001/meta.json" <<'EOF'
+        {{
+          "iteration": 1,
+          "plan": {{"status": "done"}},
+          "prover": {{"status": "running"}},
+          "provers": {{
+            "FATEM_2": {{"file": "FATEM/2.lean", "status": "running"}}
+          }}
+        }}
+        EOF
+        cat > "{workspace}/.archon/logs/iter-001/provers/FATEM_2.jsonl" <<'EOF'
+        {{"ts":"2026-04-11T00:00:00Z","event":"text","content":"starting"}}
+        EOF
+        sleep 1
+        cat > "{workspace}/FATEM/2.lean" <<'EOF'
+        theorem foo : True
+            := by
+          trivial
+        EOF
+        sleep 30
+        """,
+    )
+    fake_loop.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(SUPERVISED_CYCLE),
+            "--workspace",
+            str(workspace),
+            "--source",
+            str(source),
+            "--archon-loop",
+            str(fake_loop),
+            "--skip-process-check",
+            "--prover-idle-seconds",
+            "1",
+            "--monitor-poll-seconds",
+            "0.1",
+            "--changed-file-verify-template",
+            f"python3 {verify_script} {{file}}",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0
+    hot_notes = (workspace / ".archon" / "supervisor" / "HOT_NOTES.md").read_text(encoding="utf-8")
+    assert "- Status: clean" in hot_notes
+    assert "Recovered after prover idle" in hot_notes
+
+    violations = (workspace / ".archon" / "supervisor" / "violations.jsonl").read_text(encoding="utf-8")
+    assert "prover_idle_timeout" in violations
+    assert "verified_after_idle" in violations
+
+
+def test_supervised_cycle_recovers_durable_task_result_after_idle_timeout(tmp_path: Path):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    write(source / "FATEM" / "2.lean", "theorem foo : True := by\n  sorry\n")
+    write(workspace / "FATEM" / "2.lean", "theorem foo : True := by\n  sorry\n")
+    write(
+        workspace / ".archon" / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        ## Allowed Files
+
+        1. `FATEM/2.lean`
+        """,
+    )
+    fake_loop = tmp_path / "fake-archon-loop.sh"
+    write(
+        fake_loop,
+        f"""
+        #!/usr/bin/env bash
+        mkdir -p "{workspace}/.archon/logs/iter-001/provers"
+        mkdir -p "{workspace}/.archon/task_results"
+        cat > "{workspace}/.archon/logs/iter-001/meta.json" <<'EOF'
+        {{
+          "iteration": 1,
+          "plan": {{"status": "done"}},
+          "prover": {{"status": "running"}},
+          "provers": {{
+            "FATEM_2": {{"file": "FATEM/2.lean", "status": "running"}}
+          }}
+        }}
+        EOF
+        cat > "{workspace}/.archon/logs/iter-001/provers/FATEM_2.jsonl" <<'EOF'
+        {{"ts":"2026-04-11T00:00:00Z","event":"text","content":"starting"}}
+        EOF
+        sleep 1
+        cat > "{workspace}/.archon/task_results/FATEM_2.lean.md" <<'EOF'
+        # FATEM/2.lean
+
+        ## foo
+        ### Attempt 1
+        - **Result:** FAILED
+        - **Concrete blocker:** This theorem is false as stated.
+        EOF
+        sleep 30
+        """,
+    )
+    fake_loop.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(SUPERVISED_CYCLE),
+            "--workspace",
+            str(workspace),
+            "--source",
+            str(source),
+            "--archon-loop",
+            str(fake_loop),
+            "--skip-process-check",
+            "--prover-idle-seconds",
+            "1",
+            "--monitor-poll-seconds",
+            "0.1",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0
+    hot_notes = (workspace / ".archon" / "supervisor" / "HOT_NOTES.md").read_text(encoding="utf-8")
+    assert "- Status: clean" in hot_notes
+    assert "durable task results already existed" in hot_notes
+
+
+def test_supervised_cycle_does_not_recover_nondurable_task_result_after_idle_timeout(tmp_path: Path):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    write(source / "FATEM" / "2.lean", "theorem foo : True := by\n  sorry\n")
+    write(workspace / "FATEM" / "2.lean", "theorem foo : True := by\n  sorry\n")
+    write(
+        workspace / ".archon" / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        ## Allowed Files
+
+        1. `FATEM/2.lean`
+        """,
+    )
+    fake_loop = tmp_path / "fake-archon-loop.sh"
+    write(
+        fake_loop,
+        f"""
+        #!/usr/bin/env bash
+        mkdir -p "{workspace}/.archon/logs/iter-001/provers"
+        mkdir -p "{workspace}/.archon/task_results"
+        cat > "{workspace}/.archon/logs/iter-001/meta.json" <<'EOF'
+        {{
+          "iteration": 1,
+          "plan": {{"status": "done"}},
+          "prover": {{"status": "running"}},
+          "provers": {{
+            "FATEM_2": {{"file": "FATEM/2.lean", "status": "running"}}
+          }}
+        }}
+        EOF
+        cat > "{workspace}/.archon/logs/iter-001/provers/FATEM_2.jsonl" <<'EOF'
+        {{"ts":"2026-04-11T00:00:00Z","event":"text","content":"starting"}}
+        EOF
+        sleep 1
+        cat > "{workspace}/.archon/task_results/FATEM_2.lean.md" <<'EOF'
+        # FATEM/2.lean
+
+        ## foo
+        ### Attempt 1
+        - **Result:** IN PROGRESS
+        - **Next step:** Try a different induction route.
+        EOF
+        sleep 30
+        """,
+    )
+    fake_loop.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(SUPERVISED_CYCLE),
+            "--workspace",
+            str(workspace),
+            "--source",
+            str(source),
+            "--archon-loop",
+            str(fake_loop),
+            "--skip-process-check",
+            "--prover-idle-seconds",
+            "1",
+            "--monitor-poll-seconds",
+            "0.1",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 5
+    hot_notes = (workspace / ".archon" / "supervisor" / "HOT_NOTES.md").read_text(encoding="utf-8")
+    assert "- Status: prover_idle" in hot_notes
+    assert "Verification after idle failed for task result FATEM_2.lean.md" in hot_notes
