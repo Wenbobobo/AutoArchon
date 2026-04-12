@@ -1,0 +1,30 @@
+{
+  "id": "informal-agent",
+  "status": "active",
+  "kind": "assistant",
+  "summary": "Provides proof sketches, mathematical paraphrases, and alternative informal routes when local project state is insufficient.",
+  "reads": [
+    ".archon/informal/",
+    ".archon/PROGRESS.md",
+    "benchmark or project source files"
+  ],
+  "writes": [
+    ".archon/informal/"
+  ],
+  "outputs": [
+    "proof sketch",
+    "alternative route",
+    "informal summary"
+  ],
+  "handoff_to": [
+    "plan-agent",
+    "prover-agent"
+  ],
+  "observability": [
+    "agent",
+    "target file",
+    "status",
+    "model",
+    "durationSecs"
+  ]
+}

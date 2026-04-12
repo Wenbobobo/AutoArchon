@@ -2,377 +2,227 @@
 set -euo pipefail
 
 # ============================================================
-#  Archon Init — Per-project setup
-#
-#  Usage:
-#    ./init.sh                          # init current directory
-#    ./init.sh /path/to/lean-project    # init an external project
-#    ./init.sh workspace/my-project     # init a project in workspace/
-#
-#  Creates .archon/ inside the target project with:
-#    - State files (PROGRESS.md, task tracking, etc.)
-#    - Symlinked prompts (auto-updated from Archon source)
-#  Sets up .claude/ in the target project with:
-#    - Symlinked Archon skills (lean4)
-#    - Project-scoped MCP server
-#    - User skill/rule directories for custom extensions
+#  Archon Init — Per-project Codex setup
 # ============================================================
 
 ARCHON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# -- Color helpers --
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 info()  { echo -e "${CYAN}[ARCHON]${NC}  $*"; }
 ok()    { echo -e "${GREEN}[ARCHON]${NC}  $*"; }
 warn()  { echo -e "${YELLOW}[ARCHON]${NC}  $*"; }
 err()   { echo -e "${RED}[ARCHON]${NC}  $*"; }
 
-# -- Determine project path --
-if [[ $# -ge 1 && "$1" != -* ]]; then
-    # Explicit path given — use it (create if it doesn't exist)
-    if [[ ! -d "$1" ]]; then
-        mkdir -p "$1"
-        info "Created directory: $1"
+OBJECTIVE_LIMIT=""
+OBJECTIVE_REGEX=""
+SKIP_MCP=false
+PROJECT_ARG=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --objective-limit) OBJECTIVE_LIMIT="$2"; shift 2 ;;
+        --objective-regex) OBJECTIVE_REGEX="$2"; shift 2 ;;
+        --skip-mcp) SKIP_MCP=true; shift ;;
+        -h|--help)
+            cat <<EOF
+Usage: ./init.sh [OPTIONS] [/path/to/lean-project]
+
+Options:
+  --objective-limit N     Limit initial objectives to the first N matching files
+  --objective-regex REGEX Filter initial objectives by relative path regex
+  --skip-mcp              Skip Codex MCP registration
+EOF
+            exit 0
+            ;;
+        -*) err "Unknown option: $1"; exit 1 ;;
+        *) PROJECT_ARG="$1"; shift ;;
+    esac
+done
+
+if [[ -n "$PROJECT_ARG" ]]; then
+    if [[ ! -d "$PROJECT_ARG" ]]; then
+        mkdir -p "$PROJECT_ARG"
+        info "Created directory: $PROJECT_ARG"
     fi
-    PROJECT_PATH="$(cd "$1" && pwd)"
-    info "Using specified project path: ${PROJECT_PATH}"
+    PROJECT_PATH="$(cd "$PROJECT_ARG" && pwd)"
 else
-    # No path given — prompt for a project name under workspace/
-    echo ""
-    info "${BOLD}No project path specified.${NC}"
-    info ""
-    info "Enter a name to create a new project under workspace/,"
-    info "or press Ctrl-C and re-run with a path:"
-    info "  ${CYAN}./init.sh /path/to/your-lean-project${NC}"
-    echo ""
-    read -rp "  Project name: " PROJECT_INPUT
-    if [[ -z "$PROJECT_INPUT" ]]; then
-        err "No project name entered."
-        exit 1
-    fi
-    PROJECT_PATH="${ARCHON_DIR}/workspace/${PROJECT_INPUT}"
-    mkdir -p "$PROJECT_PATH"
-    info "Created project at: ${PROJECT_PATH}"
+    PROJECT_PATH="$(pwd)"
+    info "No project path specified — using current directory: ${PROJECT_PATH}"
 fi
 
-# Don't use Archon dir itself as project
 if [[ "$PROJECT_PATH" == "$ARCHON_DIR" ]]; then
     err "Cannot use the Archon directory as a project."
-    err "Usage: ./init.sh /path/to/your-lean-project"
-    err "   or: ./init.sh workspace/your-project"
     exit 1
 fi
 
-# -- Derive project name and state dir --
 PROJECT_NAME="$(basename "$PROJECT_PATH")"
 STATE_DIR="${PROJECT_PATH}/.archon"
+LEAN_LINK="${STATE_DIR}/lean4"
+TOOLS_DIR="${STATE_DIR}/tools"
+MCP_DIR="${ARCHON_DIR}/.archon-src/tools/lean-lsp-mcp"
+LEAN_BUILD_CONCURRENCY="${ARCHON_LEAN_BUILD_CONCURRENCY:-share}"
+LEAN_REPL_TIMEOUT="${ARCHON_LEAN_REPL_TIMEOUT:-90}"
+LEAN_LOOGLE_LOCAL="${ARCHON_LEAN_LOOGLE_LOCAL:-0}"
 
 info "Archon directory: ${ARCHON_DIR}"
 info "Project: ${PROJECT_PATH}"
-info "Project state: ${STATE_DIR}"
-echo ""
+info "State directory: ${STATE_DIR}"
 
-# -- Pre-flight --
-if ! command -v claude &>/dev/null; then
-    err "Claude Code is not installed. Run setup.sh first."
+if ! command -v codex >/dev/null 2>&1; then
+    err "Codex CLI is not installed. Run setup.sh first."
     exit 1
 fi
 
-# ============================================================
-#  Step 1: Create .archon/ state directory with templates
-# ============================================================
-info "=== Step 1: Setting up .archon/ state directory ==="
+mkdir -p \
+    "${STATE_DIR}/task_results" \
+    "${STATE_DIR}/logs" \
+    "${STATE_DIR}/informal" \
+    "${STATE_DIR}/prompts" \
+    "${STATE_DIR}/proof-journal/sessions" \
+    "${STATE_DIR}/proof-journal/current_session" \
+    "${TOOLS_DIR}"
 
-mkdir -p "${STATE_DIR}/task_results" "${STATE_DIR}/logs" "${STATE_DIR}/prompts" \
-         "${STATE_DIR}/proof-journal/sessions" "${STATE_DIR}/proof-journal/current_session"
-
-for f in PROGRESS.md CLAUDE.md USER_HINTS.md task_pending.md task_done.md; do
+for f in PROGRESS.md AGENTS.md USER_HINTS.md task_pending.md task_done.md; do
     if [[ ! -f "${STATE_DIR}/${f}" ]]; then
         cp "${ARCHON_DIR}/.archon-src/archon-template/${f}" "${STATE_DIR}/${f}"
     fi
 done
-ok "State directory ready"
+ok "State templates copied"
 
-# -- Add .archon/ to the project's .gitignore if it's a git repo --
 if [[ -d "${PROJECT_PATH}/.git" ]]; then
     GITIGNORE="${PROJECT_PATH}/.gitignore"
-    if [[ ! -f "$GITIGNORE" ]] || ! grep -qxF '.archon/' "$GITIGNORE"; then
+    touch "$GITIGNORE"
+    if ! grep -qxF '.archon/' "$GITIGNORE"; then
         echo '.archon/' >> "$GITIGNORE"
-        ok "Added .archon/ to project .gitignore"
     fi
 fi
-
-# ============================================================
-#  Step 2: Symlink prompts into .archon/prompts/
-# ============================================================
-info "=== Step 2: Linking prompts ==="
 
 for f in "${ARCHON_DIR}"/.archon-src/prompts/*.md; do
-    local_name="${STATE_DIR}/prompts/$(basename "$f")"
-    # Create or update symlink (remove stale copies/links first)
-    rm -f "$local_name"
-    ln -s "$f" "$local_name"
+    target="${STATE_DIR}/prompts/$(basename "$f")"
+    rm -f "$target"
+    ln -s "$f" "$target"
 done
-ok "Prompts symlinked to .archon/prompts/ (auto-updated from Archon source)"
+ok "Prompts linked"
 
-# ============================================================
-#  Step 3: Install lean-lsp MCP server at project scope
-# ============================================================
-info "=== Step 3: Installing lean-lsp MCP server (project scope) ==="
+ln -sfn "${ARCHON_DIR}/agents" "${STATE_DIR}/agents"
+ln -sfn "${ARCHON_DIR}/.archon-src/tools/informal_agent.py" "${TOOLS_DIR}/archon-informal-agent.py"
+ln -sfn "${ARCHON_DIR}/.archon-src/skills/lean4" "${LEAN_LINK}"
+ok "Lean references, canonical agent contracts, and informal agent linked"
 
-LEAN_LSP_MCP_DIR="${ARCHON_DIR}/.archon-src/tools/lean-lsp-mcp"
+if [[ "$SKIP_MCP" != true ]]; then
+    info "Refreshing archon-lean-lsp MCP via Codex..."
+    codex mcp remove archon-lean-lsp >/dev/null 2>&1 || true
 
-# Detect and disable any existing global lean-lsp MCP to avoid conflicts
-cd "$PROJECT_PATH"
-if [[ -f "$HOME/.claude/settings.json" ]] && command -v python3 &>/dev/null; then
-    GLOBAL_MCP_FOUND=false
-    while IFS= read -r mcp_name; do
-        [[ -z "$mcp_name" ]] && continue
-        GLOBAL_MCP_FOUND=true
-        warn "Found existing MCP server '${mcp_name}' in your global config."
-        info "  Archon uses its own modified version (archon-lean-lsp) in this project."
-        info "  Disabling '${mcp_name}' here so only Archon's version is active."
-        claude mcp remove "$mcp_name" -s project 2>/dev/null || true
-        ok "Disabled '${mcp_name}' for this project"
-    done < <(python3 -c "
-import json
-try:
-    with open('$HOME/.claude/settings.json') as f:
-        data = json.load(f)
-    for key in data.get('mcpServers', {}):
-        k = key.lower()
-        if 'lean' in k and 'lsp' in k and 'archon' not in k:
-            print(key)
-except: pass
-" 2>/dev/null)
-
-    if [[ "$GLOBAL_MCP_FOUND" == true ]]; then
-        info ""
-        info "${BOLD}What happened:${NC} Your global MCP is untouched and still works in all other projects."
-        info "In this project only, Archon's modified version (archon-lean-lsp) will be used."
-        info "To restore the original here: ${CYAN}claude mcp add lean-lsp -s project -- <original command>${NC}"
-        echo ""
+    MCP_COMMAND=(uv run --directory "${MCP_DIR}" lean-lsp-mcp --repl --repl-timeout "${LEAN_REPL_TIMEOUT}")
+    if [[ "${LEAN_LOOGLE_LOCAL}" == "1" ]]; then
+        MCP_COMMAND+=(--loogle-local)
     fi
+
+    codex mcp add \
+        archon-lean-lsp \
+        --env "LEAN_BUILD_CONCURRENCY=${LEAN_BUILD_CONCURRENCY}" \
+        --env "LEAN_LOG_LEVEL=${ARCHON_LEAN_LOG_LEVEL:-WARNING}" \
+        -- \
+        "${MCP_COMMAND[@]}" >/dev/null
+    ok "archon-lean-lsp MCP configured (repl enabled, build concurrency=${LEAN_BUILD_CONCURRENCY})"
 fi
 
-# Install Archon's lean-lsp MCP under the name archon-lean-lsp
-MCP_OUTPUT=$(claude mcp add archon-lean-lsp -s project -- uv run --directory "${LEAN_LSP_MCP_DIR}" lean-lsp-mcp 2>&1) || true
-if echo "$MCP_OUTPUT" | grep -qi "success\|added.*mcp server"; then
-    ok "archon-lean-lsp MCP server added (project scope)"
-elif echo "$MCP_OUTPUT" | grep -qi "already exists"; then
-    ok "archon-lean-lsp MCP server already configured"
-else
-    warn "Failed to add archon-lean-lsp MCP server: $MCP_OUTPUT"
-fi
+PROGRESS_CONTENT="$(
+    PYTHONPATH="${ARCHON_DIR}" python3 - <<PY
+from pathlib import Path
+from archonlib.project_state import build_objectives, detect_stage, has_lean_project, stage_markdown
 
-# ============================================================
-#  Step 4: Install Archon skills via plugin marketplace + symlink
-# ============================================================
-info "=== Step 4: Installing Archon skills ==="
+project = Path(${PROJECT_PATH@Q})
+state_dir = Path(${STATE_DIR@Q})
+limit_raw = ${OBJECTIVE_LIMIT@Q}
+regex_raw = ${OBJECTIVE_REGEX@Q}
+limit = int(limit_raw) if limit_raw else None
+include_regex = regex_raw or None
 
-ARCHON_SKILLS_DIR="${ARCHON_DIR}/.archon-src/skills"
+if not has_lean_project(project):
+    print("NO_LEAN_PROJECT")
+    raise SystemExit(0)
 
-# Verify core lean4 skills are present
-if [ ! -f "${ARCHON_SKILLS_DIR}/lean4/.claude-plugin/plugin.json" ]; then
-    err "Archon lean4 skills not found at .archon-src/skills/lean4/"
-    err "The repo may be incomplete — try re-cloning."
+stage = detect_stage(project)
+autoformalize_skipped = stage != "autoformalize"
+objectives = build_objectives(project, stage=stage, limit=limit, include_regex=include_regex)
+
+lines = [
+    "# Project Progress",
+    "",
+    "## Current Stage",
+    stage,
+    "",
+    stage_markdown(stage, autoformalize_skipped=autoformalize_skipped),
+    "",
+    "## Current Objectives",
+    "",
+]
+if objectives:
+    for index, obj in enumerate(objectives, start=1):
+        lines.append(obj.to_markdown(index))
+else:
+    lines.append("1. **No target files selected** — adjust the objective filters or add Lean declarations.")
+print("\\n".join(lines) + "\\n")
+PY
+)"
+
+if [[ "$PROGRESS_CONTENT" == "NO_LEAN_PROJECT" ]]; then
+    err "No Lean project detected. This Codex migration currently expects an existing Lean project."
     exit 1
 fi
 
-# Create user skill/rule directories for custom extensions
-mkdir -p "${PROJECT_PATH}/.claude/skills" "${PROJECT_PATH}/.claude/rules"
+printf '%s' "$PROGRESS_CONTENT" > "${STATE_DIR}/PROGRESS.md"
+ok "PROGRESS.md initialized"
 
-# --- 4a: Register Archon as a local marketplace (idempotent) ---
-# Check if archon-local exists AND points to the correct path.
-# If the user has multiple Archon copies, the marketplace may point to an old one.
-MARKET_NEEDS_UPDATE=false
-if claude plugin marketplace list 2>/dev/null | grep -q "archon-local"; then
-    CURRENT_MARKET_PATH=$(python3 -c "
-import json
-try:
-    with open('$HOME/.claude/plugins/known_marketplaces.json') as f:
-        data = json.load(f)
-    print(data.get('archon-local', {}).get('source', {}).get('path', ''))
-except: pass
-" 2>/dev/null)
-    if [[ "$CURRENT_MARKET_PATH" != "${ARCHON_SKILLS_DIR}" ]]; then
-        warn "archon-local marketplace points to ${CURRENT_MARKET_PATH}"
-        info "Updating to current Archon: ${ARCHON_SKILLS_DIR}"
-        claude plugin marketplace remove archon-local 2>/dev/null || true
-        MARKET_NEEDS_UPDATE=true
-    else
-        ok "archon-local marketplace already registered"
-    fi
-else
-    MARKET_NEEDS_UPDATE=true
-fi
+TASK_PENDING_CONTENT="$(
+    PYTHONPATH="${ARCHON_DIR}" python3 - <<PY
+from pathlib import Path
+from archonlib.project_state import build_objectives, build_task_pending_markdown, detect_stage
 
-if [[ "$MARKET_NEEDS_UPDATE" == true ]]; then
-    MARKET_OUTPUT=$(claude plugin marketplace add "${ARCHON_SKILLS_DIR}" 2>&1) || true
-    if echo "$MARKET_OUTPUT" | grep -qi "success\|already"; then
-        ok "Registered archon-local marketplace"
-    else
-        err "Failed to register archon-local marketplace: $MARKET_OUTPUT"
-        err "Skills installation cannot proceed."
-        exit 1
-    fi
-fi
+project = Path(${PROJECT_PATH@Q})
+limit_raw = ${OBJECTIVE_LIMIT@Q}
+regex_raw = ${OBJECTIVE_REGEX@Q}
+limit = int(limit_raw) if limit_raw else None
+include_regex = regex_raw or None
+stage = detect_stage(project)
+objectives = build_objectives(project, stage=stage, limit=limit, include_regex=include_regex)
+print(build_task_pending_markdown(objectives), end="")
+PY
+)"
 
-# --- 4b: Install lean4 plugin at project scope ---
-cd "$PROJECT_PATH"
-PLUGIN_VERSION=$(python3 -c "
-import json
-with open('${ARCHON_SKILLS_DIR}/lean4/.claude-plugin/plugin.json') as f:
-    print(json.load(f)['version'])
-" 2>/dev/null || echo "4.4.0")
-CACHE_DIR="$HOME/.claude/plugins/cache/archon-local/lean4/${PLUGIN_VERSION}"
+printf '%s' "$TASK_PENDING_CONTENT" > "${STATE_DIR}/task_pending.md"
+ok "task_pending.md initialized"
 
-# Check if the plugin is installed for THIS project (not just any project).
-# claude plugin list shows plugins from all projects, so we check the JSON directly.
-PLUGIN_INSTALLED_HERE=false
-if command -v python3 &>/dev/null && [[ -f "$HOME/.claude/plugins/installed_plugins.json" ]]; then
-    PLUGIN_INSTALLED_HERE=$(python3 -c "
-import json
-try:
-    with open('$HOME/.claude/plugins/installed_plugins.json') as f:
-        data = json.load(f)
-    for entry in data.get('plugins', {}).get('lean4@archon-local', []):
-        if entry.get('projectPath') == '${PROJECT_PATH}':
-            print('true')
-            break
-    else:
-        print('false')
-except:
-    print('false')
-" 2>/dev/null || echo "false")
-fi
+TASK_DONE_CONTENT="$(
+    PYTHONPATH="${ARCHON_DIR}" python3 - <<PY
+from archonlib.project_state import build_task_done_markdown
 
-if [[ "$PLUGIN_INSTALLED_HERE" != "true" ]]; then
-    INSTALL_OUTPUT=$(claude plugin install lean4@archon-local --scope project 2>&1) || true
-    if echo "$INSTALL_OUTPUT" | grep -qi "success"; then
-        ok "lean4@archon-local plugin installed (project scope)"
-    else
-        err "Failed to install lean4@archon-local: $INSTALL_OUTPUT"
-        exit 1
-    fi
-else
-    ok "lean4@archon-local plugin already installed for this project"
-fi
+print(build_task_done_markdown(), end="")
+PY
+)"
 
-# --- 4c: Replace cache copy with symlink back to Archon source ---
-# This gives us live propagation: edits to .archon-src/skills/lean4/ are
-# immediately reflected without re-install. Users can break the symlink
-# for one project by replacing it with a copy (local override).
-if [ -L "$CACHE_DIR" ] && [ "$(readlink -f "$CACHE_DIR")" = "$(readlink -f "${ARCHON_SKILLS_DIR}/lean4")" ]; then
-    ok "Cache symlink already points to Archon source"
-elif [ -e "$CACHE_DIR" ]; then
-    rm -rf "$CACHE_DIR"
-    ln -sfn "${ARCHON_SKILLS_DIR}/lean4" "$CACHE_DIR"
-    ok "Cache replaced with symlink (live updates from Archon source)"
-else
-    warn "Cache directory not found at ${CACHE_DIR} — plugin may not work correctly"
-fi
+printf '%s' "$TASK_DONE_CONTENT" > "${STATE_DIR}/task_done.md"
+ok "task_done.md initialized"
 
-# Symlink informal agent tool
-mkdir -p "${PROJECT_PATH}/.claude/tools"
-ln -sfn "${ARCHON_DIR}/.archon-src/tools/informal_agent.py" \
-        "${PROJECT_PATH}/.claude/tools/archon-informal-agent.py"
-ok "Informal agent symlinked to .claude/tools/archon-informal-agent.py"
+RUN_SCOPE_CONTENT="$(
+    PYTHONPATH="${ARCHON_DIR}" python3 - <<PY
+from pathlib import Path
+from archonlib.project_state import build_run_scope_markdown, detect_stage
 
-# ============================================================
-#  Step 5: Detect and disable conflicting global lean4-skills
-# ============================================================
-info "=== Step 5: Checking for conflicting global lean4-skills ==="
+project = Path(${PROJECT_PATH@Q})
+limit_raw = ${OBJECTIVE_LIMIT@Q}
+regex_raw = ${OBJECTIVE_REGEX@Q}
+limit = int(limit_raw) if limit_raw else None
+include_regex = regex_raw or None
+stage = detect_stage(project)
+print(build_run_scope_markdown(project, stage=stage, limit=limit, include_regex=include_regex))
+PY
+)"
 
-# Archon's lean4 is installed as a project-scoped plugin. If the user also
-# has lean4-skills installed globally, Claude Code would see both. Detect
-# and disable the global one for this project.
+printf '%s\n' "$RUN_SCOPE_CONTENT" > "${STATE_DIR}/RUN_SCOPE.md"
+ok "RUN_SCOPE.md initialized"
 
-USER_SETTINGS="$HOME/.claude/settings.json"
-GLOBAL_LEAN4_FOUND=false
-GLOBAL_LEAN4_NAMES=()
-
-if [[ -f "$USER_SETTINGS" ]] && command -v python3 &>/dev/null; then
-    while IFS= read -r plugin_key; do
-        [[ -z "$plugin_key" ]] && continue
-        GLOBAL_LEAN4_FOUND=true
-        GLOBAL_LEAN4_NAMES+=("$plugin_key")
-    done < <(python3 -c "
-import json, sys
-try:
-    with open('$USER_SETTINGS') as f:
-        data = json.load(f)
-    for key in data.get('enabledPlugins', {}):
-        k = key.lower()
-        if ('lean4' in k or 'lean4-skills' in k) and 'archon' not in k:
-            print(key)
-except: pass
-" 2>/dev/null)
-fi
-
-if [[ "$GLOBAL_LEAN4_FOUND" == true ]]; then
-    warn "Found existing lean4-skills plugin(s) in your global config:"
-    for name in "${GLOBAL_LEAN4_NAMES[@]}"; do
-        warn "  - ${name}"
-    done
-    info ""
-    info "Archon uses its own modified version (archon-lean4) in this project."
-    info "Disabling the original(s) here so only Archon's version is active."
-    info ""
-
-    cd "$PROJECT_PATH"
-    for name in "${GLOBAL_LEAN4_NAMES[@]}"; do
-        claude plugin disable "$name" --scope project 2>/dev/null && \
-            ok "Disabled '${name}' for this project" || \
-            warn "Could not auto-disable '${name}'. You may need to disable it manually."
-    done
-
-    info ""
-    info "${BOLD}What happened:${NC} Your global lean4-skills is untouched and still works in all other projects."
-    info "In this project only, Archon's modified version (archon-lean4) will be used."
-    info "To restore the original here:"
-    for name in "${GLOBAL_LEAN4_NAMES[@]}"; do
-        info "  ${CYAN}cd ${PROJECT_PATH} && claude plugin enable ${name} --scope project${NC}"
-    done
-    echo ""
-else
-    ok "No conflicting global lean4-skills detected"
-fi
-
-# ============================================================
-#  Step 6: Check stage and launch interactive Claude
-# ============================================================
-STAGE=$(awk '/^## Current Stage/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; exit}' "${STATE_DIR}/PROGRESS.md")
-
-if [[ "$STAGE" != "init" ]]; then
-    ok "Init already complete. Current stage: ${STAGE}"
-    ok "Run: ./archon-loop.sh ${PROJECT_PATH}"
-    exit 0
-fi
-
-info "═══════════════════════════════════════════════"
-info "Initializing project: ${PROJECT_NAME}"
-info "═══════════════════════════════════════════════"
-info "Claude will check the project state and guide you through setup."
-echo ""
-
-cd "$PROJECT_PATH"
-claude --dangerously-skip-permissions --permission-mode bypassPermissions \
-    "You are in the init stage for project '${PROJECT_NAME}' at ${PROJECT_PATH}. Read ${STATE_DIR}/CLAUDE.md, then read ${STATE_DIR}/prompts/init.md and follow its instructions. Project state files are in ${STATE_DIR}/. Write PROGRESS.md and other state files there, not in the project directory.
-
-IMPORTANT: After checking the project state, do NOT write initial objectives on your own. Instead, propose what you think the objectives should be, then ask the user to confirm or adjust before writing them to PROGRESS.md. Wait for the user's reply.
-
-When the user has confirmed and you have finished the init steps, run /archon-lean4:doctor to verify the full setup before exiting." || true
-
-# -- Check if init completed --
-NEW_STAGE=$(awk '/^## Current Stage/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; exit}' "${STATE_DIR}/PROGRESS.md")
-
-echo ""
-if [[ "$NEW_STAGE" == "init" ]]; then
-    warn "Stage is still 'init'. Setup may not be complete."
-    warn "Re-run: ./init.sh ${PROJECT_PATH}"
-else
-    ok "Init complete. Stage is now: ${NEW_STAGE}"
-    ok ""
-    ok "Next step: ./archon-loop.sh ${PROJECT_PATH}"
-fi
+STAGE="$(awk '/^## Current Stage/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; exit}' "${STATE_DIR}/PROGRESS.md")"
+ok "Init complete. Current stage: ${STAGE}"
+ok "Next step: ./archon-loop.sh ${PROJECT_PATH}"

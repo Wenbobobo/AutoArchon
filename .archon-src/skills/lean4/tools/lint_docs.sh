@@ -1177,10 +1177,10 @@ check_release_metadata() {
     log ""
     log "Checking release metadata consistency..."
 
-    local plugin_json="$PLUGIN_ROOT/.claude-plugin/plugin.json"
+    local plugin_json="$PLUGIN_ROOT/.codex-plugin/plugin.json"
     local repo_root
     repo_root="$(cd "$PLUGIN_ROOT" && cd ../.. && pwd)"
-    local marketplace_json="$repo_root/.claude-plugin/marketplace.json"
+    local marketplace_json="$repo_root/.codex-plugin/marketplace.json"
     local changelog="$repo_root/CHANGELOG.md"
 
     if [[ ! -f "$plugin_json" ]]; then
@@ -1308,8 +1308,8 @@ check_description_alignment() {
 # Check 25: Host-agnostic language in core surfaces
 # SKILL.md and commands are loaded into any host's context, so they must not
 # reference "Claude" by name.  Allowed exceptions:
-#   - doctor.md (contains .claude/ paths and `claude mcp` product commands)
-#   - .claude-plugin/ path fragments (directory name, not prose)
+#   - doctor.md (contains legacy ~/.claude/ migration paths)
+#   - .codex-plugin/ path fragments (directory name, not prose)
 check_host_agnostic() {
     log ""
     log "Checking host-agnostic language..."

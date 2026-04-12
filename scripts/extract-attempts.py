@@ -4,7 +4,8 @@ extract-attempts.py — Extract structured attempt data from agent logs.
 
 Supports two log formats:
   - Archon's pre-parsed JSONL (event: "tool_call" / "tool_result")
-  - Raw Claude Code stream-json (type: "assistant" / "user" with nested tool_use)
+  - Legacy stream-json (type: "assistant" / "user" with nested tool_use)
+  - Raw Codex JSONL (type: "thread.started" / "item.*" / "turn.completed")
 
 Usage:
     python3 extract-attempts.py <agent_log.jsonl> [output.jsonl]
@@ -38,6 +39,12 @@ def detect_format(log_path: str) -> str:
             return 'archon'
         if 'type' in obj and obj['type'] in ('assistant', 'user', 'result'):
             return 'stream-json'
+        if 'type' in obj and (
+            obj['type'].startswith('thread.')
+            or obj['type'].startswith('item.')
+            or obj['type'].startswith('turn.')
+        ):
+            return 'codex-json'
     return 'archon'
 
 
@@ -64,6 +71,11 @@ def extract_tool_calls_archon(log_path: str):
             pending_call['result'] = truncate_str(obj.get('content', ''), 2000)
             events.append(pending_call)
             pending_call = None
+        elif obj.get('type'):
+            direct = dict(obj)
+            direct['__passthrough'] = True
+            direct.setdefault('log_line', line_num)
+            events.append(direct)
 
     if pending_call:
         events.append(pending_call)
@@ -72,7 +84,7 @@ def extract_tool_calls_archon(log_path: str):
 
 
 def extract_tool_calls_stream_json(log_path: str):
-    """Extract from raw Claude Code stream-json format."""
+    """Extract from legacy stream-json format."""
     pending_tools = {}
     events = []
 
@@ -115,6 +127,42 @@ def extract_tool_calls_stream_json(log_path: str):
     return events
 
 
+def extract_tool_calls_codex_json(log_path: str):
+    """Extract tool-like events from raw Codex JSONL output."""
+    pending_tools = {}
+    events = []
+
+    for line_num, obj in parse_jsonl(log_path):
+        msg_type = obj.get('type', '')
+        if msg_type == 'item.started':
+            item = obj.get('item', {})
+            if item.get('type') == 'command_execution':
+                pending_tools[item.get('id', '')] = {
+                    'ts': obj.get('timestamp', ''),
+                    'tool': 'Bash',
+                    'input': {'command': item.get('command', '')},
+                    'result': '',
+                    'log_line': line_num,
+                }
+        elif msg_type == 'item.completed':
+            item = obj.get('item', {})
+            if item.get('type') == 'command_execution':
+                tool_id = item.get('id', '')
+                tool_info = pending_tools.pop(tool_id, None)
+                if tool_info is None:
+                    continue
+                output = item.get('aggregated_output', '')
+                exit_code = item.get('exit_code')
+                if exit_code not in (None, 0):
+                    output = f"{output.rstrip()}\nexit_code={exit_code}".strip()
+                elif exit_code is not None and not output.strip():
+                    output = f"exit_code={exit_code}"
+                tool_info['result'] = truncate_str(output, 2000)
+                events.append(tool_info)
+
+    return events
+
+
 def truncate_str(s: str, max_len: int) -> str:
     if len(s) <= max_len:
         return s
@@ -123,6 +171,11 @@ def truncate_str(s: str, max_len: int) -> str:
 
 def classify_event(event: dict) -> dict:
     """Classify and enrich an event based on tool type."""
+    if event.get('__passthrough'):
+        out = dict(event)
+        out.pop('__passthrough', None)
+        return out
+
     tool = event['tool']
     inp = event['input']
     result = event.get('result', '')
@@ -270,6 +323,8 @@ def main():
     fmt = detect_format(log_path)
     if fmt == 'archon':
         raw_events = extract_tool_calls_archon(log_path)
+    elif fmt == 'codex-json':
+        raw_events = extract_tool_calls_codex_json(log_path)
     else:
         raw_events = extract_tool_calls_stream_json(log_path)
 

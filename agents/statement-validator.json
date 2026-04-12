@@ -1,0 +1,32 @@
+{
+  "id": "statement-validator",
+  "status": "active",
+  "kind": "validator",
+  "summary": "Checks theorem-header integrity, benchmark statement fidelity, and durable task-result evidence before a prover result is accepted.",
+  "reads": [
+    "benchmark source file",
+    "run worktree source file",
+    ".archon/task_results/<file>.md",
+    ".archon/logs/iter-*/provers/*.jsonl"
+  ],
+  "writes": [
+    ".archon/validation/<file>.json"
+  ],
+  "outputs": [
+    "header-drift verdict",
+    "benchmark-fidelity verdict",
+    "validation note"
+  ],
+  "handoff_to": [
+    "prover-agent",
+    "supervisor-agent",
+    "plan-agent"
+  ],
+  "observability": [
+    "agent",
+    "target file",
+    "mutation class",
+    "verification status",
+    "blocker type"
+  ]
+}

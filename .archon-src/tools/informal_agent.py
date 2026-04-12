@@ -18,7 +18,7 @@ OpenRouter (https://openrouter.ai) provides access to 200+ models through a sing
 API key. Set OPENROUTER_API_KEY and use any model ID from their catalog, e.g.:
     --provider openrouter --model google/gemini-3.1-pro-preview   (default)
     --provider openrouter --model deepseek/deepseek-r1
-    --provider openrouter --model anthropic/claude-sonnet-4
+    --provider openrouter --model openai/gpt-5
 """
 
 import argparse
@@ -27,6 +27,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 DEFAULTS = {
     "openai": "gpt-5.4",
@@ -46,6 +47,15 @@ TIMEOUT = 300
 
 def _require_key(name: str) -> str:
     val = os.environ.get(name, "")
+    if not val:
+        auth_path = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
+        try:
+            auth = json.loads(auth_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            auth = {}
+        auth_val = auth.get(name, "")
+        if isinstance(auth_val, str):
+            val = auth_val
     if not val:
         sys.exit(f"Error: {name} not set")
     return val

@@ -1,0 +1,45 @@
+{
+  "id": "prover-agent",
+  "status": "active",
+  "kind": "executor",
+  "summary": "Owns theorem search and Lean source edits within an assigned file and records theorem-level result reports.",
+  "reads": [
+    ".archon/PROGRESS.md",
+    ".archon/RUN_SCOPE.md",
+    ".archon/task_pending.md",
+    ".archon/task_done.md",
+    ".archon/informal/",
+    ".archon/prompts/prover-*.md",
+    ".archon/validation/",
+    ".archon/lessons/"
+  ],
+  "writes": [
+    "<assigned>.lean",
+    ".archon/task_results/<file>.md",
+    ".archon/logs/iter-*/provers/*.jsonl",
+    ".archon/logs/iter-*/snapshots/"
+  ],
+  "outputs": [
+    "edited Lean source",
+    "task result report",
+    "prover log stream",
+    "snapshot timeline"
+  ],
+  "handoff_to": [
+    "review-agent",
+    "plan-agent",
+    "statement-validator"
+  ],
+  "observability": [
+    "iteration",
+    "agent",
+    "target file",
+    "status",
+    "durationSecs",
+    "input_tokens",
+    "output_tokens",
+    "mutation class",
+    "verification status",
+    "blocker type"
+  ]
+}

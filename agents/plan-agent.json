@@ -1,0 +1,43 @@
+{
+  "id": "plan-agent",
+  "status": "active",
+  "kind": "planner",
+  "summary": "Scopes work, merges live prover results, and prepares shared informal guidance without editing Lean source files.",
+  "reads": [
+    ".archon/PROGRESS.md",
+    ".archon/RUN_SCOPE.md",
+    ".archon/USER_HINTS.md",
+    ".archon/task_pending.md",
+    ".archon/task_done.md",
+    ".archon/task_results/",
+    ".archon/informal/",
+    ".archon/proof-journal/",
+    ".archon/PROJECT_STATUS.md",
+    ".archon/validation/",
+    ".archon/lessons/"
+  ],
+  "writes": [
+    ".archon/PROGRESS.md",
+    ".archon/task_pending.md",
+    ".archon/task_done.md",
+    ".archon/informal/"
+  ],
+  "outputs": [
+    "next scoped objectives",
+    "merged task state",
+    "informal proof routes"
+  ],
+  "handoff_to": [
+    "prover-agent"
+  ],
+  "observability": [
+    "iteration",
+    "agent",
+    "target files",
+    "status",
+    "durationSecs",
+    "input_tokens",
+    "output_tokens",
+    "verification status"
+  ]
+}

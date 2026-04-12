@@ -1,0 +1,43 @@
+{
+  "id": "orchestrator-agent",
+  "status": "active",
+  "kind": "orchestrator",
+  "summary": "Owns campaign setup, run sharding, teacher deployment, cross-run monitoring, and final acceptance/reporting without editing Lean proofs directly.",
+  "reads": [
+    "CAMPAIGN_MANIFEST.json",
+    "campaign-status.json",
+    "events.jsonl",
+    "runs/*/RUN_MANIFEST.json",
+    "runs/*/workspace/.archon/supervisor/",
+    "runs/*/workspace/.archon/validation/",
+    "runs/*/workspace/.archon/task_results/",
+    "runs/*/artifacts/"
+  ],
+  "writes": [
+    "campaign-status.json",
+    "events.jsonl",
+    "reports/final/",
+    "runs/*/control/"
+  ],
+  "outputs": [
+    "campaign manifest",
+    "teacher launch assets",
+    "cross-run status summary",
+    "final accepted proof and blocker report"
+  ],
+  "handoff_to": [
+    "supervisor-agent",
+    "statement-validator",
+    "dashboard",
+    "human"
+  ],
+  "observability": [
+    "campaignId",
+    "runId",
+    "status",
+    "scope policy",
+    "heartbeatAgeSeconds",
+    "verification status",
+    "blocker type"
+  ]
+}

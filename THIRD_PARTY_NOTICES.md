@@ -7,8 +7,8 @@ This project is licensed under Apache License 2.0. Some bundled components are d
 - Upstream: https://github.com/cameronfreer/lean4-skills
 - License: MIT License
 - Copyright: Copyright (c) 2025 Lean 4 Theorem Proving Skill Contributors
-- Local path in this repository: `.claude/skills/lean4/`
-- Local license file: `.claude/skills/lean4/LICENSE`
+- Local path in this repository: `.archon-src/skills/lean4/`
+- Local license file: `.archon-src/skills/lean4/LICENSE`
 - Notes: This repository contains a modified fork.
 
 ## 2) lean-lsp-mcp (modified fork)
@@ -16,8 +16,8 @@ This project is licensed under Apache License 2.0. Some bundled components are d
 - Upstream: https://github.com/oOo0oOo/lean-lsp-mcp
 - License: MIT License
 - Copyright: Copyright (c) 2025 Oliver Dressler
-- Local path in this repository: `.claude/tools/lean-lsp-mcp/`
-- Local license file: `.claude/tools/lean-lsp-mcp/LICENSE`
+- Local path in this repository: `.archon-src/tools/lean-lsp-mcp/`
+- Local license file: `.archon-src/tools/lean-lsp-mcp/LICENSE`
 - Notes: This repository contains a modified fork.
 
 ## MIT License Requirement Reminder

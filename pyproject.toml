@@ -1,0 +1,38 @@
+[project]
+name = "archon-codex"
+version = "0.1.0"
+description = "Codex-compatible Archon runtime helpers"
+requires-python = ">=3.10"
+
+[project.scripts]
+autoarchon-campaign-compare = "scripts.campaign_compare:main"
+autoarchon-campaign-recover = "scripts.campaign_recover:main"
+autoarchon-campaign-status = "scripts.campaign_status:main"
+autoarchon-codex-exec = "archonlib.codex_logs:main"
+autoarchon-create-campaign = "scripts.create_campaign:main"
+autoarchon-create-run-workspace = "scripts.create_run_workspace:main"
+autoarchon-export-run-artifacts = "scripts.export_run_artifacts:main"
+autoarchon-extract-attempts = "scripts.extract_attempts:main"
+autoarchon-finalize-campaign = "scripts.finalize_campaign:main"
+autoarchon-orchestrator-watchdog = "scripts.orchestrator_watchdog:main"
+autoarchon-plan-shards = "scripts.plan_campaign_shards:main"
+autoarchon-prewarm-project = "scripts.prewarm_project:main"
+autoarchon-run-orchestrator = "scripts.run_orchestrator:main"
+autoarchon-supervised-cycle = "scripts.supervised_cycle:main"
+autoarchon-validate-review = "scripts.validate_review:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["archonlib", "scripts"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

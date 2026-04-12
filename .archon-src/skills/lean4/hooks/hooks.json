@@ -3,15 +3,15 @@
   "hooks": {
     "SessionStart": [{
       "matcher": "startup",
-      "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/bootstrap.sh", "timeout": 10}]
+      "hooks": [{"type": "command", "command": "${CODEX_PLUGIN_ROOT}/hooks/bootstrap.sh", "timeout": 10}]
     }],
     "PreToolUse": [{
       "matcher": "Bash",
-      "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/guardrails.sh", "timeout": 5}]
+      "hooks": [{"type": "command", "command": "${CODEX_PLUGIN_ROOT}/hooks/guardrails.sh", "timeout": 5}]
     }],
     "PostToolUse": [{
       "matcher": "Edit|Write",
-      "hooks": [{"type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/snapshot.py", "timeout": 10}]
+      "hooks": [{"type": "command", "command": "python3 ${CODEX_PLUGIN_ROOT}/hooks/snapshot.py", "timeout": 10}]
     }]
   }
 }

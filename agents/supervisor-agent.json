@@ -1,0 +1,36 @@
+{
+  "id": "supervisor-agent",
+  "status": "active",
+  "kind": "supervisor",
+  "summary": "Performs independent acceptance, summarizes repeated failure modes, and writes reusable lessons back into project-level state.",
+  "reads": [
+    ".archon/logs/",
+    ".archon/task_results/",
+    ".archon/proof-journal/",
+    ".archon/PROJECT_STATUS.md",
+    ".archon/informal/",
+    ".archon/validation/"
+  ],
+  "writes": [
+    ".archon/supervisor/",
+    ".archon/lessons/",
+    ".archon/proof-journal/sessions/"
+  ],
+  "outputs": [
+    "acceptance verdict",
+    "failure taxonomy",
+    "reusable proof patterns"
+  ],
+  "handoff_to": [
+    "plan-agent",
+    "dashboard"
+  ],
+  "observability": [
+    "agent",
+    "target file",
+    "status",
+    "durationSecs",
+    "verification status",
+    "blocker type"
+  ]
+}

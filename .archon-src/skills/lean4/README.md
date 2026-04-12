@@ -1,6 +1,6 @@
 # Lean 4 Plugin
 
-> **Claude Code adapter.** This directory implements the native Claude Code plugin
+> **Codex adapter.** This directory implements the native Codex plugin
 > (hooks, guardrails, slash commands). The underlying skill content — SKILL.md,
 > references, and scripts — is host-agnostic.
 > See the [root README](../../README.md) for setup on other hosts.
@@ -235,7 +235,7 @@ If `$LEAN4_SCRIPTS` is unset, run `/lean4:doctor` to reinitialize.
 
 ```
 plugins/lean4/
-├── .claude-plugin/plugin.json
+├── .codex-plugin/plugin.json
 ├── commands/           # User-invocable commands
 ├── skills/lean4/
 │   ├── SKILL.md        # Core skill reference

@@ -1,0 +1,35 @@
+{
+  "id": "manager-agent",
+  "status": "proposed",
+  "kind": "manager",
+  "summary": "Owns campaign selection, watchdog policy, restart budgets, human-facing summaries, and final accountability across one or more orchestrated campaigns.",
+  "reads": [
+    "campaign roots",
+    "control/orchestrator-watchdog.json",
+    "campaign-status.json",
+    "events.jsonl",
+    "reports/final/"
+  ],
+  "writes": [
+    "manager prompts",
+    "watchdog launch policy",
+    "human handoff summaries"
+  ],
+  "outputs": [
+    "campaign assignment",
+    "owner-session policy",
+    "ablation and reliability report"
+  ],
+  "handoff_to": [
+    "orchestrator-agent",
+    "human"
+  ],
+  "observability": [
+    "campaignId",
+    "sessionId",
+    "restartCount",
+    "stallSeconds",
+    "acceptedProofCount",
+    "acceptedBlockerCount"
+  ]
+}

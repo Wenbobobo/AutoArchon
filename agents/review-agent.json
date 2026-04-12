@@ -1,0 +1,38 @@
+{
+  "id": "review-agent",
+  "status": "active",
+  "kind": "reviewer",
+  "summary": "Reads attempt history and project logs to produce review milestones, recommendations, and project-level status without editing Lean source files.",
+  "reads": [
+    ".archon/logs/",
+    ".archon/task_results/",
+    ".archon/proof-journal/current_session/",
+    ".archon/PROJECT_STATUS.md",
+    ".archon/prompts/review.md",
+    ".archon/validation/",
+    ".archon/lessons/"
+  ],
+  "writes": [
+    ".archon/proof-journal/sessions/",
+    ".archon/PROJECT_STATUS.md"
+  ],
+  "outputs": [
+    "session milestones",
+    "review summary",
+    "recommendations",
+    "project status"
+  ],
+  "handoff_to": [
+    "plan-agent",
+    "dashboard",
+    "supervisor-agent"
+  ],
+  "observability": [
+    "iteration",
+    "agent",
+    "status",
+    "durationSecs",
+    "input_tokens",
+    "output_tokens"
+  ]
+}

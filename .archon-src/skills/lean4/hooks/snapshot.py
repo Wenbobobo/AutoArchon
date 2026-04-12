@@ -5,7 +5,7 @@ Archon Code Snapshot Hook
 PostToolUse hook for Edit|Write — captures file snapshots
 after each successful code edit by a prover agent.
 
-Receives JSON on stdin from Claude Code:
+Receives JSON on stdin from the host editor/runtime:
 {
   "session_id": "...",
   "tool_name": "Edit",
@@ -57,11 +57,11 @@ def main():
     if not file_path.endswith(".lean"):
         return
     # Reject known failure patterns rather than matching success strings —
-    # Claude Code may change wording, but errors consistently use <tool_use_error>.
+    # Host runtimes may change wording, but errors consistently use <tool_use_error>.
     if not tool_response or "tool_use_error" in tool_response:
         return
 
-    # Resolve relative paths against project root (Claude Code may emit relative paths)
+    # Resolve relative paths against project root (some runtimes emit relative paths)
     if not os.path.isabs(file_path) and project_path:
         file_path = os.path.join(project_path, file_path)
 
