@@ -1,150 +1,130 @@
 # Architecture
 
-This document is the system-level map for the Codex fork of Archon. It covers the active runtime, the `.archon/` state contract, and the extension points with the best current ROI.
+This document is the system-level map for AutoArchon. It describes the active control plane, the single-run proving loop, the artifact boundaries, and the observability fields that matter when you scale campaigns up.
 
 ## Global Workflow
 
 ```mermaid
 flowchart TD
-    U[User or Benchmark Driver] --> C[create_run_workspace.py]
-    C --> SRC[source]
-    C --> S[workspace]
-    C --> ART[artifacts]
-    U --> I[init.sh]
-    I --> S
-    I --> A[.archon State Layer]
+    U[User or benchmark driver] --> MAN[manager-agent / watchdog]
+    MAN --> ORCH[orchestrator-agent]
+    ORCH --> SHARDS[autoarchon-plan-shards]
+    ORCH --> CREATE[autoarchon-create-campaign]
+    ORCH --> STATUS[autoarchon-campaign-status]
+    ORCH --> REC[autoarchon-campaign-recover]
+    ORCH --> CMP[autoarchon-campaign-compare]
+    ORCH --> FIN[autoarchon-finalize-campaign]
+    CREATE --> CAMP[campaign root]
+    CAMP --> CM[CAMPAIGN_MANIFEST.json]
+    CAMP --> CS[campaign-status.json]
+    CAMP --> EV[events.jsonl]
+    CAMP --> RUNS[runs/<id>/]
+    RUNS --> SRC[source/]
+    RUNS --> WS[workspace/]
+    RUNS --> ART[artifacts/]
+    RUNS --> CTRL[control/launch-teacher.sh]
+    FIN --> FINAL[reports/final/]
 
-    subgraph State[".archon state"]
-        P[PROGRESS.md]
-        R[RUN_SCOPE.md]
-        TP[task_pending.md]
-        TD[task_done.md]
-        TR[task_results/]
-        INF[informal/]
+    CTRL --> TEACHER[teacher Codex session]
+    TEACHER --> SUP[supervisor-agent]
+    SUP --> CYCLE[autoarchon-supervised-cycle]
+    CYCLE --> STATE[workspace/.archon/]
+
+    subgraph State["workspace/.archon/"]
+        PROG[PROGRESS.md]
+        SCOPE[RUN_SCOPE.md]
+        TASKS[task_results/]
+        VAL[validation/]
+        LES[lessons/]
+        JOURNAL[proof-journal/]
         LOGS[logs/iter-*]
-        PJ[proof-journal/]
-        PS[PROJECT_STATUS.md]
+        SUPDIR[supervisor/]
     end
 
-    A --> P
-    A --> R
-    A --> TP
-    A --> TD
-    A --> TR
-    A --> INF
-    A --> LOGS
-    A --> PJ
-    A --> PS
+    STATE --> PROG
+    STATE --> SCOPE
+    STATE --> TASKS
+    STATE --> VAL
+    STATE --> LES
+    STATE --> JOURNAL
+    STATE --> LOGS
+    STATE --> SUPDIR
 
-    P --> PLAN[plan-agent]
-    R --> PLAN
-    TP --> PLAN
-    TD --> PLAN
-    TR --> PLAN
-    INF --> PLAN
-    PJ --> PLAN
-    PS --> PLAN
-
-    PLAN --> PP[prover-agent pool]
-    PLAN --> INF
-
-    subgraph Services["External services and helpers"]
-        LSP[archon-lean-lsp]
-        IA[informal-agent]
-    end
-
-    PP --> LSP
-    PLAN --> IA
-    PP --> S
-    PP --> TR
-    PP --> LOGS
-
-    TR --> REVIEW[review-agent]
-    LOGS --> REVIEW
-    REVIEW --> PJ
-    REVIEW --> PS
-
-    S --> UI[dashboard]
-    LOGS --> UI
-    PJ --> UI
-    PS --> UI
-
-    PLAN -. proposed .-> VAL[statement-validator]
-    PP -. proposed .-> SUP[supervisor-agent]
-    VAL -. gate theorem mutation .-> PP
-    SUP -. acceptance and lessons .-> PS
-    SUP -. reusable patterns .-> INF
-    S --> EXP[export_run_artifacts.py]
-    SRC --> EXP
-    EXP --> ART
+    PROG --> PLAN[plan-agent]
+    TASKS --> PLAN
+    PLAN --> PROVER[prover-agent]
+    PROVER --> REVIEW[review-agent]
+    PROVER --> STMT[statement-validator]
+    STMT --> VAL
+    REVIEW --> JOURNAL
+    SUP --> SUPDIR
+    SUP --> LES
+    PROVER --> LSP[archon-lean-lsp]
+    WS --> EXPORT[autoarchon-export-run-artifacts]
+    EXPORT --> ART
 ```
 
-## Active Runtime
+## Role Split
 
-The current production path is still intentionally narrow:
+- `manager-agent` is the proposed long-horizon owner above one or more campaigns. It chooses watchdog policy, restart budgets, and human-facing summaries.
+- `orchestrator-agent` owns campaign creation, teacher deployment, recovery decisions, compare reports, and final accepted exports. It does not directly edit benchmark `.lean` files.
+- `supervisor-agent` owns one run root at a time, guards theorem fidelity, runs monitored cycles, and leaves restart-safe notes in `workspace/.archon/supervisor/`.
+- `plan-agent` scopes the next step from `workspace/.archon/PROGRESS.md`, `workspace/.archon/RUN_SCOPE.md`, and durable `task_results/`.
+- `prover-agent` edits the scoped Lean file and emits theorem-level results.
+- `review-agent` summarizes iterations into `proof-journal/`.
+- `statement-validator` writes deterministic theorem-fidelity verdicts and acceptance metadata.
 
-- `plan-agent` reads scoped project state, merges fresh `task_results`, and writes the next objectives plus shared informal notes.
-- `prover-agent` owns Lean source edits within its assigned file and emits file-scoped result reports.
-- `review-agent` is read-only over source and produces cross-iteration summaries in `proof-journal/` and `PROJECT_STATUS.md`.
-- `informal-agent` is an auxiliary helper for proof sketches and external reasoning, not a scheduler.
+## Artifact Boundaries
 
-The vendored Lean4 materials under `.archon-src/skills/lean4/` are support assets and references. They are not the core Archon scheduler and should not be treated as the authoritative runtime contract.
+- `source/` is immutable comparison baseline.
+- `workspace/` is the only place where proof search edits happen.
+- `artifacts/` is the per-run export surface for mathematician review.
+- `reports/final/` is the campaign-level accepted surface. Only accepted proofs, accepted blocker notes, copied validation verdicts, lessons, and supervisor summaries belong there.
+
+This split is what makes benchmark-faithful evaluation possible. A live workspace can be useful while still being unaccepted.
 
 ## State Contract
 
-The runtime is coupled through files on purpose. The most important public contract is the `.archon/` directory:
+The proving loop is intentionally file-coupled. The most important runtime files are:
 
-- `.archon/PROGRESS.md` and `.archon/RUN_SCOPE.md` define the live stage and the hard file boundary.
-- `.archon/task_pending.md`, `.archon/task_done.md`, and `.archon/task_results/` are the task handoff surface between agents.
-- `.archon/informal/` is the shared memory layer for proof routes that should persist across iterations.
-- `.archon/logs/iter-*` is the observability layer for plan, prover, and snapshot replay.
-- `.archon/proof-journal/` and `.archon/PROJECT_STATUS.md` are the review layer.
-- `.archon/supervisor/` is the restart and policy layer for long-running supervised sessions.
-
-Final proofs are authored in the workspace `.lean` files. For external review, `export_run_artifacts.py` copies trustworthy changed files and diffs into `run-root/artifacts/`.
-
-## Isolated Run Layout
-
-For benchmark-faithful work, prefer a three-root run:
-
-- `source/`: immutable comparison baseline
-- `workspace/`: mutable Lean project edited by Archon
-- `artifacts/`: exported proofs, diffs, task-result notes, and supervisor notes
-
-The dashboard still points at `workspace/.archon/`. It does not replace the source/artifact boundary.
+- `workspace/.archon/PROGRESS.md`: current stage and current objectives.
+- `workspace/.archon/RUN_SCOPE.md`: hard file boundary for plan/prover work.
+- `workspace/.archon/task_results/`: durable per-file results, blocker notes, and handoff notes.
+- `workspace/.archon/validation/`: machine-readable theorem-fidelity and acceptance status.
+- `workspace/.archon/lessons/`: cycle summaries and recovery lessons.
+- `workspace/.archon/supervisor/run-lease.json`: authoritative teacher heartbeat and ownership.
+- `workspace/.archon/supervisor/HOT_NOTES.md`: short restart summary.
+- `workspace/.archon/supervisor/LEDGER.md`: longer chronology.
+- `workspace/.archon/logs/iter-*`: plan/prover/review logs and iteration metadata.
 
 ## Observability
 
-These fields should remain aligned across logs, docs, and future registry entries:
+The observability model is designed for long campaigns where runs can die, restart, or be handed off to a fresh owner session.
 
-- `iteration`
-- `agent`
-- `target file`
-- `status`
-- `durationSecs`
-- `input_tokens`
-- `output_tokens`
-- `mutation class`
-- `verification status`
-- `blocker type`
+Campaign-level signals:
 
-The dashboard reads these from `.archon/logs`, `.archon/proof-journal/`, and the run worktree. It does not infer hidden state.
+- `campaign-status.json`: run status, `recommendedRecovery`, heartbeat age, accepted proofs, accepted blockers, and pending targets.
+- `events.jsonl`: append-only chronology of control-plane actions.
+- `reports/final/compare-report.json` and `reports/final/final-summary.json`: compact benchmark-facing summaries.
+- `control/teacher-launch-state.json`: pre-lease in-flight marker for detached launches.
+- `control/orchestrator-watchdog.json`: owner session status, `sessionId`, `restartCount`, `stallSeconds`, and the last watchdog fingerprint.
 
-## Decoupling Assessment
+Run-level signals:
 
-A full plugin-style scheduler is not the best next move. The current highest-value work is:
+- `workspace/.archon/supervisor/run-lease.json`: live ownership, heartbeat, and loop pid.
+- `workspace/.archon/supervisor/violations.jsonl`: idle timeout, theorem mutation, copied-state contamination, and other policy events.
+- `workspace/.archon/logs/iter-*/meta.json`: stage status and timing such as `durationSecs`.
+- prover and review JSONL logs: token and step accounting, including fields such as `input_tokens` and `output_tokens` when the backend emits them.
 
-1. Keep the core runtime stable and benchmark-faithful.
-2. Make artifacts easier to inspect and compare.
-3. Document each agent and handoff as an explicit contract.
+These are the fields the outer owner should trust before it decides to relaunch, recover-only, quarantine, or finalize.
 
-That is why this fork now treats `docs/agents/*.json` as the lightweight registry layer. The registry is documentation and test surface first. Runtime integration should come only after an agent proves its ROI on real benchmark bottlenecks.
+## Extension Points
 
-## Best Next Extensions
+The high-ROI extension points are still around validation and control, not around adding many autonomous agents at once.
 
-The next two additions with the best cost/performance ratio are:
+- Better statement preflight before proof search.
+- Richer acceptance and audit agents downstream of `statement-validator`.
+- A stable manager/watchdog contract above the current orchestrator.
+- Tighter prover orchestration over `archon-lean-lsp` and deterministic recovery commands.
 
-- `statement-validator`: runs before or beside the prover to detect forbidden theorem-header mutation, benchmark statement drift, or obvious false-statement signals.
-- `supervisor-agent`: performs independent acceptance, summarizes failures, and writes reusable lessons back into `PROJECT_STATUS.md` or `.archon/informal/`.
-
-Both are intentionally documented now, but not yet made mandatory runtime stages.
+The current bias is intentional: stabilize the outer loop, keep the file contracts explicit, and only then add more permanent agents.

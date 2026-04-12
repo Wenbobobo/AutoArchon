@@ -1,11 +1,19 @@
 ---
 name: archon-supervisor
-description: Supervise long-running Archon proof runs from a clean Codex context. Use when Codex should manage repeated plan/prover cycles, watch logs and diffs, reject theorem mutation, record lessons, and keep going until the scope is solved, a blocker is validated, or an external stop condition is hit.
+description: Supervise a long-running external AutoArchon run from a clean Codex context. Use only when the user explicitly asks for the AutoArchon supervisor or teacher role across repeated plan/prover cycles, with log watching, theorem-fidelity checks, and restart-state management. Do not use for inner Archon plan/prover/review sessions launched by `archon-loop.sh`.
 ---
 
 # Archon Supervisor
 
-Use this skill when Codex is acting as the teacher or supervisor for an Archon run, especially for benchmark slices, soak tests, or any run where process integrity matters as much as solved count.
+Use this skill when Codex is acting as the teacher or supervisor for an AutoArchon run, especially for benchmark slices, soak tests, or any run where process integrity matters as much as solved count.
+
+## Hard Exclusion
+
+Do not use this skill for inner Archon plan/prover/review sessions.
+
+If the prompt already assigns you to the Archon `plan agent`, `prover agent`, or `review agent`, or tells you to read `.archon/prompts/plan.md`, `.archon/prompts/prover-*.md`, or `.archon/prompts/review.md`, stop here and follow the local Archon role instructions instead of this supervisor workflow.
+
+This skill is only for the outer supervisor/teacher session that manages repeated cycles from outside the runtime.
 
 ## Load Order
 
@@ -27,11 +35,13 @@ Use this skill when Codex is acting as the teacher or supervisor for an Archon r
 
 1. Identify the immutable `source/`, mutable `workspace/`, and exported `artifacts/` roots.
 2. Read `workspace/.archon/RUN_SCOPE.md`, `workspace/.archon/PROGRESS.md`, the latest supervisor notes, and the latest live `task_results/`.
-3. Inspect current diffs against `source/` before trusting any apparent success.
-4. Run `python3 scripts/supervised_cycle.py --workspace <workspace> --source <source> --no-review` unless you have a concrete reason to change flags.
-5. After each cycle, inspect `HOT_NOTES.md`, `violations.jsonl`, `task_results/`, and relevant prover logs.
-6. If the cycle is trustworthy and worth preserving, run `python3 scripts/export_run_artifacts.py --run-root <run-root>`.
-7. Continue until a stop condition is reached.
+3. Read `workspace/.archon/supervisor/run-lease.json` if it exists; trust this run-local lease over host-wide process-name guesses.
+4. Inspect current diffs against `source/` before trusting any apparent success.
+5. Run `uv run --directory <repo-root> autoarchon-supervised-cycle --workspace <workspace> --source <source> --no-review` unless you have a concrete reason to change flags.
+6. If a previous teacher disappeared after writing useful workspace state, prefer `uv run --directory <repo-root> autoarchon-supervised-cycle --workspace <workspace> --source <source> --recovery-only --skip-process-check` before rerunning proof search.
+7. After each cycle, inspect `HOT_NOTES.md`, `violations.jsonl`, `task_results/`, and relevant prover logs.
+8. If the cycle is trustworthy and worth preserving, run `uv run --directory <repo-root> autoarchon-export-run-artifacts --run-root <run-root>`.
+9. Continue until a stop condition is reached.
 
 ## Guardrails
 
@@ -49,7 +59,7 @@ Intervene immediately if you detect any of the following:
 - added assumptions
 - weakened or changed conclusion
 - copied `.archon/` history
-- stale `archon-loop.sh`, `codex exec`, or `lake serve` processes
+- an active run-local lease that belongs to another supervisor or an orphaned loop recorded in `run-lease.json`
 - repeated no-progress cycles
 - blocker files that were not written even though the theorem is false or underspecified
 

@@ -24,17 +24,18 @@ def test_readme_includes_repo_layout_skill_install_and_supervisor_entrypoint():
     assert "bash scripts/install_repo_skill.sh" in readme
     assert "$archon-supervisor" in readme
     assert "docs/operations.md" in readme
+    assert "autoarchon-supervised-cycle" in readme
 
 
 def test_operations_doc_contains_full_supervisor_soak_test_and_monitoring_commands():
     operations = read("docs/operations.md")
 
-    assert "create_run_workspace.py" in operations
+    assert "autoarchon-create-run-workspace" in operations
     assert "codex exec" in operations
     assert "$archon-supervisor" in operations
     assert "tail -f" in operations
     assert "violations.jsonl" in operations
-    assert "export_run_artifacts.py" in operations
+    assert "autoarchon-export-run-artifacts" in operations
 
 
 def test_supervisor_skill_has_startup_brief_and_failure_taxonomy():
@@ -50,6 +51,16 @@ def test_supervisor_skill_has_startup_brief_and_failure_taxonomy():
     assert "Read this before touching the run" in startup
     assert "theorem mutation" in taxonomy
     assert "workspace/.archon/supervisor/HOT_NOTES.md" in artifact_map
+
+
+def test_supervisor_skill_excludes_inner_plan_prover_review_sessions():
+    skill = read("skills/archon-supervisor/SKILL.md")
+    openai_yaml = read("skills/archon-supervisor/agents/openai.yaml")
+
+    assert "Do not use this skill for inner Archon plan/prover/review sessions" in skill
+    assert "If the prompt already assigns you to the Archon `plan agent`" in skill
+    assert "explicitly asks for the AutoArchon supervisor or teacher role" in skill
+    assert "external AutoArchon run" in openai_yaml
 
 
 def test_supervisor_skill_openai_yaml_exists():

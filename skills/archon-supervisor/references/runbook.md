@@ -13,7 +13,7 @@ Use this file when you need the full operating sequence.
 3. Run one cycle:
 
 ```bash
-python3 scripts/supervised_cycle.py \
+uv run --directory /path/to/AutoArchon autoarchon-supervised-cycle \
   --workspace /path/to/run-root/workspace \
   --source /path/to/run-root/source \
   --no-review
@@ -27,7 +27,7 @@ python3 scripts/supervised_cycle.py \
 5. If the state is trustworthy, export:
 
 ```bash
-python3 scripts/export_run_artifacts.py --run-root /path/to/run-root
+uv run --directory /path/to/AutoArchon autoarchon-export-run-artifacts --run-root /path/to/run-root
 ```
 
 ## Escalation Rules

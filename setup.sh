@@ -2,273 +2,341 @@
 set -euo pipefail
 
 # ============================================================
-#  Archon Setup Script
-#  Installs system prerequisites: Python, uv, Lean, Claude Code
+#  AutoArchon Setup Script
+#  Installs system prerequisites: Python, uv, Lean, Codex CLI
 # ============================================================
 
-# -- Color helpers --
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 info()  { echo -e "${CYAN}[INFO]${NC}  $*"; }
 ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 err()   { echo -e "${RED}[ERROR]${NC} $*"; }
 
-# -- Determine script directory & project folder --
 ARCHON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LEAN_TOOLCHAIN="${ARCHON_LEAN_TOOLCHAIN:-leanprover/lean4:v4.28.0}"
+LEAN_INSTALL_METHOD="${ARCHON_LEAN_INSTALL_METHOD:-auto}"
+LEAN_INSTALL_ROOT="${ARCHON_LEAN_INSTALL_ROOT:-$HOME/.local/opt}"
+LEAN_ARCHIVE_URL="${ARCHON_LEAN_ARCHIVE_URL:-}"
+LEAN_ARCHIVE_CACHE_DIRS="${ARCHON_LEAN_ARCHIVE_CACHE_DIRS:-$HOME/.cache/archon/lean}"
+LEAN_ARCHIVE_LOCK_FILE="${ARCHON_LEAN_ARCHIVE_LOCK_FILE:-$HOME/.cache/archon/lean/install.lock}"
+LOCAL_BIN_DIR="${HOME}/.local/bin"
 
-info "Archon directory: ${ARCHON_DIR}"
-
-# ============================================================
-# Phase 1: System prerequisites check
-# ============================================================
-info "=== Phase 1: Checking system prerequisites ==="
-
-# -- git --
-if command -v git &>/dev/null; then
-    ok "git: $(git --version)"
-else
-    err "git is not installed. Please install git first."
-    exit 1
-fi
-
-# -- Python 3 --
-PYTHON=""
-for candidate in python3 python; do
-    if command -v "$candidate" &>/dev/null; then
-        ver=$("$candidate" --version 2>&1 | sed -n 's/.*Python \([0-9]*\.[0-9]*\).*/\1/p')
-        major=$(echo "$ver" | cut -d. -f1)
-        minor=$(echo "$ver" | cut -d. -f2)
-        if [ "$major" -ge 3 ] && [ "$minor" -ge 10 ]; then
-            PYTHON="$candidate"
-            break
-        fi
-    fi
-done
-
-if [ -z "$PYTHON" ]; then
-    err "Python 3.10+ is required but not found."
-    err "Install with:"
-    err "  Linux: sudo apt install python3 python3-pip python3-venv"
-    err "  macOS: brew install python@3.12"
-    exit 1
-fi
-ok "Python: $($PYTHON --version)"
-
-# -- pip --
-PIP_CMD=""
-if $PYTHON -m pip --version &>/dev/null; then
-    PIP_CMD="$PYTHON -m pip"
-elif command -v pip3 &>/dev/null; then
-    PIP_CMD="pip3"
-elif command -v pip &>/dev/null; then
-    PIP_CMD="pip"
-else
-    warn "pip not found, installing..."
-    $PYTHON -m ensurepip --upgrade 2>/dev/null || {
-        err "Cannot install pip via ensurepip. Try:"
-        err "  Linux: sudo apt install python3-pip"
-        err "  macOS: python3 -m ensurepip --upgrade"
-        exit 1
-    }
-    PIP_CMD="$PYTHON -m pip"
-fi
-ok "pip: $($PIP_CMD --version 2>&1 | head -1)"
-
-# -- curl --
-if ! command -v curl &>/dev/null; then
-    warn "curl not found, attempting to install..."
-    if command -v apt-get &>/dev/null; then
-        sudo apt-get update -qq && sudo apt-get install -y -qq curl
-    elif command -v brew &>/dev/null; then
-        brew install curl
+detect_shell_rc() {
+    if [[ "${SHELL:-}" == *"zsh"* ]]; then
+        echo "$HOME/.zshrc"
     else
-        err "curl is required. Please install it manually."
+        echo "$HOME/.bashrc"
+    fi
+}
+
+ensure_path_line() {
+    local line="$1"
+    local rc_file
+    rc_file="$(detect_shell_rc)"
+    touch "$rc_file"
+    if ! grep -qF "$line" "$rc_file"; then
+        printf '\n# Added by AutoArchon setup\n%s\n' "$line" >> "$rc_file"
+        ok "Updated PATH in ${rc_file}"
+    fi
+}
+
+ensure_command() {
+    local name="$1"
+    local install_hint="$2"
+    if command -v "$name" >/dev/null 2>&1; then
+        ok "${name}: $(command -v "$name")"
+    else
+        err "${name} is required. ${install_hint}"
         exit 1
     fi
-fi
-ok "curl: available"
+}
 
-# -- elan / lean / lake --
-LEAN_MISSING=false
-if command -v elan &>/dev/null; then
-    ok "elan: $(elan --version 2>&1 | head -1)"
-else
-    warn "elan not found"
-    LEAN_MISSING=true
-fi
+install_lean_toolchain() {
+    local attempts=0
+    while (( attempts < 3 )); do
+        attempts=$((attempts + 1))
+        if elan toolchain install "${LEAN_TOOLCHAIN}"; then
+            return 0
+        fi
+        warn "elan toolchain install failed (attempt ${attempts}/3). Retrying..."
+        sleep 2
+    done
+    return 1
+}
 
-info "Checking lean and lake — if not installed, elan will download the default toolchain automatically."
-if command -v lean &>/dev/null; then
-    ok "lean: $(lean --version 2>&1 | head -1)"
-else
-    warn "lean not found in PATH"
-    LEAN_MISSING=true
-fi
+lean_archive_platform() {
+    local os arch
+    os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    arch="$(uname -m)"
+    case "${os}:${arch}" in
+        linux:x86_64) echo "linux" ;;
+        linux:aarch64|linux:arm64) echo "linux_aarch64" ;;
+        darwin:x86_64) echo "darwin" ;;
+        darwin:arm64) echo "darwin_aarch64" ;;
+        *)
+            return 1
+            ;;
+    esac
+}
 
-if command -v lake &>/dev/null; then
-    ok "lake: $(lake --version 2>&1 | head -1)"
-else
-    warn "lake not found in PATH"
-    LEAN_MISSING=true
-fi
+lean_archive_version() {
+    local version="${LEAN_TOOLCHAIN##*:}"
+    echo "${version#v}"
+}
 
-if [ "$LEAN_MISSING" = true ]; then
-    echo ""
-    warn "Lean toolchain components are missing or not in PATH."
-    warn "Archon requires elan, lean, and lake to work."
-    warn ""
-    warn "If not installed, choose one of:"
-    warn "  curl https://elan.lean-lang.org/elan-init.sh -sSf | sh"
-    warn "  brew install elan-init    (macOS)"
-    warn ""
-    warn "If already installed but not in PATH, add to your shell profile:"
-    warn "  export PATH=\"\$HOME/.elan/bin:\$PATH\""
-    warn ""
-    warn "After installing or fixing PATH, re-run this script."
-    exit 1
-fi
+lean_version_satisfied() {
+    local expected_version actual_version
+    expected_version="$(lean_archive_version)"
+    if ! command -v lean >/dev/null 2>&1 || ! command -v lake >/dev/null 2>&1; then
+        return 1
+    fi
+    actual_version="$(lean --version 2>/dev/null | head -1)"
+    [[ "${actual_version}" == *"version ${expected_version}"* ]]
+}
 
-# ============================================================
-# Phase 2: Install Python tooling (uv) & packages
-# ============================================================
-info "=== Phase 2: Python tooling & packages ==="
+lean_archive_url() {
+    local version platform
+    version="$(lean_archive_version)"
+    platform="$(lean_archive_platform)" || return 1
+    echo "https://releases.lean-lang.org/lean4/v${version}/lean-${version}-${platform}.tar.zst"
+}
 
-# -- uv (Python package manager) --
-if command -v uv &>/dev/null; then
+download_with_resume() {
+    local url="$1"
+    local output="$2"
+    mkdir -p "$(dirname "$output")"
+    if command -v aria2c >/dev/null 2>&1; then
+        info "Downloading Lean archive with aria2c (16 connections)..."
+        aria2c \
+            --continue=true \
+            --max-connection-per-server=16 \
+            --split=16 \
+            --min-split-size=1M \
+            --file-allocation=none \
+            --summary-interval=0 \
+            --dir "$(dirname "$output")" \
+            --out "$(basename "$output")" \
+            "$url"
+    else
+        info "Downloading Lean archive with curl resume support..."
+        curl -L --continue-at - --output "$output" "$url"
+    fi
+}
+
+validate_lean_archive() {
+    local archive_path="$1"
+    [[ -f "$archive_path" ]] || return 1
+    zstd -t "$archive_path" >/dev/null 2>&1
+}
+
+cleanup_lean_archive() {
+    local archive_path="$1"
+    rm -f "${archive_path}" "${archive_path}.aria2"
+}
+
+find_valid_cached_archive() {
+    local archive_name="$1"
+    local dir candidate
+    local old_ifs="$IFS"
+    IFS=':'
+    for dir in ${LEAN_ARCHIVE_CACHE_DIRS}; do
+        [[ -n "$dir" ]] || continue
+        candidate="${dir}/${archive_name}"
+        if validate_lean_archive "$candidate"; then
+            echo "$candidate"
+            IFS="$old_ifs"
+            return 0
+        fi
+    done
+    IFS="$old_ifs"
+    return 1
+}
+
+ensure_valid_lean_archive() {
+    local archive_path="$1"
+    local archive_name="$2"
+    local archive_url="$3"
+    local cached_archive=""
+    if validate_lean_archive "$archive_path"; then
+        ok "Reusing existing Lean archive: ${archive_path}"
+        return 0
+    fi
+    if [[ -f "$archive_path" ]]; then
+        warn "Existing Lean archive is incomplete or corrupted: ${archive_path}"
+        cleanup_lean_archive "$archive_path"
+    fi
+    cached_archive="$(find_valid_cached_archive "$archive_name" || true)"
+    if [[ -n "$cached_archive" ]]; then
+        info "Copying validated Lean archive from cache: ${cached_archive}"
+        cp -f "$cached_archive" "$archive_path"
+        return 0
+    fi
+    download_with_resume "${archive_url}" "${archive_path}"
+    if ! validate_lean_archive "$archive_path"; then
+        err "Downloaded Lean archive is incomplete or corrupted: ${archive_path}"
+        cleanup_lean_archive "$archive_path"
+        return 1
+    fi
+}
+
+install_lean_archive() {
+    local version platform archive_url archive_name archive_path extracted_root install_dir tmp_root
+    version="$(lean_archive_version)"
+    platform="$(lean_archive_platform)" || {
+        warn "No direct Lean archive mapping for $(uname -s)/$(uname -m); archive fallback unavailable."
+        return 1
+    }
+    archive_url="${LEAN_ARCHIVE_URL:-$(lean_archive_url)}"
+    archive_name="lean-${version}-${platform}.tar.zst"
+    archive_path="${LEAN_INSTALL_ROOT}/${archive_name}"
+    install_dir="${LEAN_INSTALL_ROOT}/lean-${version}-${platform}"
+
+    info "Installing Lean ${version} from archive: ${archive_url}"
+    ensure_command tar "Install tar to extract Lean archives."
+    ensure_command zstd "Install zstd to extract Lean archives."
+    mkdir -p "${LEAN_INSTALL_ROOT}" "${LOCAL_BIN_DIR}" "$(dirname "${LEAN_ARCHIVE_LOCK_FILE}")"
+    if command -v flock >/dev/null 2>&1; then
+        exec 9>"${LEAN_ARCHIVE_LOCK_FILE}"
+        info "Waiting for Lean archive lock: ${LEAN_ARCHIVE_LOCK_FILE}"
+        flock 9
+    else
+        warn "flock not found. Archive install will proceed without an inter-process lock."
+    fi
+    ensure_valid_lean_archive "${archive_path}" "${archive_name}" "${archive_url}"
+
+    tmp_root="$(mktemp -d "${LEAN_INSTALL_ROOT}/extract.XXXXXX")"
+    tar --zstd -xf "${archive_path}" -C "${tmp_root}"
+    extracted_root="$(find "${tmp_root}" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    if [[ -z "${extracted_root}" ]]; then
+        err "Lean archive extraction produced no root directory."
+        rm -rf "${tmp_root}"
+        return 1
+    fi
+    rm -rf "${install_dir}"
+    mv "${extracted_root}" "${install_dir}"
+    rm -rf "${tmp_root}"
+
+    ln -sfn "${install_dir}/bin/lean" "${LOCAL_BIN_DIR}/lean"
+    ln -sfn "${install_dir}/bin/lake" "${LOCAL_BIN_DIR}/lake"
+    ln -sfn "${install_dir}/bin/leanc" "${LOCAL_BIN_DIR}/leanc"
+    ln -sfn "${install_dir}/bin/leanchecker" "${LOCAL_BIN_DIR}/leanchecker"
+    ensure_path_line "export PATH=\"${install_dir}/bin:\$HOME/.local/bin:\$HOME/.elan/bin:\$PATH\""
+    export PATH="${install_dir}/bin:${LOCAL_BIN_DIR}:$HOME/.elan/bin:$PATH"
+    ok "Installed Lean archive to ${install_dir}"
+    return 0
+}
+
+info "AutoArchon directory: ${ARCHON_DIR}"
+info "Lean toolchain target: ${LEAN_TOOLCHAIN}"
+
+info "=== Phase 1: Core prerequisites ==="
+ensure_command git "Install git first."
+ensure_command python3 "Install Python 3.10+ first."
+ensure_command curl "Install curl first."
+
+if command -v uv >/dev/null 2>&1; then
     ok "uv: $(uv --version)"
-    info "Upgrading uv..."
-    uv self update 2>/dev/null || true
 else
     info "Installing uv..."
-    # Try standalone installer first, fall back to pip
-    if curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then
-        export PATH="$HOME/.local/bin:$PATH"
-    else
-        warn "Standalone installer failed, trying pip..."
-        $PIP_CMD install --user uv 2>/dev/null || $PIP_CMD install uv
-        export PATH="$HOME/.local/bin:$PATH"
-    fi
-    if command -v uv &>/dev/null; then
-        ok "uv installed: $(uv --version)"
-    else
-        err "uv installation failed. Try manually: pip install uv"
-        exit 1
-    fi
-
-    # Add ~/.local/bin to PATH in shell config if not already there
-    UV_PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
-    SHELL_RC=""
-    if [[ "$SHELL" == *"zsh"* ]]; then
-        SHELL_RC="$HOME/.zshrc"
-    elif [[ "$SHELL" == *"bash"* ]]; then
-        SHELL_RC="$HOME/.bashrc"
-    fi
-
-    if [[ -n "$SHELL_RC" ]] && [[ -f "$SHELL_RC" ]]; then
-        if ! grep -qF '$HOME/.local/bin' "$SHELL_RC"; then
-            echo "" >> "$SHELL_RC"
-            echo "# Added by Archon setup" >> "$SHELL_RC"
-            echo "$UV_PATH_LINE" >> "$SHELL_RC"
-            ok "Added ~/.local/bin to PATH in $SHELL_RC"
-            info "Run: source $SHELL_RC"
-        fi
-    fi
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+    ensure_path_line 'export PATH="$HOME/.local/bin:$PATH"'
+    ensure_command uv "uv installation failed."
 fi
 
-# -- tmux (required for parallel agent teams) --
-if command -v tmux &>/dev/null; then
+if command -v tmux >/dev/null 2>&1; then
     ok "tmux: $(tmux -V)"
 else
-    info "Installing tmux (required for parallel agent teams)..."
-    if command -v apt-get &>/dev/null; then
-        sudo apt-get update -qq && sudo apt-get install -y -qq tmux
-    elif command -v brew &>/dev/null; then
-        brew install tmux
-    fi
-    if command -v tmux &>/dev/null; then
-        ok "tmux installed: $(tmux -V)"
-    else
-        warn "Could not install tmux. Install manually. Parallel mode requires it."
-    fi
+    warn "tmux not found. Parallel prover mode benefits from tmux, but setup will continue."
 fi
 
-# -- ripgrep (optional but recommended for search) --
-if command -v rg &>/dev/null; then
+if command -v rg >/dev/null 2>&1; then
     ok "ripgrep: $(rg --version | head -1)"
 else
-    warn "ripgrep not found (optional, enhances search)"
-    warn "Install with: sudo apt install ripgrep"
+    warn "ripgrep not found. Install it for faster search."
 fi
 
-# ============================================================
-# Phase 3: Node.js / Claude Code
-# ============================================================
-info "=== Phase 3: Claude Code ==="
+info "=== Phase 2: Lean toolchain ==="
+if ! command -v elan >/dev/null 2>&1; then
+    info "Installing elan..."
+    curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y
+fi
+export PATH="$HOME/.elan/bin:$PATH"
+ensure_path_line 'export PATH="$HOME/.elan/bin:$PATH"'
+ensure_command elan "elan installation failed."
 
-# -- Check if Claude Code is already installed --
-CLAUDE_INSTALLED=false
-CLAUDE_VERSION=""
-
-if command -v claude &>/dev/null; then
-    CLAUDE_INSTALLED=true
-    CLAUDE_VERSION=$(claude --version 2>/dev/null || echo "unknown")
-    ok "Claude Code: ${CLAUDE_VERSION} (to update: claude update)"
+info "Installing Lean toolchain ${LEAN_TOOLCHAIN}..."
+LEAN_READY=false
+if lean_version_satisfied; then
+    ok "Lean ${LEAN_TOOLCHAIN} already available on PATH"
+    LEAN_READY=true
 else
-    info "Installing Claude Code..."
-    curl -fsSL https://claude.ai/install.sh | bash
-    # Refresh PATH
-    export PATH="$HOME/.local/bin:$PATH"
-    if command -v claude &>/dev/null; then
-        ok "Claude Code installed: $(claude --version 2>/dev/null)"
-    else
-        err "Claude Code installation failed. Try manually: curl -fsSL https://claude.ai/install.sh | bash"
-        exit 1
-    fi
+    case "${LEAN_INSTALL_METHOD}" in
+        elan)
+            install_lean_toolchain
+            elan default "${LEAN_TOOLCHAIN}"
+            LEAN_READY=true
+            ;;
+        archive)
+            install_lean_archive
+            LEAN_READY=true
+            ;;
+        auto)
+            if install_lean_toolchain; then
+                elan default "${LEAN_TOOLCHAIN}"
+                LEAN_READY=true
+            else
+                warn "elan installation path failed; falling back to direct Lean archive install."
+                install_lean_archive
+                LEAN_READY=true
+            fi
+            ;;
+        *)
+            err "Unknown ARCHON_LEAN_INSTALL_METHOD='${LEAN_INSTALL_METHOD}'. Use auto, elan, or archive."
+            exit 1
+            ;;
+    esac
 fi
 
-# ============================================================
-# Phase 4: Check API keys for informal agent (optional)
-# ============================================================
-info "=== Phase 4: Informal agent API keys (optional) ==="
+if [[ "${LEAN_READY}" != true ]]; then
+    err "Lean installation did not complete."
+    exit 1
+fi
 
-info "The informal agent lets Claude Code request proof sketches from external models."
-info "This does not affect the rest of the Archon workflow — everything else works without it."
-info ""
+ensure_command lean "Lean installation failed."
+ensure_command lake "Lake installation failed."
+ok "lean: $(lean --version | head -1)"
+ok "lake: $(lake --version | head -1)"
 
-[[ -n "${OPENAI_API_KEY:-}" ]]      && ok "OPENAI_API_KEY is set (OpenAI)" \
-                                     || info "  OPENAI_API_KEY not set.      To use OpenAI:      export OPENAI_API_KEY=sk-..."
-[[ -n "${GEMINI_API_KEY:-}" ]]      && ok "GEMINI_API_KEY is set (Gemini)" \
-                                     || info "  GEMINI_API_KEY not set.      To use Gemini:      export GEMINI_API_KEY=AI..."
-[[ -n "${OPENROUTER_API_KEY:-}" ]]  && ok "OPENROUTER_API_KEY is set (OpenRouter)" \
-                                     || info "  OPENROUTER_API_KEY not set.  To use OpenRouter:  export OPENROUTER_API_KEY=sk-or-..."
+info "=== Phase 3: Codex CLI ==="
+if command -v codex >/dev/null 2>&1; then
+    ok "codex: $(codex --version)"
+else
+    ensure_command npm "Install Node.js and npm before installing Codex CLI."
+    info "Installing Codex CLI..."
+    npm install -g @openai/codex
+    ensure_command codex "Codex CLI installation failed."
+fi
 
-info ""
-info "Set any key(s) for the provider(s) you want, then add to ~/.bashrc or ~/.zshrc to persist."
+info "=== Phase 4: Optional API keys ==="
+[[ -n "${OPENAI_API_KEY:-}" ]] && ok "OPENAI_API_KEY is set" || info "  OPENAI_API_KEY not set"
+[[ -n "${GEMINI_API_KEY:-}" ]] && ok "GEMINI_API_KEY is set" || info "  GEMINI_API_KEY not set"
+[[ -n "${OPENROUTER_API_KEY:-}" ]] && ok "OPENROUTER_API_KEY is set" || info "  OPENROUTER_API_KEY not set"
+[[ -n "${DEEPSEEK_API_KEY:-}" ]] && ok "DEEPSEEK_API_KEY is set" || info "  DEEPSEEK_API_KEY not set"
 
-# ============================================================
-# Done
-# ============================================================
+info "=== Phase 5: AutoArchon Python environment ==="
+uv sync --all-groups
+ok "uv environment synchronized"
+
 echo ""
 echo -e "${GREEN}============================================================${NC}"
-echo -e "${GREEN}  Setup complete!${NC}"
+echo -e "${GREEN}  Setup complete${NC}"
 echo -e "${GREEN}============================================================${NC}"
 echo ""
-
-# Remind user to reload shell if PATH was modified
-SHELL_RC=""
-if [[ "$SHELL" == *"zsh"* ]]; then
-    SHELL_RC="$HOME/.zshrc"
-elif [[ "$SHELL" == *"bash"* ]]; then
-    SHELL_RC="$HOME/.bashrc"
-fi
-
-if [[ -n "$SHELL_RC" ]] && [[ -f "$SHELL_RC" ]]; then
-    warn "To use uv and other tools in new terminals, run:"
-    warn "  source $SHELL_RC"
-fi
-echo ""
+warn "Reload your shell if PATH was updated:"
+warn "  source $(detect_shell_rc)"

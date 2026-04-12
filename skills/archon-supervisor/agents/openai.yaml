@@ -1,4 +1,4 @@
 interface:
-  display_name: "Archon Supervisor"
-  short_description: "Supervise long-running Archon proof runs with fidelity checks"
-  default_prompt: "Use $archon-supervisor to supervise an isolated Archon run until the scope is solved, a blocker is validated, or a hard stop condition is reached."
+  display_name: "AutoArchon Supervisor"
+  short_description: "Supervise an external AutoArchon run with fidelity and restart checks"
+  default_prompt: "Use $archon-supervisor to supervise an external AutoArchon run until the scope is solved, a blocker is validated, or a hard stop condition is reached."

@@ -7,14 +7,14 @@ bash scripts/install_repo_skill.sh
 ```
 
 ```bash
-python3 scripts/create_run_workspace.py \
+uv run --directory /path/to/AutoArchon autoarchon-create-run-workspace \
   --source-root /path/to/source \
   --run-root /path/to/run-root \
   --reuse-lake-from /path/to/warmed-project
 ```
 
 ```bash
-python3 scripts/prewarm_project.py /path/to/run-root/workspace
+uv run --directory /path/to/AutoArchon autoarchon-prewarm-project /path/to/run-root/workspace
 ```
 
 If the workspace already copied a warmed `.lake/`, this command now skips `lake exe cache get` automatically and just refreshes the build.
@@ -24,7 +24,7 @@ If the workspace already copied a warmed `.lake/`, this command now skips `lake 
 ```
 
 ```bash
-python3 scripts/supervised_cycle.py \
+uv run --directory /path/to/AutoArchon autoarchon-supervised-cycle \
   --workspace /path/to/run-root/workspace \
   --source /path/to/run-root/source \
   --plan-timeout-seconds 180 \
@@ -34,10 +34,10 @@ python3 scripts/supervised_cycle.py \
 ```
 
 ```bash
-python3 scripts/export_run_artifacts.py --run-root /path/to/run-root
+uv run --directory /path/to/AutoArchon autoarchon-export-run-artifacts --run-root /path/to/run-root
 ```
 
-`export_run_artifacts.py` only exports changed Lean files from the run's `source/` tree; warmed `.lake/` packages are ignored, and `task_results/` notes are exported under `artifacts/task-results/`.
+`autoarchon-export-run-artifacts` only exports changed Lean files from the run's `source/` tree; warmed `.lake/` packages are ignored, and `task_results/` notes are exported under `artifacts/task-results/`.
 
 ```bash
 tail -f /path/to/run-root/workspace/.archon/supervisor/HOT_NOTES.md

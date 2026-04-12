@@ -7,7 +7,7 @@ This document records how to run benchmark slices cleanly and how to interpret t
 Use this workflow for any benchmark result you plan to cite:
 
 1. Start from a pristine benchmark source tree such as `benchmarks/FATE-M-upstream`.
-2. Create a new isolated run root with `python3 scripts/create_run_workspace.py`.
+2. Create a new isolated run root with `uv run --directory /path/to/AutoArchon autoarchon-create-run-workspace`.
 3. Use `run-root/source/` as the immutable baseline and `run-root/workspace/` as the mutable project.
 4. You may reuse a warmed `.lake/` cache or copied package directory.
 5. do not reuse another run's `.archon/` state.
