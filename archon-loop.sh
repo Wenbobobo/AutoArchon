@@ -22,13 +22,22 @@ ARCHON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # -- Defaults --
 MAX_ITERATIONS=10
-MAX_PARALLEL=8
+MAX_PARALLEL=4
 FORCE_STAGE=""
 DRY_RUN=false
 PARALLEL=true
 VERBOSE_LOGS=false
 ENABLE_REVIEW=true
 LOG_BASE=""
+CODEX_MODEL="${ARCHON_CODEX_MODEL:-gpt-5.4}"
+CODEX_EXTRA_ARGS="${ARCHON_CODEX_EXEC_ARGS:--c model_reasoning_effort=xhigh}"
+CODEX_ENABLE_SEARCH="${ARCHON_CODEX_ENABLE_SEARCH:-0}"
+DEFAULT_CODEX_TIMEOUT_SECONDS="${ARCHON_CODEX_TIMEOUT_SECONDS:-}"
+PLAN_TIMEOUT_SECONDS="${ARCHON_PLAN_TIMEOUT_SECONDS:-${DEFAULT_CODEX_TIMEOUT_SECONDS}}"
+PROVER_TIMEOUT_SECONDS="${ARCHON_PROVER_TIMEOUT_SECONDS:-${DEFAULT_CODEX_TIMEOUT_SECONDS}}"
+REVIEW_TIMEOUT_SECONDS="${ARCHON_REVIEW_TIMEOUT_SECONDS:-${DEFAULT_CODEX_TIMEOUT_SECONDS}}"
+CODEX_READY_RETRIES="${ARCHON_CODEX_READY_RETRIES:-3}"
+CODEX_READY_RETRY_DELAY_SECONDS="${ARCHON_CODEX_READY_RETRY_DELAY_SECONDS:-5}"
 
 # -- Color helpers with JSONL logging --
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -70,9 +79,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --max-parallel N     Max concurrent provers in parallel mode (default: 4)"
             echo "  --stage STAGE        Override stage (autoformalize|prover|polish)"
             echo "  --serial             Use a single prover (default: parallel, one per sorry-file)"
-            echo "  --verbose-logs       Also save raw Claude stream events to .raw.jsonl"
+            echo "  --verbose-logs       Also save raw Codex JSON events to .raw.jsonl"
             echo "  --no-review          Skip review phase after prover"
-            echo "  --dry-run            Print prompts without launching Claude"
+            echo "  --dry-run            Print prompts without launching Codex"
             echo "  -h, --help           Show this help"
             echo ""
             echo "User interaction (while the loop runs):"
@@ -107,9 +116,15 @@ if [[ "$PROJECT_PATH" == "$ARCHON_DIR" ]]; then
     exit 1
 fi
 
+if [[ "$DRY_RUN" == true && "$MAX_ITERATIONS" != "1" ]]; then
+    warn "Dry run is single-shot; overriding max iterations to 1."
+    MAX_ITERATIONS=1
+fi
+
 PROJECT_NAME="$(basename "$PROJECT_PATH")"
 STATE_DIR="${PROJECT_PATH}/.archon"
 PROGRESS_FILE="${STATE_DIR}/PROGRESS.md"
+RUN_SCOPE_FILE="${STATE_DIR}/RUN_SCOPE.md"
 LOG_DIR="${STATE_DIR}/logs"
 
 # ============================================================
@@ -150,7 +165,9 @@ build_prompt() {
 You are the plan agent for project '${PROJECT_NAME}'. Current stage: ${stage}.
 Project directory: ${PROJECT_PATH}
 Project state directory: ${STATE_DIR}
-Read ${STATE_DIR}/CLAUDE.md for your role, then read ${STATE_DIR}/prompts/plan.md and ${STATE_DIR}/PROGRESS.md.
+Read ${STATE_DIR}/AGENTS.md and ${STATE_DIR}/agents/plan-agent.json for your role, then read ${STATE_DIR}/prompts/plan.md, ${STATE_DIR}/PROGRESS.md, and ${STATE_DIR}/RUN_SCOPE.md.
+Treat ${STATE_DIR}/RUN_SCOPE.md as a hard constraint: do not schedule files outside its allowed scope.
+Lean workflow references are vendored under ${STATE_DIR}/lean4/. Consult ${STATE_DIR}/lean4/skills/lean4/SKILL.md only if local project state and the stage prompt are insufficient; do not spend time reading the full Lean reference corpus up front.
 All state files (PROGRESS.md, task_pending.md, task_done.md, USER_HINTS.md, task_results/) are in ${STATE_DIR}/.
 The .lean files are in ${PROJECT_PATH}/.
 EOF
@@ -159,7 +176,9 @@ EOF
 You are the prover agent for project '${PROJECT_NAME}'. Current stage: ${stage}.
 Project directory: ${PROJECT_PATH}
 Project state directory: ${STATE_DIR}
-Read ${STATE_DIR}/CLAUDE.md for your role, then read ${STATE_DIR}/prompts/prover-${stage}.md and ${STATE_DIR}/PROGRESS.md.
+Read ${STATE_DIR}/AGENTS.md and ${STATE_DIR}/agents/prover-agent.json for your role, then read ${STATE_DIR}/prompts/prover-${stage}.md, ${STATE_DIR}/PROGRESS.md, and ${STATE_DIR}/RUN_SCOPE.md.
+Treat ${STATE_DIR}/RUN_SCOPE.md as a hard constraint: only edit files inside its allowed scope.
+Lean workflow references are vendored under ${STATE_DIR}/lean4/. Consult ${STATE_DIR}/lean4/skills/lean4/SKILL.md only when the stage prompt, local file, and task state do not already give a concrete next step.
 All state files are in ${STATE_DIR}/. The .lean files are in ${PROJECT_PATH}/.
 EOF
     fi
@@ -171,6 +190,16 @@ relpath() {
 }
 
 parse_objective_files() {
+    local allowed_rel
+    allowed_rel="$(awk '
+        /^## Allowed Files/ { found=1; next }
+        found && /^## /      { exit }
+        found                { print }
+    ' "$RUN_SCOPE_FILE" 2>/dev/null \
+        | grep -oE '`[^`]+\.lean`' \
+        | tr -d '`' \
+        | sort -u)"
+
     awk '
         /^## Current Objectives/ { found=1; next }
         found && /^## /          { exit }
@@ -180,141 +209,111 @@ parse_objective_files() {
         | sed 's/\*\*//g; s/`//g' \
         | while IFS= read -r f; do
             local found
-            found=$(find "${PROJECT_PATH}" -path "*/$f" -not -path '*/.lake/*' -not -path '*/lake-packages/*' 2>/dev/null | head -1)
+            if [[ -n "$allowed_rel" ]] && ! grep -qxF "$f" <<< "$allowed_rel"; then
+                continue
+            fi
+            found=$(find "${PROJECT_PATH}" -path "*/$f" -not -path '*/.archon/*' -not -path '*/.lake/*' -not -path '*/lake-packages/*' 2>/dev/null | head -1)
             [[ -n "$found" ]] && echo "$found"
         done \
         | sort -u
 }
 
+has_live_task_results() {
+    local results_dir="${STATE_DIR}/task_results"
+    [[ -d "$results_dir" ]] || return 1
+    find "$results_dir" -maxdepth 1 -type f -name '*.md' -print -quit 2>/dev/null | grep -q .
+}
+
+can_fallback_to_existing_objectives() {
+    [[ "$STAGE" == "prover" || "$STAGE" == "polish" ]] || return 1
+    has_live_task_results && return 1
+
+    local objective_files
+    objective_files="$(parse_objective_files)"
+    [[ -n "$objective_files" ]]
+}
+
+check_codex_ready() {
+    local max_attempts=$(( CODEX_READY_RETRIES + 1 ))
+    local attempt=1
+    local output=""
+    local output_tail=""
+
+    while (( attempt <= max_attempts )); do
+        if output=$(codex exec --json --skip-git-repo-check --sandbox danger-full-access -c approval_policy=never --model "${CODEX_MODEL}" "Reply with exactly OK." 2>&1); then
+            if (( attempt > 1 )); then
+                ok "Codex readiness recovered on attempt ${attempt}/${max_attempts}"
+            fi
+            return 0
+        fi
+
+        output_tail=$(printf '%s\n' "$output" | tail -n 5 | tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//')
+        if (( attempt < max_attempts )); then
+            warn "Codex readiness check failed (attempt ${attempt}/${max_attempts}). Retrying in ${CODEX_READY_RETRY_DELAY_SECONDS}s."
+            [[ -n "$output_tail" ]] && warn "  Last output: ${output_tail}"
+            sleep "${CODEX_READY_RETRY_DELAY_SECONDS}"
+        else
+            err "Codex cannot run after ${max_attempts} attempt(s). Check: codex login/config, model access, network."
+            [[ -n "$output_tail" ]] && err "Last output: ${output_tail}"
+            return 1
+        fi
+        (( attempt++ ))
+    done
+}
+
 # ============================================================
-#  Run claude -p with JSONL logging
+#  Run codex exec with normalized JSONL logging
 # ============================================================
 
-run_claude() {
+prepare_agent_env() {
+    export LEAN4_PLUGIN_ROOT="${STATE_DIR}/lean4"
+    export LEAN4_SCRIPTS="${LEAN4_PLUGIN_ROOT}/lib/scripts"
+    export LEAN4_REFS="${LEAN4_PLUGIN_ROOT}/skills/lean4/references"
+    export LEAN4_PYTHON_BIN="${LEAN4_PYTHON_BIN:-$(command -v python3 || command -v python)}"
+    export ARCHON_INFORMAL_TOOL="${STATE_DIR}/tools/archon-informal-agent.py"
+}
+
+run_codex() {
     local prompt="$1"
     shift
     local log_base="${LOG_BASE:-}"
+    local jsonl=""
+    local raw_log=""
+    local search_flag=()
+    local timeout_flag=()
+    prepare_agent_env
+    [[ "$CODEX_ENABLE_SEARCH" == "1" ]] && search_flag=(--search)
+    [[ -n "${CODEX_TIMEOUT_SECONDS:-}" ]] && timeout_flag=(--timeout-seconds "${CODEX_TIMEOUT_SECONDS}")
 
     if [[ -n "$log_base" ]]; then
-        local jsonl="${log_base}.jsonl"
-        local raw_log="${log_base}.raw.jsonl"
-        local verbose="${VERBOSE_LOGS:-false}"
-        local stderr_dest="/dev/null"
-        [[ "$verbose" == "true" ]] && stderr_dest="$raw_log"
-
-        cd "$PROJECT_PATH"
-        claude -p "$prompt" \
-            --dangerously-skip-permissions --permission-mode bypassPermissions \
-            --verbose --output-format stream-json \
-            "$@" 2>>"$stderr_dest" | python3 -u -c "
-import sys, json, datetime
-
-VERBOSE = '$verbose' == 'true'
-RAW = open('$raw_log', 'a') if VERBOSE else None
-JSONL = open('$jsonl', 'a')
-
-def emit(event_type, **fields):
-    row = {'ts': datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z'), 'event': event_type, **fields}
-    JSONL.write(json.dumps(row) + '\n')
-    JSONL.flush()
-
-def terminal(s):
-    print(s, flush=True)
-
-last_result = ''
-
-for line in sys.stdin:
-    line = line.strip()
-    if not line:
-        continue
-    if RAW:
-        RAW.write(line + '\n')
-        RAW.flush()
-
-    try:
-        obj = json.loads(line)
-    except json.JSONDecodeError:
-        continue
-
-    t = obj.get('type', '')
-
-    if t == 'assistant' and 'message' in obj:
-        msg = obj['message']
-        if not isinstance(msg, dict):
-            continue
-        for block in msg.get('content', []):
-            bt = block.get('type', '')
-            if bt == 'thinking':
-                thinking = block.get('thinking', '').strip()
-                if thinking:
-                    emit('thinking', content=thinking)
-            elif bt == 'text':
-                text = block.get('text', '').strip()
-                if text:
-                    emit('text', content=text)
-                    last_result = text
-            elif bt == 'tool_use':
-                name = block.get('name', '?')
-                inp = block.get('input', {})
-                emit('tool_call', tool=name, input=inp)
-
-    elif t == 'user' and 'message' in obj:
-        msg = obj['message']
-        if not isinstance(msg, dict):
-            continue
-        for block in msg.get('content', []):
-            if block.get('type') == 'tool_result':
-                content = block.get('content', '')
-                if isinstance(content, str):
-                    emit('tool_result', content=content)
-                elif isinstance(content, list):
-                    texts = [p.get('text','') for p in content if isinstance(p,dict) and p.get('type')=='text']
-                    emit('tool_result', content='\n'.join(texts))
-
-    elif t == 'result':
-        cost = obj.get('total_cost_usd', 0) or obj.get('cost_usd', 0) or 0
-        duration = obj.get('duration_ms', 0) or 0
-        turns = obj.get('num_turns', 0) or 0
-        session_id = obj.get('session_id', '') or ''
-        result = obj.get('result', '')
-        usage = obj.get('usage', {}) or {}
-        model_usage = obj.get('modelUsage', {}) or {}
-        summary = result if isinstance(result, str) and result else last_result
-
-        emit('session_end',
-            session_id=session_id,
-            total_cost_usd=cost,
-            duration_ms=duration,
-            duration_api_ms=usage.get('duration_api_ms', 0) or 0,
-            num_turns=turns,
-            input_tokens=usage.get('input_tokens', 0) or 0,
-            output_tokens=usage.get('output_tokens', 0) or 0,
-            cache_read_input_tokens=usage.get('cache_read_input_tokens', 0) or 0,
-            cache_creation_input_tokens=usage.get('cache_creation_input_tokens', 0) or 0,
-            model_usage=model_usage,
-            summary=summary,
-        )
-
-        if summary:
-            terminal(summary)
-        parts = []
-        if duration:  parts.append(f'{duration/60000:.1f}min')
-        if cost:      parts.append(f'\${cost:.4f}')
-        if usage.get('input_tokens') or usage.get('output_tokens'):
-            parts.append(f'in={usage.get(\"input_tokens\",0)} out={usage.get(\"output_tokens\",0)}')
-        if turns:     parts.append(f'turns={turns}')
-        if parts:
-            terminal(f'[COST] {\" | \".join(parts)}')
-
-JSONL.close()
-if RAW: RAW.close()
-" || true
-        return 0
+        jsonl="${log_base}.jsonl"
+        raw_log="${log_base}.raw.jsonl"
+        if [[ "${VERBOSE_LOGS:-false}" == "true" ]]; then
+            uv run --directory "${ARCHON_DIR}" autoarchon-codex-exec \
+                --cwd "${PROJECT_PATH}" \
+                --model "${CODEX_MODEL}" \
+                --log-path "${jsonl}" \
+                --raw-log-path "${raw_log}" \
+                --extra-args "${CODEX_EXTRA_ARGS}" \
+                "${timeout_flag[@]}" \
+                "${search_flag[@]}" <<< "$prompt"
+        else
+            uv run --directory "${ARCHON_DIR}" autoarchon-codex-exec \
+                --cwd "${PROJECT_PATH}" \
+                --model "${CODEX_MODEL}" \
+                --log-path "${jsonl}" \
+                --extra-args "${CODEX_EXTRA_ARGS}" \
+                "${timeout_flag[@]}" \
+                "${search_flag[@]}" <<< "$prompt"
+        fi
+        return $?
     else
-        cd "$PROJECT_PATH"
-        claude -p "$prompt" \
-            --dangerously-skip-permissions --permission-mode bypassPermissions \
-            "$@"
+        uv run --directory "${ARCHON_DIR}" autoarchon-codex-exec \
+            --cwd "${PROJECT_PATH}" \
+            --model "${CODEX_MODEL}" \
+            --extra-args "${CODEX_EXTRA_ARGS}" \
+            "${timeout_flag[@]}" \
+            "${search_flag[@]}" <<< "$prompt"
     fi
 }
 
@@ -452,6 +451,8 @@ run_parallel_provers() {
         # -- Snapshot: baseline + env vars for single-file serial prover --
         local file_slug
         file_slug=$(echo "$rel" | sed 's|/|_|g; s|\.lean$||')
+        local result_file
+        result_file="$(echo "$rel" | sed 's|/|_|g').md"
         local prover_log="${ITER_DIR}/provers/${file_slug}"
         LOG_BASE="$prover_log"
 
@@ -465,7 +466,10 @@ run_parallel_provers() {
         export ARCHON_PROVER_JSONL="${prover_log}.jsonl"
         export ARCHON_PROJECT_PATH="$PROJECT_PATH"
 
-        if run_claude "$(build_prompt "prover" "$stage")"; then
+        local prover_prompt
+        prover_prompt="$(build_prompt "prover" "$stage")"$'\n'"Your assigned file: ${rel}"$'\n'"Write your task result to exactly: ${STATE_DIR}/task_results/${result_file}"
+
+	        if CODEX_TIMEOUT_SECONDS="${PROVER_TIMEOUT_SECONDS}" run_codex "$prover_prompt"; then
             write_meta "$ITER_META" "provers.${file_slug}.status=done"
         else
             write_meta "$ITER_META" "provers.${file_slug}.status=error"
@@ -482,7 +486,8 @@ run_parallel_provers() {
 You are a prover agent for project '${PROJECT_NAME}'. Current stage: ${stage}.
 Project directory: ${PROJECT_PATH}
 Project state directory: ${STATE_DIR}
-Read ${STATE_DIR}/CLAUDE.md for your role, then read ${STATE_DIR}/prompts/prover-${stage}.md and ${STATE_DIR}/PROGRESS.md.
+Read ${STATE_DIR}/AGENTS.md for your role, then read ${STATE_DIR}/prompts/prover-${stage}.md and ${STATE_DIR}/PROGRESS.md.
+Lean workflow references are vendored under ${STATE_DIR}/lean4/. Consult ${STATE_DIR}/lean4/skills/lean4/SKILL.md only when the current prompt and file context do not already give a concrete next step.
 Check your .lean file for /- USER: ... -/ comments for file-specific hints.
 
 IMPORTANT:
@@ -516,7 +521,9 @@ EOF
     while IFS= read -r f; do
         local rel
         rel=$(relpath "$f" "$PROJECT_PATH")
-        local prover_prompt="${prover_prompt_base}"$'\n'"Your assigned file: ${rel}"
+        local result_file
+        result_file="$(echo "$rel" | sed 's|/|_|g').md"
+        local prover_prompt="${prover_prompt_base}"$'\n'"Your assigned file: ${rel}"$'\n'"Write your task result to exactly: ${STATE_DIR}/task_results/${result_file}"
         local file_slug
         file_slug=$(echo "$rel" | sed 's|/|_|g; s|\.lean$||')
         local prover_log="${ITER_DIR}/provers/${file_slug}"
@@ -546,7 +553,7 @@ EOF
             export ARCHON_SNAPSHOT_DIR="$snap_dir"
             export ARCHON_PROVER_JSONL="${prover_log}.jsonl"
             export ARCHON_PROJECT_PATH="$PROJECT_PATH"
-            run_claude "$prover_prompt" || true
+	            CODEX_TIMEOUT_SECONDS="${PROVER_TIMEOUT_SECONDS}" run_codex "$prover_prompt" || true
         ) &
         pids+=($!)
         prover_files+=("$rel")
@@ -634,7 +641,7 @@ run_review_phase() {
         cat "${ITER_DIR}/provers/"*.jsonl > "$combined_prover_log" 2>/dev/null || true
     fi
 
-    python3 "${ARCHON_DIR}/scripts/extract-attempts.py" \
+    uv run --directory "${ARCHON_DIR}" autoarchon-extract-attempts \
         "$combined_prover_log" "$attempts_file" 2>&1 || true
 
     # Phase 3b: Run review agent
@@ -643,7 +650,8 @@ run_review_phase() {
 You are the review agent for project '${PROJECT_NAME}'. Current stage: ${stage}.
 Project directory: ${PROJECT_PATH}
 Project state directory: ${STATE_DIR}
-Read ${STATE_DIR}/CLAUDE.md for your role, then read ${STATE_DIR}/prompts/review.md.
+Read ${STATE_DIR}/AGENTS.md and ${STATE_DIR}/agents/review-agent.json for your role, then read ${STATE_DIR}/prompts/review.md.
+Lean workflow references are vendored under ${STATE_DIR}/lean4/. Consult ${STATE_DIR}/lean4/skills/lean4/SKILL.md only if the review prompt and local session artifacts are insufficient.
 Session number: ${session_num}.
 Pre-processed attempt data: ${attempts_file} (READ THIS FIRST).
 Prover log: ${combined_prover_log}
@@ -657,11 +665,11 @@ EOF
     )
 
     LOG_BASE="${ITER_DIR}/review"
-    run_claude "$review_prompt" || true
+    CODEX_TIMEOUT_SECONDS="${REVIEW_TIMEOUT_SECONDS}" run_codex "$review_prompt" || true
 
     # Phase 3c: Validate review output
     info "Validating review output..."
-    python3 "${ARCHON_DIR}/scripts/validate-review.py" \
+    uv run --directory "${ARCHON_DIR}" autoarchon-validate-review \
         "$session_dir" "$attempts_file" 2>&1 || true
 }
 
@@ -671,15 +679,14 @@ EOF
 
 # -- Pre-flight --
 if [[ "$DRY_RUN" != true ]]; then
-    if ! command -v claude &>/dev/null; then
-        err "Claude Code is not installed. Run setup.sh first."
+    if ! command -v codex &>/dev/null; then
+        err "Codex CLI is not installed. Run setup.sh first."
         exit 1
     fi
-    if ! claude -p "reply with OK" --no-session-persistence &>/dev/null; then
-        err "Claude Code cannot run. Check: claude auth, ANTHROPIC_API_KEY, network."
+    if ! check_codex_ready; then
         exit 1
     fi
-    ok "Claude Code is authenticated and ready"
+    ok "Codex is authenticated and ready"
 fi
 
 # -- Check project state exists --
@@ -705,14 +712,17 @@ fi
 info "Archon Loop starting"
 info "Project: ${PROJECT_PATH}"
 info "State: ${STATE_DIR}"
-info "Max iterations: ${MAX_ITERATIONS}"
-[[ -n "$FORCE_STAGE" ]] && info "Forced stage: ${FORCE_STAGE}"
-[[ "$PARALLEL" == true ]] && info "Prover mode: parallel (max ${MAX_PARALLEL} concurrent)"
-[[ "$PARALLEL" != true ]] && info "Prover mode: serial"
-[[ "$ENABLE_REVIEW" == true ]] && info "Review: enabled"
-[[ "$ENABLE_REVIEW" != true ]] && info "Review: disabled (--no-review)"
-[[ "$DRY_RUN" == true ]] && warn "DRY RUN mode"
-info "Logs: ${LOG_DIR}/"
+	info "Max iterations: ${MAX_ITERATIONS}"
+	[[ -n "$FORCE_STAGE" ]] && info "Forced stage: ${FORCE_STAGE}"
+	[[ "$PARALLEL" == true ]] && info "Prover mode: parallel (max ${MAX_PARALLEL} concurrent)"
+	[[ "$PARALLEL" != true ]] && info "Prover mode: serial"
+	[[ "$ENABLE_REVIEW" == true ]] && info "Review: enabled"
+	[[ "$ENABLE_REVIEW" != true ]] && info "Review: disabled (--no-review)"
+	[[ -n "$PLAN_TIMEOUT_SECONDS" ]] && info "Plan timeout: ${PLAN_TIMEOUT_SECONDS}s"
+	[[ -n "$PROVER_TIMEOUT_SECONDS" ]] && info "Prover timeout: ${PROVER_TIMEOUT_SECONDS}s"
+	[[ -n "$REVIEW_TIMEOUT_SECONDS" ]] && info "Review timeout: ${REVIEW_TIMEOUT_SECONDS}s"
+	[[ "$DRY_RUN" == true ]] && warn "DRY RUN mode"
+	info "Logs: ${LOG_DIR}/"
 info ""
 info "User hints: ${STATE_DIR}/USER_HINTS.md"
 info "Or add /- USER: ... -/ comments in .lean files"
@@ -767,27 +777,58 @@ for (( i=0; i<MAX_ITERATIONS; i++ )); do
         info "Log dir: ${ITER_DIR}"
     fi
 
-    # --- Plan phase ---
-    info "Phase 1: Plan agent"
-    info "────────────────────────────────────────"
+	    # --- Plan phase ---
+	    info "Phase 1: Plan agent"
+	    info "────────────────────────────────────────"
 
-    PLAN_START=$SECONDS
-    PLAN_PROMPT=$(build_prompt "plan" "$STAGE")
-    if [[ "$DRY_RUN" == true ]]; then
-        echo "$PLAN_PROMPT"
-    else
-        run_claude "$PLAN_PROMPT" || true
-    fi
+	    PLAN_START=$SECONDS
+	    PLAN_PROMPT=$(build_prompt "plan" "$STAGE")
+	    RUN_SCOPE_BACKUP=""
+	    if [[ "$DRY_RUN" != true && -f "$RUN_SCOPE_FILE" ]]; then
+	        RUN_SCOPE_BACKUP="${ITER_DIR}/run_scope.before-plan.md"
+	        cp "$RUN_SCOPE_FILE" "$RUN_SCOPE_BACKUP"
+	    fi
+	    if [[ "$DRY_RUN" == true ]]; then
+	        echo "$PLAN_PROMPT"
+	        PLAN_STATUS="done"
+	    else
+	        if CODEX_TIMEOUT_SECONDS="${PLAN_TIMEOUT_SECONDS}" run_codex "$PLAN_PROMPT"; then
+            PLAN_STATUS="done"
+        else
+            PLAN_STATUS="error"
+            warn "Plan agent exited with an error. Check ${ITER_DIR}/plan.jsonl for details."
+	        fi
+	    fi
+	    if [[ "$DRY_RUN" != true && -n "$RUN_SCOPE_BACKUP" ]]; then
+	        if [[ ! -f "$RUN_SCOPE_FILE" ]] || ! cmp -s "$RUN_SCOPE_BACKUP" "$RUN_SCOPE_FILE"; then
+	            warn "RUN_SCOPE.md changed during plan phase. Preserving the newer file and skipping prover to avoid clobbering scope changes."
+	            if [[ "$PLAN_STATUS" == "done" ]]; then
+	                PLAN_STATUS="scope_changed"
+	            fi
+	        fi
+	    fi
 
-    PLAN_SECS=$(( SECONDS - PLAN_START ))
-    info "Plan phase finished. (${PLAN_SECS}s)"
-    [[ "$DRY_RUN" != true ]] && write_meta "$ITER_META" "plan.status=done" "plan.durationSecs=${PLAN_SECS}"
-    echo ""
+	    PLAN_SECS=$(( SECONDS - PLAN_START ))
+	    info "Plan phase finished. (${PLAN_SECS}s)"
+	    [[ "$DRY_RUN" != true ]] && write_meta "$ITER_META" "plan.status=${PLAN_STATUS}" "plan.durationSecs=${PLAN_SECS}"
+	    echo ""
 
-    if is_complete; then
-        ok "PROGRESS.md says COMPLETE. Exiting loop."
-        break
-    fi
+	    if [[ "$PLAN_STATUS" != "done" ]]; then
+	        if [[ "$PLAN_STATUS" == "error" ]] && can_fallback_to_existing_objectives; then
+	            warn "Plan agent failed, but existing scoped objectives remain valid and there are no live task_results to merge."
+	            warn "Continuing to prover with the current PROGRESS.md."
+	            PLAN_STATUS="fallback"
+	            [[ "$DRY_RUN" != true ]] && write_meta "$ITER_META" "plan.status=${PLAN_STATUS}"
+	        else
+	            warn "Skipping prover phase because the plan phase did not complete successfully."
+	            break
+	        fi
+	    fi
+
+	    if is_complete; then
+	        ok "PROGRESS.md says COMPLETE. Exiting loop."
+	        break
+	    fi
 
     STAGE=$(read_stage)
 
@@ -807,15 +848,15 @@ for (( i=0; i<MAX_ITERATIONS; i++ )); do
             echo "$PROVER_PROMPT"
         else
             # -- Snapshot: baseline for all target files in serial mode --
-            local sorry_files_serial
+            sorry_files_serial=""
             sorry_files_serial=$(parse_objective_files)
             if [[ -n "$sorry_files_serial" ]]; then
                 while IFS= read -r sf; do
-                    local srel
+                    srel=""
                     srel=$(relpath "$sf" "$PROJECT_PATH")
-                    local sslug
+                    sslug=""
                     sslug=$(echo "$srel" | sed 's|/|_|g; s|\.lean$||')
-                    local ssnap="${ITER_DIR}/snapshots/${sslug}"
+                    ssnap="${ITER_DIR}/snapshots/${sslug}"
                     mkdir -p "$ssnap"
                     cp "$sf" "${ssnap}/baseline.lean" 2>/dev/null || true
                 done <<< "$sorry_files_serial"
@@ -826,7 +867,7 @@ for (( i=0; i<MAX_ITERATIONS; i++ )); do
             export ARCHON_PROVER_JSONL="${ITER_DIR}/prover.jsonl"
             export ARCHON_PROJECT_PATH="$PROJECT_PATH"
             export ARCHON_SERIAL_MODE="true"
-            run_claude "$PROVER_PROMPT" || true
+            CODEX_TIMEOUT_SECONDS="${PROVER_TIMEOUT_SECONDS}" run_codex "$PROVER_PROMPT" || true
             unset ARCHON_SNAPSHOT_DIR ARCHON_PROVER_JSONL ARCHON_PROJECT_PATH ARCHON_SERIAL_MODE
         fi
     fi
@@ -843,11 +884,16 @@ for (( i=0; i<MAX_ITERATIONS; i++ )); do
 
         REVIEW_START=$SECONDS
         write_meta "$ITER_META" "review.status=running"
-        run_review_phase "$STAGE" || true
+        if run_review_phase "$STAGE"; then
+            REVIEW_STATUS="done"
+        else
+            REVIEW_STATUS="error"
+            warn "Review agent exited with an error. Check ${ITER_DIR}/review.jsonl for details."
+        fi
 
         REVIEW_SECS=$(( SECONDS - REVIEW_START ))
         info "Review phase finished. (${REVIEW_SECS}s)"
-        write_meta "$ITER_META" "review.status=done" "review.durationSecs=${REVIEW_SECS}"
+        write_meta "$ITER_META" "review.status=${REVIEW_STATUS}" "review.durationSecs=${REVIEW_SECS}"
         echo ""
     fi
 

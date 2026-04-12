@@ -100,6 +100,67 @@ def run_with_retries(
         time.sleep(wait_seconds)
 
 
+def cache_get_needs_repo_fallback(output: str, cache_repo: str | None) -> bool:
+    if not cache_repo:
+        return False
+    if f"Invalid argument: non-existing path {cache_repo}" in output:
+        return True
+    repo_flag_markers = ("unknown option '--repo'", "unrecognized option '--repo'")
+    return any(marker in output for marker in repo_flag_markers)
+
+
+def run_cache_get_with_fallback(
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    cache_repo: str | None,
+    retries: int,
+    backoff_seconds: int,
+) -> None:
+    base_cmd = ["lake", "exe", "cache", "get"]
+    command = [*base_cmd, "--repo", cache_repo] if cache_repo else list(base_cmd)
+    fallback_command = list(base_cmd) if cache_repo else None
+    attempts = retries + 1
+    attempt = 1
+
+    while attempt <= attempts:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr)
+        if result.returncode == 0:
+            return
+        combined_output = f"{result.stdout}\n{result.stderr}"
+        if (
+            fallback_command is not None
+            and command != fallback_command
+            and cache_get_needs_repo_fallback(combined_output, cache_repo)
+        ):
+            print(
+                "[prewarm] `lake exe cache get` rejected `--repo`; retrying without it",
+                file=sys.stderr,
+            )
+            command = fallback_command
+            continue
+        if attempt == attempts:
+            raise SystemExit(result.returncode)
+        wait_seconds = backoff_seconds * attempt
+        print(
+            f"[prewarm] command failed ({result.returncode}); retrying in {wait_seconds}s: {' '.join(command)}",
+            file=sys.stderr,
+        )
+        time.sleep(wait_seconds)
+        attempt += 1
+
+
 def build_env(use_cloudflare: bool) -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("GIT_TERMINAL_PROMPT", "0")

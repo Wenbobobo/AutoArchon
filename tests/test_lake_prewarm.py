@@ -1,8 +1,10 @@
 import json
+import subprocess
 from pathlib import Path
 
 from archonlib.lake_prewarm import (
     build_env,
+    run_cache_get_with_fallback,
     find_broken_packages,
     has_warmed_mathlib_cache,
     load_manifest,
@@ -83,3 +85,36 @@ def test_has_warmed_mathlib_cache_returns_false_without_mathlib_olean(tmp_path: 
     write(tmp_path / ".lake/packages/mathlib/lakefile.lean", "import Lake\n")
 
     assert has_warmed_mathlib_cache(tmp_path) is False
+
+
+def test_run_cache_get_with_fallback_retries_without_repo(monkeypatch, tmp_path: Path, capsys):
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, cwd, env, check, capture_output, text):
+        calls.append(cmd)
+        if cmd[-2:] == ["--repo", "leanprover-community/mathlib4"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                1,
+                "",
+                "Invalid argument: non-existing path leanprover-community/mathlib4\n",
+            )
+        return subprocess.CompletedProcess(cmd, 0, "cache ready\n", "")
+
+    monkeypatch.setattr("archonlib.lake_prewarm.subprocess.run", fake_run)
+
+    run_cache_get_with_fallback(
+        cwd=tmp_path,
+        env={"PATH": ""},
+        cache_repo="leanprover-community/mathlib4",
+        retries=1,
+        backoff_seconds=1,
+    )
+
+    captured = capsys.readouterr()
+    assert calls == [
+        ["lake", "exe", "cache", "get", "--repo", "leanprover-community/mathlib4"],
+        ["lake", "exe", "cache", "get"],
+    ]
+    assert "rejected `--repo`" in captured.err
+    assert "cache ready" in captured.out

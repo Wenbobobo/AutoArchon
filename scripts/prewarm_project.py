@@ -15,6 +15,7 @@ from archonlib.lake_prewarm import (
     has_warmed_mathlib_cache,
     load_manifest,
     remove_broken_packages,
+    run_cache_get_with_fallback,
     run_with_retries,
 )
 
@@ -80,10 +81,10 @@ def main() -> int:
         skip_cache = True
 
     if not skip_cache:
-        run_with_retries(
-            ["lake", "exe", "cache", "get", "--repo", args.cache_repo],
+        run_cache_get_with_fallback(
             cwd=project_path,
             env=env,
+            cache_repo=args.cache_repo,
             retries=args.cache_retries,
             backoff_seconds=args.retry_backoff_seconds,
         )

@@ -23,12 +23,14 @@ from archonlib.supervisor import (
     collect_header_drifts,
     collect_meta_prover_errors,
     latest_iteration_meta,
-    list_runtime_process_lines,
     read_allowed_files,
 )
+from archonlib.lessons import write_lesson_artifact
+from archonlib.validation import write_validation_artifacts
 
 
 INFORMAL_NOTE_PATTERN = re.compile(r"\.archon/informal/[A-Za-z0-9._/\-]+\.md")
+LEASE_SCHEMA_VERSION = 1
 
 
 def _env_float(name: str, default: float | None = None) -> float | None:
@@ -53,6 +55,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prover-timeout-seconds", type=int, help="Set ARCHON_PROVER_TIMEOUT_SECONDS for this cycle")
     parser.add_argument("--review-timeout-seconds", type=int, help="Set ARCHON_REVIEW_TIMEOUT_SECONDS for this cycle")
     parser.add_argument("--skip-process-check", action="store_true", help="Skip the pre-cycle ps scan")
+    parser.add_argument(
+        "--recovery-only",
+        action="store_true",
+        help="Skip archon-loop and close out the current workspace state into validation, lessons, and supervisor artifacts",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Pass --dry-run through to archon-loop.sh")
     parser.add_argument("--no-review", action="store_true", help="Pass --no-review through to archon-loop.sh")
     parser.add_argument(
@@ -86,16 +93,97 @@ def _write_text(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def _run_process_check(skip: bool) -> list[str]:
+def _lease_path(workspace: Path) -> Path:
+    return workspace / ".archon" / "supervisor" / "run-lease.json"
+
+
+def _read_json(path: Path) -> dict[str, object] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _coerce_pid(value: object) -> int | None:
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, str) and value.isdigit():
+        parsed = int(value)
+        return parsed if parsed > 0 else None
+    return None
+
+
+def _pid_is_live(pid: int | None) -> bool:
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _update_lease(
+    lease_path: Path,
+    *,
+    workspace: Path,
+    source: Path,
+    fields: dict[str, object],
+) -> dict[str, object]:
+    payload = _read_json(lease_path) or {}
+    payload.update(
+        {
+            "schemaVersion": LEASE_SCHEMA_VERSION,
+            "workspace": str(workspace),
+            "source": str(source),
+            "updatedAt": _now_iso(),
+            **fields,
+        }
+    )
+    _write_text(lease_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return payload
+
+
+def _lease_conflicts(skip: bool, lease_path: Path, *, current_pid: int) -> list[dict[str, object]]:
     if skip:
         return []
-    result = subprocess.run(
-        ["ps", "-ef"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return list_runtime_process_lines(result.stdout)
+    lease = _read_json(lease_path)
+    if lease is None or lease.get("active") is not True:
+        return []
+
+    events: list[dict[str, object]] = []
+    supervisor_pid = _coerce_pid(lease.get("supervisorPid"))
+    loop_pid = _coerce_pid(lease.get("loopPid"))
+    if supervisor_pid is not None and supervisor_pid != current_pid and _pid_is_live(supervisor_pid):
+        return [
+            {
+                "event": "active_supervisor_lease",
+                "supervisorPid": supervisor_pid,
+                "loopPid": loop_pid,
+                "workspace": lease.get("workspace"),
+                "updatedAt": lease.get("updatedAt"),
+            }
+        ]
+    if loop_pid is not None and _pid_is_live(loop_pid):
+        events.append(
+            {
+                "event": "orphaned_loop_lease",
+                "supervisorPid": supervisor_pid,
+                "loopPid": loop_pid,
+                "workspace": lease.get("workspace"),
+                "updatedAt": lease.get("updatedAt"),
+            }
+        )
+    return events
 
 
 def _build_loop_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str] | None]:
@@ -177,6 +265,8 @@ def _terminate_process_group(proc: subprocess.Popen[str]) -> None:
 def _monitor_for_idle_prover(
     proc: subprocess.Popen[str],
     workspace: Path,
+    source: Path,
+    lease_path: Path,
     allowed_files: list[str],
     *,
     idle_seconds: float,
@@ -188,6 +278,19 @@ def _monitor_for_idle_prover(
 
     while proc.poll() is None:
         latest_iter_name, latest_meta = latest_iteration_meta(workspace)
+        _update_lease(
+            lease_path,
+            workspace=workspace,
+            source=source,
+            fields={
+                "active": True,
+                "status": "running",
+                "supervisorPid": os.getpid(),
+                "loopPid": proc.pid,
+                "lastHeartbeatAt": _now_iso(),
+                "latestIteration": latest_iter_name,
+            },
+        )
         if latest_iter_name != tracked_iteration:
             tracked_iteration = latest_iter_name
             last_seen_mtime = None
@@ -226,22 +329,35 @@ def _monitor_for_idle_prover(
 def _run_archon_loop(
     args: argparse.Namespace,
     workspace: Path,
+    source: Path,
+    lease_path: Path,
     allowed_files: list[str],
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, object] | None]:
     command, env = _build_loop_command(args)
 
     if not args.prover_idle_seconds or args.prover_idle_seconds <= 0:
-        return (
-            subprocess.run(
+        result = subprocess.run(
                 command,
                 capture_output=True,
                 text=True,
                 check=False,
                 cwd=str(ROOT),
                 env=env,
-            ),
-            None,
+            )
+        _update_lease(
+            lease_path,
+            workspace=workspace,
+            source=source,
+            fields={
+                "active": True,
+                "status": "loop_finished",
+                "supervisorPid": os.getpid(),
+                "loopPid": None,
+                "lastHeartbeatAt": _now_iso(),
+                "loopExitCode": result.returncode,
+            },
         )
+        return (result, None)
 
     supervisor_dir = workspace / ".archon" / "supervisor"
     stdout_tmp = supervisor_dir / ".supervised-cycle.stdout.tmp"
@@ -261,9 +377,23 @@ def _run_archon_loop(
                 env=env,
                 start_new_session=True,
             )
+            _update_lease(
+                lease_path,
+                workspace=workspace,
+                source=source,
+                fields={
+                    "active": True,
+                    "status": "running",
+                    "supervisorPid": os.getpid(),
+                    "loopPid": proc.pid,
+                    "lastHeartbeatAt": _now_iso(),
+                },
+            )
             idle_event = _monitor_for_idle_prover(
                 proc,
                 workspace,
+                source,
+                lease_path,
                 allowed_files,
                 idle_seconds=args.prover_idle_seconds,
                 poll_seconds=args.monitor_poll_seconds,
@@ -489,39 +619,130 @@ def main() -> int:
     workspace = Path(args.workspace).resolve()
     source = Path(args.source).resolve()
     supervisor_dir = workspace / ".archon" / "supervisor"
+    lease_path = _lease_path(workspace)
     hot_notes_path = supervisor_dir / "HOT_NOTES.md"
     ledger_path = supervisor_dir / "LEDGER.md"
     violations_path = supervisor_dir / "violations.jsonl"
 
-    started_at = datetime.now(timezone.utc).isoformat()
+    started_at = _now_iso()
     allowed_files = read_allowed_files(workspace)
     baseline_changed_files = collect_changed_files(source, workspace, allowed_files=allowed_files or None)
     baseline_changed_mtimes = _path_mtimes([workspace / rel_path for rel_path in baseline_changed_files])
     baseline_task_result_paths = sorted((workspace / ".archon" / "task_results").glob("*.md"))
     baseline_task_result_mtimes = _path_mtimes(baseline_task_result_paths)
-    process_lines = _run_process_check(args.skip_process_check)
     previous_iter_name, _ = latest_iteration_meta(workspace)
-    loop_result, idle_event = _run_archon_loop(args, workspace, allowed_files)
+    lease_conflicts = _lease_conflicts(args.skip_process_check, lease_path, current_pid=os.getpid())
+    if lease_conflicts:
+        _append_text(
+            violations_path,
+            "".join(json.dumps(event, sort_keys=True) + "\n" for event in lease_conflicts),
+        )
+        hot_notes = [
+            "# Supervisor Hot Notes",
+            "",
+            "Read this before touching the run.",
+            "",
+            "- Status: run_busy",
+            f"- Started at: {started_at}",
+            f"- Workspace: {workspace}",
+            f"- Source: {source}",
+            f"- Allowed files: {', '.join(allowed_files) if allowed_files else '(all .lean files)'}",
+            "- Reason: an active run-local lease already owns this workspace",
+        ]
+        for event in lease_conflicts:
+            hot_notes.append(f"- Lease event: {event['event']}")
+            if event.get("supervisorPid") is not None:
+                hot_notes.append(f"- Lease supervisor pid: {event['supervisorPid']}")
+            if event.get("loopPid") is not None:
+                hot_notes.append(f"- Lease loop pid: {event['loopPid']}")
+            if event.get("updatedAt") is not None:
+                hot_notes.append(f"- Lease updated at: {event['updatedAt']}")
+        _write_text(hot_notes_path, "\n".join(hot_notes) + "\n")
+        _append_text(
+            ledger_path,
+            "\n".join(
+                [
+                    f"## Cycle {started_at}",
+                    "",
+                    "- Status: `run_busy`",
+                    "- Reason: `active run-local lease detected`",
+                    f"- Lease events: `{len(lease_conflicts)}`",
+                    "",
+                ]
+            ),
+        )
+        print("status=run_busy")
+        print(f"policy_events={len(lease_conflicts)}")
+        return 6
+
+    _update_lease(
+        lease_path,
+        workspace=workspace,
+        source=source,
+        fields={
+            "active": True,
+            "status": "starting",
+            "supervisorPid": os.getpid(),
+            "loopPid": None,
+            "startedAt": started_at,
+            "lastHeartbeatAt": started_at,
+            "latestIteration": previous_iter_name,
+            "recoveryOnly": args.recovery_only,
+        },
+    )
+
+    if args.recovery_only:
+        loop_result = subprocess.CompletedProcess(["recovery-only"], 0, "", "")
+        idle_event = None
+    else:
+        loop_result, idle_event = _run_archon_loop(args, workspace, source, lease_path, allowed_files)
     stdout_path, stderr_path = _write_loop_output(supervisor_dir, loop_result)
+    _update_lease(
+        lease_path,
+        workspace=workspace,
+        source=source,
+        fields={
+            "active": True,
+            "status": "analyzing",
+            "supervisorPid": os.getpid(),
+            "loopPid": None,
+            "lastHeartbeatAt": _now_iso(),
+            "loopExitCode": loop_result.returncode,
+        },
+    )
     latest_iter_name, latest_meta = latest_iteration_meta(workspace)
     drifts = collect_header_drifts(source, workspace, allowed_files=allowed_files or None)
     changed_files = collect_changed_files(source, workspace, allowed_files=allowed_files or None)
     task_result_paths = sorted((workspace / ".archon" / "task_results").glob("*.md"))
     task_results = sorted(path.name for path in task_result_paths)
-    new_changed_files = sorted(
-        rel_path
-        for rel_path in changed_files
-        if (workspace / rel_path).stat().st_mtime > baseline_changed_mtimes.get(workspace / rel_path, float("-inf"))
-    )
-    new_task_result_paths = sorted(
-        path
-        for path in task_result_paths
-        if path.stat().st_mtime > baseline_task_result_mtimes.get(path, float("-inf"))
-    )
+    if args.recovery_only:
+        new_changed_files = sorted(changed_files)
+        new_task_result_paths = sorted(task_result_paths)
+    else:
+        new_changed_files = sorted(
+            rel_path
+            for rel_path in changed_files
+            if (workspace / rel_path).stat().st_mtime > baseline_changed_mtimes.get(workspace / rel_path, float("-inf"))
+        )
+        new_task_result_paths = sorted(
+            path
+            for path in task_result_paths
+            if path.stat().st_mtime > baseline_task_result_mtimes.get(path, float("-inf"))
+        )
     new_task_results = [path.name for path in new_task_result_paths]
     recovered_after_stall = None
     prover_failures = collect_meta_prover_errors(latest_meta)
-    if idle_event is not None or prover_failures:
+    if args.recovery_only:
+        recovered_after_stall = _recover_after_stall(
+            workspace,
+            recovery_event="verified_in_recovery",
+            allow_synthesis=False,
+            allowed_files=allowed_files,
+            new_changed_files=new_changed_files,
+            new_task_result_paths=new_task_result_paths,
+            verify_template=args.changed_file_verify_template,
+        )
+    elif idle_event is not None or prover_failures:
         recovered_after_stall = _recover_after_stall(
             workspace,
             recovery_event="verified_after_idle" if idle_event is not None else "verified_after_stall",
@@ -543,13 +764,8 @@ def main() -> int:
     created_new_iteration = latest_iter_name is not None and latest_iter_name != previous_iter_name
 
     events: list[dict[str, object]] = []
-    for line in process_lines:
-        events.append(
-            {
-                "event": "runtime_process_present",
-                "line": line,
-            }
-        )
+    if args.recovery_only:
+        events.append({"event": "recovery_only"})
     for drift in drifts:
         events.append(drift.to_event())
     if prover_failures:
@@ -582,6 +798,7 @@ def main() -> int:
     elif recovered_after_stall is not None and recovered_after_stall.get("event") in {
         "verified_after_idle",
         "verified_after_stall",
+        "verified_in_recovery",
         "synthesized_blocker_after_idle",
     }:
         status = "clean"
@@ -593,6 +810,28 @@ def main() -> int:
         status = "loop_failed"
     elif not new_changed_files and not new_task_results:
         status = "no_progress"
+
+    validation_files = write_validation_artifacts(
+        workspace,
+        status=status,
+        allowed_files=allowed_files,
+        changed_files=changed_files,
+        drifts=drifts,
+        prover_failures=prover_failures,
+        iteration=latest_iter_name,
+        loop_exit_code=loop_result.returncode,
+        recovered_after_stall=recovered_after_stall,
+    )
+    lesson_file = write_lesson_artifact(
+        workspace,
+        status=status,
+        iteration=latest_iter_name,
+        allowed_files=allowed_files,
+        validation_files=validation_files,
+        drifts=drifts,
+        prover_failures=prover_failures,
+        recovered_after_stall=recovered_after_stall,
+    )
 
     if events:
         _append_text(
@@ -609,6 +848,7 @@ def main() -> int:
         f"- Started at: {started_at}",
         f"- Workspace: {workspace}",
         f"- Source: {source}",
+        f"- Lease file: {lease_path}",
         f"- Allowed files: {', '.join(allowed_files) if allowed_files else '(all .lean files)'}",
         f"- Loop exit code: {loop_result.returncode}",
         f"- Changed files: {', '.join(changed_files) if changed_files else '(none)'}",
@@ -616,6 +856,8 @@ def main() -> int:
         f"- New changed files: {', '.join(new_changed_files) if new_changed_files else '(none)'}",
         f"- New task results: {', '.join(new_task_results) if new_task_results else '(none)'}",
         f"- Policy violations: {len([event for event in events if event['event'] == 'header_mutation'])}",
+        f"- Validation artifacts: {', '.join(validation_files) if validation_files else '(none)'}",
+        f"- Lesson artifact: {lesson_file or '(none)'}",
     ]
     if latest_iter_name is not None:
         hot_notes.append(f"- Latest iteration: {latest_iter_name}")
@@ -635,8 +877,15 @@ def main() -> int:
     if recovered_after_stall is not None and recovered_after_stall.get("event") in {
         "verified_after_idle",
         "verified_after_stall",
+        "verified_in_recovery",
     }:
-        recovery_label = "idle" if recovered_after_stall.get("event") == "verified_after_idle" else "stall"
+        recovery_event = recovered_after_stall.get("event")
+        if recovery_event == "verified_after_idle":
+            recovery_label = "idle"
+        elif recovery_event == "verified_after_stall":
+            recovery_label = "stall"
+        else:
+            recovery_label = "recovery-only pass"
         if recovered_after_stall.get("kind") == "changed_file":
             files = ", ".join(recovered_after_stall.get("files", [])) or "(none)"
             hot_notes.append(f"- Recovered after prover {recovery_label}: verified changed files {files}")
@@ -660,8 +909,6 @@ def main() -> int:
                 hot_notes.append(f"- Verification after idle failed for task result {note_name}: {detail}")
     for drift in drifts:
         hot_notes.append(f"- Violation: {drift.rel_path}::{drift.declaration_name} -> {drift.mutation_class}")
-    if process_lines:
-        hot_notes.append(f"- Runtime processes already present: {len(process_lines)}")
     if loop_result.returncode != 0 and not created_new_iteration:
         hot_notes.append("- No new iteration metadata was created during this cycle; the failure happened before Archon initialized a fresh iter-* directory.")
     stdout_tail = _tail_text(loop_result.stdout)
@@ -682,6 +929,7 @@ def main() -> int:
         f"## Cycle {started_at}",
         "",
         f"- Status: `{status}`",
+        f"- Lease file: `{lease_path}`",
         f"- Loop exit code: `{loop_result.returncode}`",
         f"- Changed files: `{', '.join(changed_files) if changed_files else '(none)'}`",
         f"- Task results: `{', '.join(task_results) if task_results else '(none)'}`",
@@ -690,12 +938,35 @@ def main() -> int:
         f"- Policy events: `{len(events)}`",
         f"- Latest iteration: `{latest_iter_name or '(none)'}`",
         f"- Prover errors: `{', '.join(prover_failures) if prover_failures else '(none)'}`",
+        f"- Validation artifacts: `{', '.join(validation_files) if validation_files else '(none)'}`",
+        f"- Lesson artifact: `{lesson_file or '(none)'}`",
         f"- Idle timeout: `{idle_event['idle_seconds']}s`" if idle_event is not None else "- Idle timeout: `(none)`",
         f"- Idle recovery: `{recovered_after_stall['event']}`" if recovered_after_stall is not None else "- Idle recovery: `(none)`",
+        f"- Recovery only: `{args.recovery_only}`",
         f"- New iteration created: `{created_new_iteration}`",
         "",
     ]
     _append_text(ledger_path, "\n".join(ledger_lines))
+
+    _update_lease(
+        lease_path,
+        workspace=workspace,
+        source=source,
+        fields={
+            "active": False,
+            "status": "completed",
+            "supervisorPid": os.getpid(),
+            "loopPid": None,
+            "lastHeartbeatAt": _now_iso(),
+            "latestIteration": latest_iter_name,
+            "loopExitCode": loop_result.returncode,
+            "finalStatus": status,
+            "completedAt": _now_iso(),
+            "recoveryEvent": recovered_after_stall.get("event") if isinstance(recovered_after_stall, dict) else None,
+            "validationFiles": validation_files,
+            "lessonFile": lesson_file,
+        },
+    )
 
     print(f"status={status}")
     print(f"changed_files={len(changed_files)}")

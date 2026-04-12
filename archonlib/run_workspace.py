@@ -43,6 +43,15 @@ def _copy_tree(source_root: Path, destination_root: Path, *, include_lake: bool)
     )
 
 
+def _reuse_lake_cache(lake_cache: Path, destination_root: Path) -> None:
+    destination_root.mkdir(parents=True, exist_ok=True)
+    shared_packages = lake_cache / "packages"
+    if shared_packages.exists():
+        (destination_root / "packages").symlink_to(shared_packages, target_is_directory=True)
+        return
+    shutil.copytree(lake_cache, destination_root, dirs_exist_ok=True)
+
+
 def create_isolated_run(
     source_root: Path,
     run_root: Path,
@@ -72,7 +81,7 @@ def create_isolated_run(
 
     lake_cache = _resolve_cache_root(reuse_lake_from)
     if lake_cache is not None:
-        shutil.copytree(lake_cache, workspace_root / ".lake")
+        _reuse_lake_cache(lake_cache, workspace_root / ".lake")
 
     manifest = {
         "schemaVersion": SCHEMA_VERSION,
@@ -118,6 +127,8 @@ def export_run_artifacts(run_root: Path) -> dict[str, object]:
     artifacts_root = run_root / "artifacts"
     manifest_path = run_root / "RUN_MANIFEST.json"
     task_results_root = workspace_root / ".archon" / "task_results"
+    validation_root = workspace_root / ".archon" / "validation"
+    lessons_root = workspace_root / ".archon" / "lessons"
     supervisor_root = workspace_root / ".archon" / "supervisor"
 
     if not source_root.exists() or not workspace_root.exists():
@@ -127,6 +138,8 @@ def export_run_artifacts(run_root: Path) -> dict[str, object]:
     proofs_root = artifacts_root / "proofs"
     diffs_root = artifacts_root / "diffs"
     exported_task_results_root = artifacts_root / "task-results"
+    exported_validation_root = artifacts_root / "validation"
+    exported_lessons_root = artifacts_root / "lessons"
     exported_supervisor_root = artifacts_root / "supervisor"
 
     changed_files: list[str] = []
@@ -154,6 +167,20 @@ def export_run_artifacts(run_root: Path) -> dict[str, object]:
             task_results.append(path.name)
             _copy_file(path, exported_task_results_root / path.name)
 
+    validation_files: list[str] = []
+    if validation_root.exists():
+        for path in sorted(validation_root.glob("*.json")):
+            validation_files.append(path.name)
+            _copy_file(path, exported_validation_root / path.name)
+
+    lesson_files: list[str] = []
+    if lessons_root.exists():
+        for path in sorted(lessons_root.glob("*")):
+            if not path.is_file():
+                continue
+            lesson_files.append(path.name)
+            _copy_file(path, exported_lessons_root / path.name)
+
     supervisor_files: list[str] = []
     if supervisor_root.exists():
         for name in ("HOT_NOTES.md", "LEDGER.md", "violations.jsonl"):
@@ -171,6 +198,8 @@ def export_run_artifacts(run_root: Path) -> dict[str, object]:
         "changedFiles": changed_files,
         "taskResults": task_results,
         "blockerNotes": task_results,
+        "validationFiles": validation_files,
+        "lessonFiles": lesson_files,
         "supervisorFiles": supervisor_files,
         "manifestPresent": manifest_path.exists(),
     }
