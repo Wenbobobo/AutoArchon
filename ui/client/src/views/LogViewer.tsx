@@ -159,7 +159,7 @@ const DEFAULT_FILTERS: FilterEvent[] = FILTER_OPTIONS.map(option => option.value
 function RunSummaryBar({ entries }: { entries: LogEntry[] }) {
   const sessionEnd = entries.find(e => e.event === 'session_end');
   if (!sessionEnd) return null;
-  const model = sessionEnd.model_usage ? Object.keys(sessionEnd.model_usage)[0]?.replace(/^claude-/, '').replace(/-\d{8}$/, '') : '';
+  const model = sessionEnd.model_usage ? Object.keys(sessionEnd.model_usage)[0]?.replace(/-\d{8}$/, '') : '';
   const parts: string[] = [];
   if (model) parts.push(model);
   if (sessionEnd.duration_ms) parts.push(fmtDuration(sessionEnd.duration_ms));

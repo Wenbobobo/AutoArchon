@@ -88,7 +88,7 @@ export default function LogEntryLine({ entry }: Props) {
       let model = '';
       if (entry.model_usage) {
         const fullName = Object.keys(entry.model_usage)[0] || '';
-        model = fullName.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+        model = fullName.replace(/-\d{8}$/, '');
       }
       const parts = ['Session end'];
       if (model) parts.push(model);
