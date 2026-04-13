@@ -28,8 +28,29 @@ def test_codex_command_uses_current_noninteractive_flags():
     ]
     assert "--model" in command
     assert command[command.index("--model") + 1] == "gpt-5.4"
-    assert command[-1] == "-"
     assert "--search" in command
+
+
+def test_codex_command_reads_prompt_from_stdin_with_explicit_prompt_marker():
+    command = codex_command(
+        "gpt-5.4",
+        extra_args="--config model_reasoning_effort=xhigh",
+        enable_search=False,
+        search_supported=True,
+    )
+
+    assert command[:8] == [
+        "codex",
+        "exec",
+        "--json",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "danger-full-access",
+        "-c",
+        "approval_policy=never",
+    ]
+    assert command[command.index("--model") + 1] == "gpt-5.4"
+    assert command[-3:] == ["--config", "model_reasoning_effort=xhigh", "-"]
 
 
 def test_codex_command_strips_search_when_cli_lacks_support():

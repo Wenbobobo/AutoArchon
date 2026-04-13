@@ -11,6 +11,7 @@ def test_runtime_agent_registry_is_well_formed_and_covers_current_plan():
     ids = {payload["id"] for payload in payloads}
 
     assert {
+        "campaign-operator",
         "manager-agent",
         "plan-agent",
         "prover-agent",
@@ -18,6 +19,7 @@ def test_runtime_agent_registry_is_well_formed_and_covers_current_plan():
         "informal-agent",
         "statement-validator",
         "supervisor-agent",
+        "orchestrator-agent",
     } <= ids
 
     for payload in payloads:

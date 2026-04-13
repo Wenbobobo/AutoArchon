@@ -21,7 +21,7 @@ from archonlib.lake_prewarm import (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Prewarm a Lean/Lake project with cache and build retries.")
+    parser = argparse.ArgumentParser(description="Prewarm a Lean/Lake project with cache and build or scoped verify retries.")
     parser.add_argument("project", help="Path to the Lean project")
     parser.add_argument(
         "--cache-repo",
@@ -50,6 +50,13 @@ def parse_args() -> argparse.Namespace:
         "--skip-cache",
         action="store_true",
         help="Skip `lake exe cache get` and only run `lake build`",
+    )
+    parser.add_argument(
+        "--verify-file",
+        action="append",
+        dest="verify_files",
+        default=[],
+        help="Relative `.lean` file to verify with `lake env lean` instead of running full `lake build`",
     )
     parser.add_argument(
         "--no-cloudflare",
@@ -88,6 +95,21 @@ def main() -> int:
             retries=args.cache_retries,
             backoff_seconds=args.retry_backoff_seconds,
         )
+
+    if args.verify_files:
+        for rel_path in args.verify_files:
+            verify_path = project_path / rel_path
+            if not verify_path.exists():
+                raise SystemExit(f"verify file not found: {verify_path}")
+            print(f"[prewarm] using scoped verify instead of `lake build`: {rel_path}")
+            run_with_retries(
+                ["lake", "env", "lean", rel_path],
+                cwd=project_path,
+                env=env,
+                retries=args.build_retries,
+                backoff_seconds=args.retry_backoff_seconds,
+            )
+        return 0
 
     run_with_retries(
         ["lake", "build"],

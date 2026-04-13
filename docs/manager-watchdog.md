@@ -1,111 +1,136 @@
-# Manager And Watchdog
+# Campaign Operator, Watchdog, And Optional Manager
 
-Use this document when one higher-level owner is responsible for long unattended benchmark progress, not just a single campaign control pass.
+This document explains the outer reliability stack above a single proving run.
 
-This layer sits above the orchestrator:
+The default runtime path is:
 
-- `manager-agent` is a proposed role that decides campaign scope, restart budget, monitoring policy, and human-facing summaries
-- `orchestrator-agent` owns one campaign root at a time
-- `supervisor-agent` owns one run root at a time
+`human -> campaign-operator -> autoarchon-launch-from-spec -> autoarchon-orchestrator-watchdog -> orchestrator-agent`
 
-## When To Use It
+`manager-agent` is still optional and future-facing.
 
-Use the manager/watchdog layer when you need any of the following:
+## Role Split
 
-- overnight or multi-hour benchmark ownership
-- automatic restart after owner-session loss or orchestrator stalls
-- one place to read restart state, progress fingerprint, and intervention count
-- ablation testing across different owner policies
+- `campaign-operator` is the default outer role. It converts intent into a tracked spec, launches or resumes a campaign, reads progress, and decides when a stopped campaign should be archived and rerun from a fresh root.
+- `watchdog` is the concrete reliability wrapper. It restarts the orchestrator after owner loss or campaign stalls, refreshes compare snapshots, enforces bounded recovery, and writes the authoritative owner lease.
+- `orchestrator-agent` is still the campaign owner inside one root. It chooses which run to recover, launches teachers, and finalizes accepted outputs.
+- `manager-agent` should only appear when multiple campaigns need one higher-level scheduler or one human-facing portfolio summary.
 
-If you only need one interactive owner session, stay in [orchestrator.md](orchestrator.md).
+In other words: `watchdog` is the concrete reliability wrapper, while `manager-agent` is only a possible future policy layer.
 
-## Current Runtime Boundary
+## State Surfaces
 
-Today the runtime entrypoint is `autoarchon-orchestrator-watchdog`. It is the concrete watchdog implementation. `manager-agent` is documented now as a proposed long-term owner contract so future Codex sessions can inherit the same policy surface.
+The reliability stack writes these campaign-level files:
 
-Watchdog state lives under the campaign control root:
-
+- `control/owner-mode.json`
+- `control/owner-lease.json`
 - `control/orchestrator-watchdog.json`
 - `control/orchestrator-watchdog.log`
-- `control/orchestrator-prompt.txt`
+- `control/launch-spec.resolved.json`
+
+The most important watchdog fields are:
+
+- `sessionId`
+- `watchdogStatus`
+- `restartCount`
+- `runCounts`
+- `statusRunIds`
+- `recoverableRunIds`
+- `prewarmPlanCounts`
+- `prewarmPendingRunIds`
+- `activeLaunches`
+- `activeWorkRunIds`
+- `launchBudget`
+- `lastStatusRefreshAt`
+- `lastProgressAt`
+- `lastRecoveryAt`
+- `lastCompareReportAt`
+- `ownerLastLogAt`
+- `stallReason`
+- `budgetExhausted`
+- `reportFreshness`
+- `ownerLease`
+
+These fields are the intended operator surface. They are more trustworthy than ad hoc terminal output.
 
 ## Recommended Launch
 
-First create or identify the campaign root. Then run:
+The normal launch path is spec-driven:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-launch-from-spec \
+  --spec-file /path/to/AutoArchon/campaign_specs/fate-m-full.json \
+  --shard-size 8
+```
+
+That command:
+
+- creates the campaign if it does not exist yet
+- writes `control/launch-spec.resolved.json`
+- updates `control/owner-mode.json`
+- starts `autoarchon-orchestrator-watchdog`
+
+The underlying watchdog entrypoint is still available directly:
 
 ```bash
 uv run --directory /path/to/AutoArchon autoarchon-orchestrator-watchdog \
-  --campaign-root /path/to/campaigns/fate-m-nightly \
+  --campaign-root /path/to/campaign-root \
   --model gpt-5.4 \
   --reasoning-effort xhigh \
   --poll-seconds 30 \
   --stall-seconds 300 \
-  --bootstrap-launch-after-seconds 45
+  --owner-silence-seconds 1200 \
+  --bootstrap-launch-after-seconds 45 \
+  --max-active-launches 2 \
+  --launch-batch-size 1 \
+  --launch-cooldown-seconds 90
 ```
 
-What this does:
+## What The Watchdog Actually Owns
 
-- writes a default orchestrator prompt if one does not exist
-- launches a fresh `codex exec` owner session
-- polls `campaign-status.json`
-- fingerprints progress from run statuses, `events.jsonl`, launch logs, and supervisor state
-- restarts or resumes the owner session when progress stalls
-- finalizes the campaign once every run is terminal, unless `--no-finalize` is set
+- owner lease acquisition and refresh through `control/owner-lease.json`
+- restart budget and degraded stop behavior
+- bounded bootstrap recovery for queued or relaunchable runs
+- stale launch cleanup before deterministic recovery
+- compare report refresh and `reportFreshness`
+- owner-session log capture into `control/orchestrator-watchdog.log`
 
-## Observability Contract
+It does not:
 
-The higher-level owner should track at least these fields:
+- edit benchmark `.lean` files
+- accept proofs by itself
+- replace the orchestrator's campaign judgment
 
-- `campaignId`
-- `sessionId`
-- `restartCount`
-- `stallSeconds`
-- `lastFingerprint`
-- `acceptedProofCount`
-- `acceptedBlockerCount`
-- `manualInterventions`
-
-Practical inspection commands:
+## Practical Inspection
 
 ```bash
-uv run --directory /path/to/AutoArchon autoarchon-campaign-status --campaign-root /path/to/campaign-root
-tail -n 80 /path/to/campaign-root/control/orchestrator-watchdog.log
+uv run --directory /path/to/AutoArchon autoarchon-campaign-overview \
+  --campaign-root /path/to/campaign-root \
+  --markdown
+
+uv run --directory /path/to/AutoArchon autoarchon-campaign-archive \
+  --campaign-root /path/to/campaign-root
+
 cat /path/to/campaign-root/control/orchestrator-watchdog.json
-tail -n 40 /path/to/campaign-root/runs/teacher-a/workspace/.archon/supervisor/HOT_NOTES.md
+tail -n 80 /path/to/campaign-root/control/orchestrator-watchdog.log
+cat /path/to/campaign-root/control/owner-lease.json
 ```
 
-## Manager Responsibilities
+Interpretation hints:
 
-The future `manager-agent` should own:
+- `reportFreshness.compareIsFresh = false` usually means the compare snapshot is stale relative to `campaign-status.json`.
+- `ownerLease.active = true` with a live `ownerPid` or `childPid` means another owner still holds the campaign.
+- `budgetExhausted = true` plus `watchdogStatus = degraded` means the wrapper stopped cleanly instead of crashing.
+- `recoverableRunIds` should be read together with per-run `recoveryClass`, `retryAfter`, and `lastLaunchExitCode`.
 
-- campaign selection and sharding policy
-- watchdog restart budget
-- human update cadence
-- acceptance of final campaign reports
-- cross-campaign ablation comparisons
+Archived samples live under `reports/postmortem/`.
 
-It should not:
+## Optional Future Manager Layer
 
-- directly edit benchmark `.lean` files
-- bypass orchestrator control files
-- hide blocked theorems as solved
+`manager-agent` is still a proposed role. If we add it later, it should own:
 
-## Ablation Protocol
+- campaign portfolio selection
+- restart-budget policy across multiple campaigns
+- human-facing rollups or ablation reports
+- optional delegation to several `campaign-operator` sessions
 
-When evaluating reliability or quality, compare these modes on the same micro-shard set:
-
-1. supervisor-only
-2. orchestrator-only
-3. orchestrator + watchdog
-4. future manager + watchdog
-
-Record at least:
-
-- terminal closure rate
-- false acceptance count
-- duplicate-teacher incidents
-- stale-run detection latency
-- manual interventions
-- finalization latency
-
-This keeps the next industrialization phase honest: the manager layer must improve control and reliability, not just add more prompts.
+It should not absorb the existing watchdog mechanics or the orchestrator's proof-facing responsibilities.

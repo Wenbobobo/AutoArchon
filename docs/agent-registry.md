@@ -1,64 +1,65 @@
 # Agent Registry
 
-This fork keeps the canonical agent registry in `agents/*.json`.
+The canonical AutoArchon role registry lives in `agents/*.json`.
 
-The goal is to make agent boundaries explicit without turning Archon into a heavier runtime plugin system too early. Each registry entry records:
+This registry is deliberately lightweight. The runtime is still file-based, not plugin-based, so the registry exists to make role boundaries explicit and testable before we add more automation.
 
-- current status: `active` or `proposed`
-- role summary
-- read and write surface
-- output artifacts
+Each registry entry records:
+
+- `status`
+- `kind`
+- `summary`
+- read surface
+- write surface
+- outputs
 - handoff targets
 - observability fields
 
-## Why This Exists
+## Active Runtime Roles
 
-Archon already has a stable file-based runtime contract. The fastest way to improve extensibility is to document that contract and test it, not to redesign the scheduler first.
+- `campaign-operator`: default outer operator that prepares spec-driven campaigns, launches watchdogs, reads overviews, and archives postmortems.
+- `orchestrator-agent`: owns one campaign root, launches teachers, runs deterministic recovery, and finalizes accepted outputs.
+- `supervisor-agent`: owns one run root and one supervised loop at a time.
+- `plan-agent`: scopes next work from `.archon/PROGRESS.md` and durable task results.
+- `prover-agent`: edits scoped Lean files and emits theorem-level results.
+- `review-agent`: summarizes runs and writes longer-horizon notes.
+- `informal-agent`: auxiliary mathematical sketch helper.
+- `statement-validator`: deterministic benchmark-fidelity and acceptance checker.
 
-This gives us:
+## Reliability Wrapper
 
-- a single place to explain what each agent owns
-- a safer path for introducing future agents such as validators or supervisors
-- a cheap way to keep runtime, tests, and docs aligned
+- `watchdog` is the concrete reliability wrapper around the orchestrator. It is intentionally not an `agents/*.json` entry because it is a mechanical wrapper, not a proof-search or judgment role.
 
-## Current Runtime Agents
+Its observable surfaces are:
 
-- `plan-agent`: scopes work, merges results, and prepares informal notes
-- `prover-agent`: edits assigned Lean files and emits theorem-level results
-- `review-agent`: summarizes attempts and writes project-level status
-- `informal-agent`: auxiliary proof-sketch helper
-- `statement-validator`: writes deterministic theorem-fidelity verdicts under `.archon/validation/`
-- `supervisor-agent`: writes acceptance and lessons artifacts under `.archon/supervisor/` and `.archon/lessons/`
+- `control/orchestrator-watchdog.json`
+- `control/orchestrator-watchdog.log`
+- `control/owner-lease.json`
+- `reports/final/compare-report.json`
 
-## Current Outer Control Agent
+## Proposed Future Role
 
-- `orchestrator-agent`: owns campaign setup, run sharding, teacher deployment, cross-run monitoring, and final reporting under `reports/final/`
-
-## Proposed Higher-Level Owner
-
-- `manager-agent`: owns watchdog policy, restart budgets, human-facing summaries, and campaign-level accountability above the orchestrator
+- `manager-agent`: optional future owner above `campaign-operator` for cross-campaign scheduling, human-facing rollups, or portfolio-level policy. It is not part of the default path today.
 
 ## Boundary With Vendored Lean4 Material
 
-The files under `.archon-src/skills/lean4/agents/` are reference material inherited with the vendored Lean4 plugin. They are useful examples and support tooling, but they are **not the canonical runtime registry**.
+The files under `.archon-src/skills/lean4/agents/` are reference material inherited from vendored Lean4 support. They are useful examples, but they are **not the canonical runtime registry**.
 
-When documenting or extending Archon itself, prefer the contracts in:
+When updating AutoArchon itself, use these as the source of truth:
 
 - `agents/*.json`
 - `.archon-src/archon-template/AGENTS.md`
-- `.archon-src/prompts/*.md`
 - `docs/architecture.md`
+- `docs/orchestrator.md`
 - `docs/operations.md`
 
-Treat the vendored Lean4 agent files as reference material, not as the source of truth for Archon's scheduler.
-
-`orchestrator-agent` is also outside the vendored Lean4 materials. It is part of this fork's explicit control-plane contract, not a vendored helper.
+Treat vendored Lean4 agent files as reference material, not scheduler truth.
 
 ## Integration Rule
 
-New agents should land in this order:
+For new permanent roles:
 
-1. registry entry in `agents/*.json`
-2. documentation update
-3. tests for the new contract
-4. runtime wiring only after the agent has a clear acceptance signal
+1. add `agents/*.json`
+2. update docs
+3. add or update contract tests
+4. wire runtime behavior only after the acceptance signal is explicit

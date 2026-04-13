@@ -1,0 +1,31 @@
+{
+  "campaignRoot": "${CAMPAIGNS_ROOT}/${FATE_DATE_TAG}-fate-h-full",
+  "sourceRoot": "${BENCHMARK_ROOT}/FATE-H-upstream",
+  "reuseLakeFrom": "${BENCHMARK_ROOT}/FATE-H-upstream",
+  "runSpecOutput": "${RUN_SPECS_ROOT}/${FATE_DATE_TAG}-fate-h-full.json",
+  "teacherModel": "${MODEL}",
+  "teacherReasoningEffort": "${REASONING_EFFORT}",
+  "planShards": {
+    "matchRegex": "^FATEH/.*\\.lean$",
+    "shardSize": 8,
+    "runIdPrefix": "teacher-h",
+    "runIdMode": "index"
+  },
+  "watchdog": {
+    "model": "${MODEL}",
+    "reasoningEffort": "${REASONING_EFFORT}",
+    "pollSeconds": 30,
+    "stallSeconds": 300,
+    "bootstrapLaunchAfterSeconds": 45,
+    "maxRestarts": 3,
+    "ownerSilenceSeconds": 1200,
+    "maxActiveLaunches": 2,
+    "launchBatchSize": 1,
+    "launchCooldownSeconds": 90,
+    "finalizeOnTerminal": true
+  },
+  "environment": {
+    "ARCHON_CODEX_READY_RETRIES": "${ARCHON_CODEX_READY_RETRIES}",
+    "ARCHON_CODEX_READY_RETRY_DELAY_SECONDS": "${ARCHON_CODEX_READY_RETRY_DELAY_SECONDS}"
+  }
+}

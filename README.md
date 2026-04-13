@@ -1,275 +1,221 @@
 # AutoArchon
 
-AutoArchon is a Codex-first Lean 4 proving system for repository-scale formalization and benchmark execution. It keeps the original `plan -> prover -> review` loop, then adds an outer control plane for isolated runs, teacher supervision, deterministic recovery, campaign orchestration, and accepted proof export.
+AutoArchon is a Codex-first Lean 4 proving system for long-running formalization and benchmark campaigns. It keeps the original `plan -> prover -> review` loop, then adds an outer control plane for isolated runs, teacher launch, watchdog recovery, final proof export, and postmortem archiving.
 
-## What AutoArchon Adds
+## Default Path
 
-- Codex CLI replaces the original Claude-only runtime across setup, init, loop, review, and prompts.
-- Lean 4.28.0 is pinned to match the FATE benchmark toolchain.
-- `supervisor-agent` hardens theorem fidelity, acceptance, lessons, and restart behavior for long runs.
-- `orchestrator-agent` owns multi-run campaigns, teacher launch, monitoring, recovery, and final reports.
-- `manager-agent` is a proposed layer above orchestrator/watchdog for long unattended benchmark ownership.
-- Accepted outputs are separated from mutable workspaces so a mathematician can inspect final proofs without reading live state.
+The default outer role is `campaign-operator`, not `manager-agent`.
+
+- `campaign-operator` turns a benchmark intent into a launch spec, campaign root, watchdog process, overview snapshots, and postmortem archives.
+- `orchestrator-agent` owns one campaign root at a time.
+- `watchdog` is the mechanical reliability wrapper around the orchestrator.
+- `supervisor-agent` owns one run root at a time and guards theorem fidelity.
+- `manager-agent` remains a future, optional layer for multi-campaign policy only.
 
 ## System Map
 
 ```mermaid
 flowchart TD
-    H[Human or benchmark driver] --> M[manager-agent / watchdog]
-    M --> O[orchestrator-agent]
-    O --> CLI[control-plane CLI]
-    CLI --> SHARDS[autoarchon-plan-shards]
-    CLI --> CREATE[autoarchon-create-campaign]
-    CLI --> STATUS[autoarchon-campaign-status]
-    CLI --> RECOVER[autoarchon-campaign-recover]
-    CLI --> COMPARE[autoarchon-campaign-compare]
-    CLI --> FINALIZE[autoarchon-finalize-campaign]
+    H[Human or shell script] --> OP[campaign-operator]
+    OP --> SPEC[autoarchon-launch-from-spec]
+    SPEC --> WD[autoarchon-orchestrator-watchdog]
+    WD --> ORCH[orchestrator-agent]
+    ORCH --> PLANSHARDS[autoarchon-plan-shards]
+    ORCH --> CREATE[autoarchon-create-campaign]
+    ORCH --> STATUS[autoarchon-campaign-status]
+    ORCH --> OVERVIEW[autoarchon-campaign-overview]
+    ORCH --> RECOVER[autoarchon-campaign-recover]
+    ORCH --> COMPARE[autoarchon-campaign-compare]
+    ORCH --> FINALIZE[autoarchon-finalize-campaign]
+    ORCH --> ARCHIVE[autoarchon-campaign-archive]
     CREATE --> CAMP[campaign root]
-    CAMP --> CM[CAMPAIGN_MANIFEST.json]
-    CAMP --> CS[campaign-status.json]
-    CAMP --> EV[events.jsonl]
+    CAMP --> OWNER[control/owner-mode.json]
+    CAMP --> LEASE[control/owner-lease.json]
+    CAMP --> WATCHDOG[control/orchestrator-watchdog.json]
     CAMP --> RUNS[runs/<id>/]
-    RUNS --> SRC[source/]
-    RUNS --> WS[workspace/]
-    RUNS --> ART[artifacts/]
     RUNS --> CTRL[control/launch-teacher.sh]
-    CTRL --> T[teacher Codex session]
-    T --> S[supervisor-agent]
-    S --> CYCLE[autoarchon-supervised-cycle]
+    CTRL --> TEACHER[teacher Codex session]
+    TEACHER --> SUP[supervisor-agent]
+    SUP --> CYCLE[autoarchon-supervised-cycle]
     CYCLE --> PLAN[plan-agent]
     PLAN --> PROVER[prover-agent]
     PROVER --> REVIEW[review-agent]
-    PROVER --> STMT[statement-validator]
-    STMT --> VAL[validation/]
-    REVIEW --> JOURNAL[proof-journal/]
-    S --> HOT[supervisor/HOT_NOTES.md]
-    S --> LEDGER[supervisor/LEDGER.md]
-    WS --> EXPORT[autoarchon-export-run-artifacts]
-    EXPORT --> ART
+    PROVER --> VALIDATOR[statement-validator]
+    VALIDATOR --> VAL[workspace/.archon/validation/]
+    REVIEW --> JOURNAL[workspace/.archon/proof-journal/]
+    SUP --> HOT[workspace/.archon/supervisor/HOT_NOTES.md]
+    SUP --> LEDGER[workspace/.archon/supervisor/LEDGER.md]
     FINALIZE --> FINAL[reports/final/]
+    ARCHIVE --> POST[reports/postmortem/]
 ```
-
-## Repository Layout
-
-```text
-AutoArchon/
-├── archon-loop.sh
-├── archonlib/
-├── agents/
-├── docs/
-├── scripts/
-├── skills/archon-orchestrator/
-├── skills/archon-supervisor/
-├── tests/
-└── ui/
-```
-
-Key directories:
-
-- `archonlib/`: control-plane and runtime Python library code.
-- `scripts/`: operator entrypoints for runs, campaigns, recovery, compare reports, exports, and watchdogs.
-- `agents/`: explicit runtime and proposed agent registry.
-- `skills/`: repo-owned Codex skills for supervisor and orchestrator roles.
-- `docs/`: architecture, benchmarking, orchestration, operations, manager/watchdog, and teacher handoff docs.
-- `tests/`: runtime, supervisor, campaign, registry, and docs-contract coverage.
 
 ## Install
 
 ```bash
-git clone <your-public-fork-url>
+git clone <your-fork-or-upstream-url>
 cd AutoArchon
 ./setup.sh
+uv sync --all-groups
 bash scripts/install_repo_skill.sh
 ```
 
-`setup.sh` verifies or installs:
-
-- `git`
-- `python3`
-- `uv`
-- `elan`, `lean`, `lake`
-- `codex`
-
-It also runs `uv sync --all-groups` so the repo-owned CLI entrypoints are ready for `uv run`.
-
-Launch a fresh Codex session after installing repo-owned skills so `$archon-supervisor` and `$archon-orchestrator` are available.
+`setup.sh` verifies `uv`, `elan`, `lean`, `lake`, and `codex`. After installing repo skills, start a fresh Codex session so `$archon-orchestrator` and `$archon-supervisor` are available.
 
 ## Fastest Campaign Start
 
-Use this path when you want the full modern system: isolated runs, teacher supervision, recovery, and accepted final reports.
+This is the main user path.
 
-1. Start a fresh interactive owner session:
-
-```bash
-codex -C /path/to/AutoArchon \
-  --model gpt-5.4 \
-  --sandbox danger-full-access \
-  --ask-for-approval never \
-  -c model_reasoning_effort=xhigh
-```
-
-2. Use this as the first message:
-
-```text
-Use $archon-orchestrator to own this AutoArchon campaign.
-
-Repository root: /path/to/AutoArchon
-Source root: /path/to/FATE-M
-Campaign root: /path/to/campaigns/fate-m-nightly
-Reuse lake from: /path/to/warmed-project
-Match regex: '^FATEM/(39|42|43)\\.lean$'
-Shard size: 1
-Run id mode: file_stem
-
-Mission:
-- if the campaign root does not exist yet, bootstrap it yourself with `uv run --directory /path/to/AutoArchon autoarchon-plan-shards` and `uv run --directory /path/to/AutoArchon autoarchon-create-campaign`
-- if the campaign root already exists, treat it as exclusive scope and do not regenerate run specs unless the user changes scope
-- keep teachers on disjoint run roots
-- prefer deterministic recovery via `uv run --directory /path/to/AutoArchon autoarchon-campaign-recover` over ad hoc shell logic
-- finalize only validated proofs and accepted blocker notes into reports/final/
-
-Stop only when:
-- all runs are in terminal states and reports/final/ is up to date, or
-- a hard external dependency prevents safe continuation
-```
-
-3. From another shell, inspect or steer the campaign with the control-plane CLI:
+1. Prepare benchmarks under a shared root such as `/path/to/benchmarks/FATE-M-upstream`, `/path/to/benchmarks/FATE-H-upstream`, and `/path/to/benchmarks/FATE-X-upstream`.
+2. Launch the bundled three-campaign night run:
 
 ```bash
-uv run --directory /path/to/AutoArchon autoarchon-campaign-status --campaign-root /path/to/campaigns/fate-m-nightly
-uv run --directory /path/to/AutoArchon autoarchon-campaign-recover --campaign-root /path/to/campaigns/fate-m-nightly --all-recoverable --execute
-uv run --directory /path/to/AutoArchon autoarchon-campaign-compare --campaign-root /path/to/campaigns/fate-m-nightly
-uv run --directory /path/to/AutoArchon autoarchon-finalize-campaign --campaign-root /path/to/campaigns/fate-m-nightly
+export MODEL=gpt-5.4
+export REASONING_EFFORT=xhigh
+export BENCHMARK_ROOT=/path/to/benchmarks
+export CAMPAIGNS_ROOT=/path/to/runs/campaigns
+export RUN_SPECS_ROOT=/path/to/runs/campaigns/_run_specs
+export FATE_DATE_TAG=$(date +%Y%m%d-nightly)
+
+bash scripts/start_fate_overnight_watchdogs.sh
 ```
 
-`control-plane commands` are local terminal commands for campaign state, recovery, compare reports, and final export. They are not the web UI. For the live dashboard, use `bash ui/start.sh --project /path/to/run-root/workspace`.
+That script calls `autoarchon-launch-from-spec` for the three tracked templates in `campaign_specs/` and then starts one watchdog per campaign. Use `DRY_RUN=1 bash scripts/start_fate_overnight_watchdogs.sh` to inspect the resolved commands without mutating campaign state or spec templates.
 
-Fresh queued campaigns can be launched safely with `autoarchon-campaign-recover --all-recoverable --execute`. Detached launch writes `teacher-launch-state.json` before the teacher reaches `run-lease.json`, so a second owner or recovery pass will see the run as in-flight instead of launching a duplicate teacher on the same workspace.
-
-## Manager And Watchdog
-
-If you want one higher-level owner session that monitors orchestrator health and restarts it on stalls, use [docs/manager-watchdog.md](docs/manager-watchdog.md).
-
-Typical unattended entrypoint:
+3. Watch progress from another shell:
 
 ```bash
-uv run --directory /path/to/AutoArchon autoarchon-orchestrator-watchdog \
-  --campaign-root /path/to/campaigns/fate-m-nightly
+bash scripts/collect_fate_campaign_summaries.sh
+
+uv run --directory /path/to/AutoArchon autoarchon-campaign-overview \
+  --campaign-root /path/to/runs/campaigns/20260413-nightly-fate-m-full \
+  --markdown
 ```
 
-## Take Over Interrupted Campaign
-
-Use this when the campaign root already exists but the previous owner session or network path died.
-
-1. Recompute truth first:
-
-```bash
-uv run --directory /path/to/AutoArchon autoarchon-campaign-status --campaign-root /path/to/campaign-root
-```
-
-2. Start a fresh owner session:
-
-```bash
-codex -C /path/to/AutoArchon \
-  --model gpt-5.4 \
-  --sandbox danger-full-access \
-  --ask-for-approval never \
-  -c model_reasoning_effort=xhigh
-```
-
-3. Use this as the first message:
-
-```text
-Use $archon-orchestrator to own this existing AutoArchon campaign.
-
-Repository root: /path/to/AutoArchon
-Campaign root: /path/to/campaign-root
-
-Mission:
-- treat this campaign root as exclusive scope
-- recompute campaign-status.json before acting
-- do not inspect unrelated sibling campaigns just to choose naming or workflow patterns
-- apply recommendedRecovery deterministically before inventing custom shell logic
-- finalize only validated proofs and accepted blocker notes into reports/final/
-
-Stop only when:
-- all runs are in terminal states and reports/final/ is current, or
-- a hard external dependency prevents safe continuation
-```
-
-## Where Proofs End Up
-
-The source of truth is always the isolated run, not the dashboard and not the planner notes.
-
-- Final generated proofs live in `run-root/workspace/`.
-- Immutable originals live in `run-root/source/`.
-- Exported review bundles live in `run-root/artifacts/`.
-- Campaign-level accepted bundles live in `campaign-root/reports/final/`.
-- Prover and supervisor logs live under `.archon/logs/iter-*`.
-- Per-file durable notes live under `.archon/task_results/`.
-- Review summaries live under `.archon/proof-journal/`.
-- Validation verdicts live under `.archon/validation/`.
-- Lessons and recovery summaries live under `.archon/lessons/`.
-- Teacher heartbeat and supervision notes live under `.archon/supervisor/`, including `run-lease.json`, `HOT_NOTES.md`, and `LEDGER.md`.
-
-Example review surfaces:
-
-- `runs/<run>/workspace/FATEM/39.lean`
-- `runs/<run>/artifacts/proofs/FATEM/39.lean`
-- `campaigns/<campaign>/reports/final/proofs/<run>/FATEM/39.lean`
-- `campaigns/<campaign>/reports/final/blockers/<run>/`
-
-To inspect a live run in the UI:
+`control-plane commands` are terminal commands for machine-readable state. They are not the web UI. The optional web UI remains useful for deep inspection of a single run:
 
 ```bash
 bash ui/start.sh --project /path/to/run-root/workspace
 ```
 
-## Lower-Level Modes
+## Single Campaign From Spec
 
-Most users should start with campaign orchestration. Lower-level entrypoints still exist, but they are intentionally secondary:
+If you only want one campaign, launch it directly from a spec:
 
-- Single isolated run with one supervisor: see [docs/operations.md](docs/operations.md).
-- Parallel teachers without a top-level owner: see [docs/teacher-agents.md](docs/teacher-agents.md).
-- Manual campaign creation and operator CLI: see [docs/orchestrator.md](docs/orchestrator.md).
-- Manager/watchdog ownership and ablation protocol: see [docs/manager-watchdog.md](docs/manager-watchdog.md).
-- Direct project loop usage: `./init.sh /path/to/project`, then `./archon-loop.sh /path/to/project`, then `./review.sh /path/to/project`.
+```bash
+export MODEL=gpt-5.4
+export REASONING_EFFORT=xhigh
+export BENCHMARK_ROOT=/path/to/benchmarks
+export CAMPAIGNS_ROOT=/path/to/runs/campaigns
+export RUN_SPECS_ROOT=/path/to/runs/campaigns/_run_specs
+export FATE_DATE_TAG=20260413-nightly
+
+uv run --directory /path/to/AutoArchon autoarchon-launch-from-spec \
+  --spec-file /path/to/AutoArchon/campaign_specs/fate-m-full.json
+```
+
+Useful companion commands:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-campaign-status --campaign-root /path/to/campaign-root
+uv run --directory /path/to/AutoArchon autoarchon-campaign-recover --campaign-root /path/to/campaign-root --run-id teacher-m-001 --execute
+uv run --directory /path/to/AutoArchon autoarchon-campaign-compare --campaign-root /path/to/campaign-root
+uv run --directory /path/to/AutoArchon autoarchon-campaign-archive --campaign-root /path/to/campaign-root
+uv run --directory /path/to/AutoArchon autoarchon-finalize-campaign --campaign-root /path/to/campaign-root
+```
+
+The spec-driven path writes `control/launch-spec.resolved.json`, keeps `owner-mode.json` in sync, and starts the watchdog with bounded recovery settings. `control/owner-lease.json`, `control/orchestrator-watchdog.json`, `reports/final/compare-report.json`, and `reports/postmortem/postmortem-summary.json` are the main outer-loop surfaces.
+
+## Interactive Owner Session
+
+If you want Codex itself to act as the outer owner, start an interactive session and then hand it to `$archon-orchestrator`:
+
+```bash
+codex -C /path/to/AutoArchon \
+  --model gpt-5.4 \
+  --sandbox danger-full-access \
+  --ask-for-approval never \
+  -c model_reasoning_effort=xhigh
+```
+
+The detailed prompt template and operator workflow live in [docs/orchestrator.md](docs/orchestrator.md). Use this path when you want a human-steered owner session rather than “just run the script”.
 
 ## Quick Supervisor Soak Test
 
-Use this only when you want one teacher over one isolated run without the outer campaign owner.
+For one isolated run without the full campaign layer, go straight to `$archon-supervisor` and the single-run playbook in [docs/operations.md](docs/operations.md).
+
+Core inner-loop command:
 
 ```bash
-codex exec \
-  --skip-git-repo-check \
-  --sandbox danger-full-access \
-  -c approval_policy=never \
-  -c model_reasoning_effort=xhigh \
-  --model gpt-5.4 \
-  - <<'EOF'
-Use $archon-supervisor to supervise this AutoArchon run.
-
-Repository root: /path/to/AutoArchon
-Run root: /path/to/run-root
-Source root: /path/to/run-root/source
-Workspace root: /path/to/run-root/workspace
-
-Mission:
-- keep theorem headers faithful to source
-- supervise repeated plan/prover cycles until the scoped objectives are solved, a blocker is validated, or an external stop condition is hit
-- prefer `uv run --directory /path/to/AutoArchon autoarchon-supervised-cycle --workspace /path/to/run-root/workspace --source /path/to/run-root/source --plan-timeout-seconds 180 --prover-timeout-seconds 240 --prover-idle-seconds 90 --no-review`
-- export milestone artifacts with `uv run --directory /path/to/AutoArchon autoarchon-export-run-artifacts --run-root /path/to/run-root`
-- do not stop to give an interim report; keep writing progress into workspace/.archon/supervisor/HOT_NOTES.md and workspace/.archon/supervisor/LEDGER.md instead
-EOF
+uv run --directory /path/to/AutoArchon autoarchon-supervised-cycle \
+  --workspace /path/to/run-root/workspace \
+  --source /path/to/run-root/source \
+  --plan-timeout-seconds 180 \
+  --prover-timeout-seconds 240 \
+  --prover-idle-seconds 90 \
+  --no-review
 ```
 
-## Further Reading
+## Where Proofs End Up
 
-- [docs/architecture.md](docs/architecture.md): global workflow, contracts, and observability.
-- [docs/benchmarking.md](docs/benchmarking.md): benchmark-faithful vs contaminated runs and benchmark caveats.
-- [docs/agent-registry.md](docs/agent-registry.md): runtime and proposed agent contracts.
-- [docs/orchestrator.md](docs/orchestrator.md): orchestrator-first control plane, campaign creation, launch, monitoring, recovery, and finalization.
-- [docs/manager-watchdog.md](docs/manager-watchdog.md): higher-level owner role, watchdog policy, and ablation protocol.
-- [docs/teacher-agents.md](docs/teacher-agents.md): direct teacher prompts and multi-teacher operator handoff.
-- [docs/operations.md](docs/operations.md): single-run operational baseline.
-- [docs/roadmaps/control-plane-phase3.md](docs/roadmaps/control-plane-phase3.md): saved control-plane implementation roadmap.
+- Mutable proof search happens only under `runs/<id>/workspace/`.
+- A single-run shorthand for that mutable tree is `run-root/workspace/`.
+- Immutable originals stay under `runs/<id>/source/`.
+- Per-run exported bundles live under `runs/<id>/artifacts/`.
+- Campaign-level accepted outputs live under `reports/final/`.
+- Archived failed or interrupted night runs live under `reports/postmortem/`.
+
+Concrete final export paths:
+
+- `reports/final/proofs/<run>/`
+- `reports/final/blockers/<run>/`
+- `reports/final/validation/<run>/`
+- `reports/final/runs/<run>/run-summary.json`
+
+The most useful files when auditing a run are:
+
+- `runs/<id>/control/bootstrap-state.json`
+- `runs/<id>/control/teacher-launch-state.json`
+- `runs/<id>/control/prewarm.stdout.log`
+- `runs/<id>/workspace/.archon/task_results/*.md`
+- `runs/<id>/workspace/.archon/validation/*.json`
+- `runs/<id>/workspace/.archon/logs/iter-*/`
+- `runs/<id>/workspace/.archon/proof-journal/`
+- `runs/<id>/workspace/.archon/supervisor/run-lease.json`
+- `reports/final/compare-report.json`
+- `reports/final/runs/<run>/timeline.json`
+
+For mathematician review, prefer exported proofs and validation-backed artifacts under `artifacts/` or `reports/final/`, not the live workspace alone.
+
+## Repository Layout
+
+```text
+AutoArchon/
+├── agents/
+├── archonlib/
+├── campaign_specs/
+├── docs/
+├── scripts/
+├── skills/
+├── tests/
+└── ui/
+```
+
+- `agents/`: explicit runtime and proposed agent contracts.
+- `archonlib/`: control-plane and runtime library code.
+- `campaign_specs/`: tracked benchmark launch templates.
+- `scripts/`: public `uv run` entrypoints and operator shell wrappers.
+- `skills/`: repo-owned Codex skills for outer-owner and teacher sessions.
+- `docs/`: architecture, operations, orchestrator, teacher, and control-plane notes.
+- `tests/`: runtime, CLI, watchdog, docs-contract, and registry coverage.
+
+## Docs
+
+- [docs/architecture.md](docs/architecture.md): global workflow, artifact boundaries, observability, future extension points.
+- [docs/orchestrator.md](docs/orchestrator.md): interactive owner-session workflow and deterministic recovery CLI.
+- [docs/manager-watchdog.md](docs/manager-watchdog.md): `campaign-operator`, watchdog, owner lease, overview, and postmortem surfaces.
+- [docs/teacher-agents.md](docs/teacher-agents.md): one-run-per-teacher launch and monitoring.
+- [docs/operations.md](docs/operations.md): single-run operational baseline, prewarm, soak-test commands.
+- [docs/agent-registry.md](docs/agent-registry.md): runtime agent contracts and future roles.
+- [docs/benchmarking.md](docs/benchmarking.md): benchmark-faithful vs contaminated run policy.
+- [docs/roadmaps/control-plane-phase4.md](docs/roadmaps/control-plane-phase4.md): current hardening roadmap and remaining gaps.
+- [docs/postmortem-20260413-nightly.md](docs/postmortem-20260413-nightly.md): archived summary of the first three nightly FATE samples and why fresh reruns must use new campaign roots.

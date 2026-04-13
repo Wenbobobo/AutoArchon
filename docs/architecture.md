@@ -1,130 +1,132 @@
 # Architecture
 
-This document is the system-level map for AutoArchon. It describes the active control plane, the single-run proving loop, the artifact boundaries, and the observability fields that matter when you scale campaigns up.
+This is the system-level map for AutoArchon after the control-plane hardening pass. The default outer path is now `campaign-operator -> launch-from-spec -> watchdog -> orchestrator-agent -> supervisor-agent`.
 
 ## Global Workflow
 
 ```mermaid
 flowchart TD
-    U[User or benchmark driver] --> MAN[manager-agent / watchdog]
-    MAN --> ORCH[orchestrator-agent]
+    U[User or benchmark driver] --> CO[campaign-operator]
+    U -. future multi-campaign policy .-> MAN[manager-agent]
+    MAN --> CO
+    CO --> SPEC[autoarchon-launch-from-spec]
+    SPEC --> OWNER[control/owner-mode.json]
+    SPEC --> LEASE[control/owner-lease.json]
+    SPEC --> WD[watchdog wrapper]
+    WD --> ORCH[orchestrator-agent]
     ORCH --> SHARDS[autoarchon-plan-shards]
     ORCH --> CREATE[autoarchon-create-campaign]
     ORCH --> STATUS[autoarchon-campaign-status]
+    ORCH --> OVERVIEW[autoarchon-campaign-overview]
     ORCH --> REC[autoarchon-campaign-recover]
     ORCH --> CMP[autoarchon-campaign-compare]
     ORCH --> FIN[autoarchon-finalize-campaign]
+    ORCH --> ARC[autoarchon-campaign-archive]
     CREATE --> CAMP[campaign root]
     CAMP --> CM[CAMPAIGN_MANIFEST.json]
     CAMP --> CS[campaign-status.json]
     CAMP --> EV[events.jsonl]
+    CAMP --> WDSTATE[control/orchestrator-watchdog.json]
+    CAMP --> FINAL[reports/final/]
+    CAMP --> POST[reports/postmortem/]
     CAMP --> RUNS[runs/<id>/]
+
     RUNS --> SRC[source/]
     RUNS --> WS[workspace/]
     RUNS --> ART[artifacts/]
     RUNS --> CTRL[control/launch-teacher.sh]
-    FIN --> FINAL[reports/final/]
+    RUNS --> BOOT[control/bootstrap-state.json]
+    RUNS --> TSTATE[control/teacher-launch-state.json]
 
     CTRL --> TEACHER[teacher Codex session]
     TEACHER --> SUP[supervisor-agent]
     SUP --> CYCLE[autoarchon-supervised-cycle]
-    CYCLE --> STATE[workspace/.archon/]
-
-    subgraph State["workspace/.archon/"]
-        PROG[PROGRESS.md]
-        SCOPE[RUN_SCOPE.md]
-        TASKS[task_results/]
-        VAL[validation/]
-        LES[lessons/]
-        JOURNAL[proof-journal/]
-        LOGS[logs/iter-*]
-        SUPDIR[supervisor/]
-    end
-
-    STATE --> PROG
-    STATE --> SCOPE
-    STATE --> TASKS
-    STATE --> VAL
-    STATE --> LES
-    STATE --> JOURNAL
-    STATE --> LOGS
-    STATE --> SUPDIR
-
+    CYCLE --> PROG[workspace/.archon/PROGRESS.md]
+    CYCLE --> SCOPE[workspace/.archon/RUN_SCOPE.md]
+    CYCLE --> LOGS[workspace/.archon/logs/iter-*]
+    CYCLE --> TASKS[workspace/.archon/task_results/]
+    CYCLE --> SUPDIR[workspace/.archon/supervisor/]
+    CYCLE --> LES[workspace/.archon/lessons/]
     PROG --> PLAN[plan-agent]
-    TASKS --> PLAN
     PLAN --> PROVER[prover-agent]
     PROVER --> REVIEW[review-agent]
     PROVER --> STMT[statement-validator]
-    STMT --> VAL
-    REVIEW --> JOURNAL
-    SUP --> SUPDIR
-    SUP --> LES
     PROVER --> LSP[archon-lean-lsp]
+    STMT --> VAL[workspace/.archon/validation/]
+    REVIEW --> JOURNAL[workspace/.archon/proof-journal/]
+    SUPDIR --> HOT[HOT_NOTES.md]
+    SUPDIR --> LEDGER[LEDGER.md]
+    SUPDIR --> RUNLEASE[run-lease.json]
     WS --> EXPORT[autoarchon-export-run-artifacts]
     EXPORT --> ART
 ```
 
 ## Role Split
 
-- `manager-agent` is the proposed long-horizon owner above one or more campaigns. It chooses watchdog policy, restart budgets, and human-facing summaries.
-- `orchestrator-agent` owns campaign creation, teacher deployment, recovery decisions, compare reports, and final accepted exports. It does not directly edit benchmark `.lean` files.
-- `supervisor-agent` owns one run root at a time, guards theorem fidelity, runs monitored cycles, and leaves restart-safe notes in `workspace/.archon/supervisor/`.
-- `plan-agent` scopes the next step from `workspace/.archon/PROGRESS.md`, `workspace/.archon/RUN_SCOPE.md`, and durable `task_results/`.
-- `prover-agent` edits the scoped Lean file and emits theorem-level results.
-- `review-agent` summarizes iterations into `proof-journal/`.
-- `statement-validator` writes deterministic theorem-fidelity verdicts and acceptance metadata.
+- `campaign-operator` is the default outer owner. It chooses a spec, launches or resumes a campaign, reads `autoarchon-campaign-overview`, and decides whether to archive or rerun.
+- `watchdog` is the concrete reliability wrapper. It owns restart budget, owner lease refresh, owner conflict handling, stale-launch cleanup, and `reportFreshness`.
+- `orchestrator-agent` owns one campaign root at a time. It plans shards, creates runs, launches teachers, applies bounded deterministic recovery, and finalizes accepted results. It does not directly edit benchmark `.lean` files.
+- `supervisor-agent` owns one run root at a time, guards theorem fidelity, leaves restart-safe notes, and drives repeated monitored cycles.
+- `plan-agent`, `prover-agent`, `review-agent`, and `statement-validator` remain the inner proof loop.
+- `manager-agent` stays optional and future-facing. Use it only when you truly need multi-campaign policy or human-facing rollups above multiple operators.
 
 ## Artifact Boundaries
 
-- `source/` is immutable comparison baseline.
-- `workspace/` is the only place where proof search edits happen.
-- `artifacts/` is the per-run export surface for mathematician review.
-- `reports/final/` is the campaign-level accepted surface. Only accepted proofs, accepted blocker notes, copied validation verdicts, lessons, and supervisor summaries belong there.
+- `source/` is immutable baseline.
+- `workspace/` is the only mutable proof-search area.
+- `artifacts/` is the per-run export bundle for mathematician review.
+- `reports/final/` is the campaign-level accepted surface.
+- `reports/postmortem/` is the archived diagnostic surface for stopped, degraded, or intentionally non-final benchmark samples.
 
-This split is what makes benchmark-faithful evaluation possible. A live workspace can be useful while still being unaccepted.
+The system is designed so a run may have useful live workspace state without being counted as accepted.
 
 ## State Contract
 
-The proving loop is intentionally file-coupled. The most important runtime files are:
+The most important operator-facing files are:
 
-- `workspace/.archon/PROGRESS.md`: current stage and current objectives.
-- `workspace/.archon/RUN_SCOPE.md`: hard file boundary for plan/prover work.
-- `workspace/.archon/task_results/`: durable per-file results, blocker notes, and handoff notes.
-- `workspace/.archon/validation/`: machine-readable theorem-fidelity and acceptance status.
-- `workspace/.archon/lessons/`: cycle summaries and recovery lessons.
-- `workspace/.archon/supervisor/run-lease.json`: authoritative teacher heartbeat and ownership.
-- `workspace/.archon/supervisor/HOT_NOTES.md`: short restart summary.
-- `workspace/.archon/supervisor/LEDGER.md`: longer chronology.
-- `workspace/.archon/logs/iter-*`: plan/prover/review logs and iteration metadata.
+- `campaign-status.json`: run status, `recommendedRecovery`, accepted proofs, accepted blockers, and pending targets
+- `control/owner-mode.json`: declared owner mode for the campaign
+- `control/owner-lease.json`: outer-owner lease, session identity, and conflict guard
+- `control/launch-spec.resolved.json`: the resolved spec used by the campaign-operator
+- `control/orchestrator-watchdog.json`: `watchdogStatus`, `restartCount`, `stallReason`, `runCounts`, `activeLaunches`, `reportFreshness`, and progress timestamps
+- key watchdog JSON fields also include `ownerLease`
+- `runs/<id>/control/bootstrap-state.json`: fresh-run summary, `prewarmRequired`, and `allowedFiles`
+- `runs/<id>/control/teacher-launch-state.json`: detached launch phase before `run-lease.json` is live
+- `runs/<id>/RUN_MANIFEST.json`: bootstrap metadata such as `projectBuildReused`
+- `workspace/.archon/supervisor/run-lease.json`: authoritative run-local ownership and heartbeat
+- `workspace/.archon/supervisor/HOT_NOTES.md` and `LEDGER.md`: restart-safe teacher notes
+- `workspace/.archon/logs/iter-*/meta.json`: cycle timing such as `durationSecs`
+- prover logs: token accounting such as `input_tokens` and `output_tokens` when available
+
+These are the files the outer owner should trust before relaunching, archiving, or finalizing.
 
 ## Observability
 
-The observability model is designed for long campaigns where runs can die, restart, or be handed off to a fresh owner session.
+Campaign-level observability should answer four questions quickly:
 
-Campaign-level signals:
+1. Is the campaign making progress?
+2. Is the owner healthy?
+3. Are duplicate or stale launches being contained?
+4. Is the current benchmark sample final, or should it be archived as postmortem only?
 
-- `campaign-status.json`: run status, `recommendedRecovery`, heartbeat age, accepted proofs, accepted blockers, and pending targets.
-- `events.jsonl`: append-only chronology of control-plane actions.
-- `reports/final/compare-report.json` and `reports/final/final-summary.json`: compact benchmark-facing summaries.
-- `control/teacher-launch-state.json`: pre-lease in-flight marker for detached launches.
-- `control/orchestrator-watchdog.json`: owner session status, `sessionId`, `restartCount`, `stallSeconds`, and the last watchdog fingerprint.
+The current answers live in:
 
-Run-level signals:
+- `autoarchon-campaign-overview`
+- `campaign-status.json`
+- `reports/final/compare-report.json`
+- `reports/postmortem/postmortem-summary.json`
+- `control/orchestrator-watchdog.log`
 
-- `workspace/.archon/supervisor/run-lease.json`: live ownership, heartbeat, and loop pid.
-- `workspace/.archon/supervisor/violations.jsonl`: idle timeout, theorem mutation, copied-state contamination, and other policy events.
-- `workspace/.archon/logs/iter-*/meta.json`: stage status and timing such as `durationSecs`.
-- prover and review JSONL logs: token and step accounting, including fields such as `input_tokens` and `output_tokens` when the backend emits them.
-
-These are the fields the outer owner should trust before it decides to relaunch, recover-only, quarantine, or finalize.
+The dashboard is still useful for one run, but the campaign summary surface is intentionally CLI-first.
 
 ## Extension Points
 
-The high-ROI extension points are still around validation and control, not around adding many autonomous agents at once.
+The next profitable extension points are around verification and knowledge accumulation rather than adding many loosely coupled proof agents at once.
 
-- Better statement preflight before proof search.
-- Richer acceptance and audit agents downstream of `statement-validator`.
-- A stable manager/watchdog contract above the current orchestrator.
-- Tighter prover orchestration over `archon-lean-lsp` and deterministic recovery commands.
+- a helper prover contract that can take bounded subgoals without owning final acceptance
+- richer acceptance and audit downstream of `statement-validator`
+- lessons taxonomy and error clustering for repeated failure modes
+- mathlib-specialist or retrieval-style agents driven by accumulated blocker/error logs
+- a future `manager-agent` only when multiple campaigns actually need shared policy
 
-The current bias is intentional: stabilize the outer loop, keep the file contracts explicit, and only then add more permanent agents.
+The rule stays the same: stabilize the control plane first, then add more agents against explicit file contracts.

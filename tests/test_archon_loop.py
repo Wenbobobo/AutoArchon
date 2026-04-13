@@ -300,3 +300,142 @@ def test_preflight_exhausts_retries_and_exits(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "Codex cannot run after 3 attempt(s)." in combined_output
     assert calls_log.read_text(encoding="utf-8").splitlines() == ["other", "other", "other"]
+
+
+def test_parallel_prover_ignores_explanatory_paths_outside_numbered_objectives(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    fake_bin_dir = make_fake_codex(tmp_path)
+    calls_log = tmp_path / "codex-calls.log"
+    state = project / ".archon"
+
+    write(
+        project / "Bar.lean",
+        """
+        import Mathlib
+
+        theorem bar : True := by
+          sorry
+        """,
+    )
+    write(
+        state / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        Treat this file as a hard constraint.
+        Plan and prover agents must stay within the allowed files listed below.
+
+        - Include regex: `Foo|Bar`
+        - Objective limit: `2`
+
+        ## Allowed Files
+
+        1. `Foo.lean`
+        2. `Bar.lean`
+        """,
+    )
+    write(
+        state / "PROGRESS.md",
+        """
+        # Project Progress
+
+        ## Current Stage
+        prover
+
+        ## Stages
+        - [x] init
+        - [x] autoformalize
+        - [ ] prover
+        - [ ] polish
+
+        ## Current Objectives
+
+        Scheduler guard: only the numbered line below is a live prover target.
+        - Deferred blocker: `Bar.lean` is frozen and must not be relaunched.
+        1. **Foo.lean** — Recheck the only active scoped target.
+        """,
+    )
+
+    result = run_archon(
+        project,
+        fake_bin_dir,
+        "--max-iterations",
+        "1",
+        env_extra={"FAKE_CODEX_CALLS_LOG": str(calls_log)},
+    )
+
+    combined_output = f"{result.stdout}\n{result.stderr}"
+
+    assert result.returncode == 0
+    assert "Found 1 file(s)" not in combined_output
+    assert calls_log.read_text(encoding="utf-8").splitlines() == ["other", "plan", "prover"]
+
+
+def test_parallel_prover_skips_when_current_objectives_has_no_numbered_lean_target(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    fake_bin_dir = make_fake_codex(tmp_path)
+    calls_log = tmp_path / "codex-calls.log"
+    state = project / ".archon"
+
+    write(
+        project / "Bar.lean",
+        """
+        import Mathlib
+
+        theorem bar : True := by
+          sorry
+        """,
+    )
+    write(
+        state / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        Treat this file as a hard constraint.
+        Plan and prover agents must stay within the allowed files listed below.
+
+        - Include regex: `Foo|Bar`
+        - Objective limit: `2`
+
+        ## Allowed Files
+
+        1. `Foo.lean`
+        2. `Bar.lean`
+        """,
+    )
+    write(
+        state / "PROGRESS.md",
+        """
+        # Project Progress
+
+        ## Current Stage
+        prover
+
+        ## Stages
+        - [x] init
+        - [x] autoformalize
+        - [ ] prover
+        - [ ] polish
+
+        ## Current Objectives
+
+        1. **No active proof-search target.**
+           - Stop condition reached for this scoped batch.
+           - Frozen blockers: `Foo.lean`, `Bar.lean`.
+           - Do not relaunch proof search unless the user changes scope.
+        """,
+    )
+
+    result = run_archon(
+        project,
+        fake_bin_dir,
+        "--max-iterations",
+        "1",
+        env_extra={"FAKE_CODEX_CALLS_LOG": str(calls_log)},
+    )
+
+    combined_output = f"{result.stdout}\n{result.stderr}"
+
+    assert result.returncode == 0
+    assert "No files parsed from PROGRESS.md ## Current Objectives." in combined_output
+    assert calls_log.read_text(encoding="utf-8").splitlines() == ["other", "plan"]

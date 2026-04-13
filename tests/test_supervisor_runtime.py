@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 from archonlib.agent_registry import load_agent_registry_map
@@ -25,6 +26,30 @@ INSTALL_REPO_SKILL = ROOT / "scripts" / "install_repo_skill.sh"
 def write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(textwrap.dedent(content).lstrip(), encoding="utf-8")
+
+
+def write_stale_planner_state(workspace: Path, rel_path: str) -> None:
+    write(
+        workspace / ".archon" / "PROGRESS.md",
+        f"""
+        # Project Progress
+
+        ## Current Stage
+        prover
+
+        ## Stages
+        - [x] init
+        - [x] autoformalize
+        - [ ] prover
+        - [ ] polish
+
+        ## Current Objectives
+
+        1. **{rel_path}** — Continue the current prover task.
+        """,
+    )
+    write(workspace / ".archon" / "task_pending.md", f"# Pending Tasks\n\n- `{rel_path}` — queued.\n")
+    write(workspace / ".archon" / "task_done.md", "# Completed Tasks\n\n- None.\n")
 
 
 def make_source_project(tmp_path: Path) -> Path:
@@ -184,18 +209,23 @@ def test_create_isolated_run_copies_source_and_workspace_without_archon(tmp_path
 
     payload = json.loads((tmp_path / "run-root" / "RUN_MANIFEST.json").read_text(encoding="utf-8"))
     assert payload["schemaVersion"] == 1
+    assert payload["lakePackagesLinked"] is True
+    assert payload["projectBuildReused"] is False
+    assert payload["lakeBuildReusePath"] is None
     assert payload["scopeHint"] == "FATEM/42.lean"
 
 
-def test_create_isolated_run_links_shared_lake_packages_instead_of_copying_whole_cache(tmp_path: Path):
+def test_create_isolated_run_reuses_matching_project_build_outputs(tmp_path: Path):
     source = make_source_project(tmp_path)
     cache_project = tmp_path / "cache-project"
     shared_packages = cache_project / ".lake" / "packages"
     write(shared_packages / "mathlib" / "README", "cached\n")
+    write(cache_project / "lean-toolchain", (source / "lean-toolchain").read_text(encoding="utf-8"))
+    write(cache_project / "lakefile.lean", (source / "lakefile.lean").read_text(encoding="utf-8"))
     write(cache_project / ".lake" / "config" / "manifest.json", "{}\n")
     write(cache_project / ".lake" / "build" / "lib" / "placeholder", "local-build\n")
 
-    create_isolated_run(
+    manifest = create_isolated_run(
         source,
         tmp_path / "run-root",
         reuse_lake_from=cache_project,
@@ -209,8 +239,39 @@ def test_create_isolated_run_links_shared_lake_packages_instead_of_copying_whole
     assert packages_link.is_symlink()
     assert packages_link.resolve() == shared_packages.resolve()
     assert (packages_link / "mathlib" / "README").read_text(encoding="utf-8") == "cached\n"
+    assert (workspace_lake / "config" / "manifest.json").read_text(encoding="utf-8") == "{}\n"
+    assert (workspace_lake / "build" / "lib" / "placeholder").read_text(encoding="utf-8") == "local-build\n"
+    assert manifest["lakePackagesLinked"] is True
+    assert manifest["projectBuildReused"] is True
+    assert manifest["lakeBuildReusePath"] == str((cache_project / ".lake" / "build").resolve())
+
+
+def test_create_isolated_run_skips_project_build_reuse_when_cache_project_is_incompatible(tmp_path: Path):
+    source = make_source_project(tmp_path)
+    cache_project = tmp_path / "cache-project"
+    shared_packages = cache_project / ".lake" / "packages"
+    write(shared_packages / "mathlib" / "README", "cached\n")
+    write(cache_project / "lean-toolchain", "leanprover/lean4:v4.99.0\n")
+    write(cache_project / "lakefile.lean", (source / "lakefile.lean").read_text(encoding="utf-8"))
+    write(cache_project / ".lake" / "config" / "manifest.json", "{}\n")
+    write(cache_project / ".lake" / "build" / "lib" / "placeholder", "local-build\n")
+
+    manifest = create_isolated_run(
+        source,
+        tmp_path / "run-root",
+        reuse_lake_from=cache_project,
+        scope_hint="FATEM/42.lean",
+    )
+
+    workspace_lake = tmp_path / "run-root" / "workspace" / ".lake"
+    packages_link = workspace_lake / "packages"
+
+    assert packages_link.is_symlink()
+    assert packages_link.resolve() == shared_packages.resolve()
     assert not (workspace_lake / "config").exists()
     assert not (workspace_lake / "build").exists()
+    assert manifest["projectBuildReused"] is False
+    assert manifest["lakeBuildReusePath"] is None
 
 
 def test_export_run_artifacts_writes_diff_proof_task_results_and_supervisor_snapshot(tmp_path: Path):
@@ -223,7 +284,20 @@ def test_export_run_artifacts_writes_diff_proof_task_results_and_supervisor_snap
     write(workspace / "FATEM" / "39.lean", "theorem foo : True := by\n  trivial\n")
     write(workspace / ".lake" / "packages" / "mathlib" / "Mathlib" / "Ignored.lean", "theorem ignored : True := by\n  trivial\n")
     write(workspace / ".archon" / "task_results" / "FATEM_42.lean.md", "# blocker\n")
-    write(workspace / ".archon" / "validation" / "FATEM_39.lean.json", json.dumps({"relPath": "FATEM/39.lean"}))
+    write(
+        workspace / ".archon" / "validation" / "FATEM_39.lean.json",
+        json.dumps(
+            {
+                "relPath": "FATEM/39.lean",
+                "checks": {
+                    "taskResult": {
+                        "path": ".archon/task_results/FATEM_42.lean.md",
+                        "kind": "blocker",
+                    }
+                },
+            }
+        ),
+    )
     write(workspace / ".archon" / "lessons" / "iter-001-clean.json", json.dumps({"status": "clean"}))
     write(workspace / ".archon" / "supervisor" / "HOT_NOTES.md", "# hot\n")
     write(workspace / ".archon" / "supervisor" / "LEDGER.md", "# ledger\n")
@@ -234,6 +308,7 @@ def test_export_run_artifacts_writes_diff_proof_task_results_and_supervisor_snap
 
     assert summary["changedFiles"] == ["FATEM/39.lean"]
     assert summary["taskResults"] == ["FATEM_42.lean.md"]
+    assert summary["resolvedNotes"] == []
     assert summary["blockerNotes"] == ["FATEM_42.lean.md"]
     assert summary["validationFiles"] == ["FATEM_39.lean.json"]
     assert summary["lessonFiles"] == ["iter-001-clean.json"]
@@ -245,6 +320,16 @@ def test_export_run_artifacts_writes_diff_proof_task_results_and_supervisor_snap
     assert (artifacts / "supervisor" / "HOT_NOTES.md").exists()
     assert (artifacts / "artifact-index.json").exists()
     assert not (artifacts / "proofs" / ".lake" / "packages" / "mathlib" / "Mathlib" / "Ignored.lean").exists()
+
+
+def test_shell_runtime_defaults_use_codex_config_flag():
+    loop_script = (ROOT / "archon-loop.sh").read_text(encoding="utf-8")
+    review_script = (ROOT / "review.sh").read_text(encoding="utf-8")
+
+    assert "--config model_reasoning_effort=xhigh" in loop_script
+    assert "--config model_reasoning_effort=xhigh" in review_script
+    assert "--c model_reasoning_effort=xhigh" not in loop_script
+    assert "--c model_reasoning_effort=xhigh" not in review_script
 
 
 def test_install_repo_skill_symlinks_into_codex_home(tmp_path: Path):
@@ -419,6 +504,7 @@ def test_supervised_cycle_writes_clean_validation_and_recovery_lesson(tmp_path: 
     workspace = tmp_path / "workspace"
     write(source / "FATEM" / "42.lean", "theorem foo : True := by\n  sorry\n")
     write(workspace / "FATEM" / "42.lean", "theorem foo : True := by\n  sorry\n")
+    write_stale_planner_state(workspace, "FATEM/42.lean")
     write(
         workspace / ".archon" / "RUN_SCOPE.md",
         """
@@ -495,6 +581,18 @@ def test_supervised_cycle_writes_clean_validation_and_recovery_lesson(tmp_path: 
     categories = {entry["category"] for entry in lesson_payload["lessons"]}
     assert "idle_recovery" in categories
     assert "blocker_discipline" in categories
+
+    progress_text = (workspace / ".archon" / "PROGRESS.md").read_text(encoding="utf-8")
+    assert "## Current Stage\nCOMPLETE" in progress_text
+    assert "Accepted blocker note `FATEM_42.lean.md` validated" in progress_text
+
+    pending_text = (workspace / ".archon" / "task_pending.md").read_text(encoding="utf-8")
+    assert "No pending tasks in the current scope." in pending_text
+
+    done_text = (workspace / ".archon" / "task_done.md").read_text(encoding="utf-8")
+    assert "`FATEM/42.lean`" in done_text
+    assert "`FATEM_42.lean.md`" in done_text
+    assert "Accepted blocker note" in done_text
 
 
 def test_supervised_cycle_records_loop_failure_before_new_iteration(tmp_path: Path):
@@ -690,11 +788,104 @@ def test_supervised_cycle_refuses_to_start_when_run_local_lease_is_active(tmp_pa
     assert "active_supervisor_lease" in violations
 
 
+def test_supervised_cycle_clears_stale_terminal_lease_fields_when_starting_new_cycle(tmp_path: Path):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    write(source / "FATEM" / "2.lean", "theorem foo : True := by\n  sorry\n")
+    write(workspace / "FATEM" / "2.lean", "theorem foo : True := by\n  sorry\n")
+    write(
+        workspace / ".archon" / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        ## Allowed Files
+
+        1. `FATEM/2.lean`
+        """,
+    )
+    write(
+        workspace / ".archon" / "supervisor" / "run-lease.json",
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "active": False,
+                "status": "completed",
+                "workspace": str(workspace),
+                "source": str(source),
+                "supervisorPid": 123,
+                "loopPid": None,
+                "updatedAt": "2026-04-12T00:00:00+00:00",
+                "lastHeartbeatAt": "2026-04-12T00:00:00+00:00",
+                "startedAt": "2026-04-12T00:00:00+00:00",
+                "completedAt": "2026-04-12T00:01:00+00:00",
+                "finalStatus": "clean",
+                "loopExitCode": 0,
+                "recoveryEvent": "verified_in_recovery",
+                "validationFiles": ["FATEM_2.lean.json"],
+                "lessonFile": "iter-001-clean.json",
+            },
+            indent=2,
+        ),
+    )
+    fake_loop = tmp_path / "fake-archon-loop.sh"
+    write(
+        fake_loop,
+        """
+        #!/usr/bin/env bash
+        sleep 2
+        exit 0
+        """,
+    )
+    fake_loop.chmod(0o755)
+
+    proc = subprocess.Popen(
+        [
+            "python3",
+            str(SUPERVISED_CYCLE),
+            "--workspace",
+            str(workspace),
+            "--source",
+            str(source),
+            "--archon-loop",
+            str(fake_loop),
+            "--skip-process-check",
+        ],
+        cwd=str(ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        lease_path = workspace / ".archon" / "supervisor" / "run-lease.json"
+        deadline = time.monotonic() + 5
+        observed_payload = None
+        while time.monotonic() < deadline:
+            if lease_path.exists():
+                payload = json.loads(lease_path.read_text(encoding="utf-8"))
+                if payload.get("status") == "starting" and payload.get("startedAt") != "2026-04-12T00:00:00+00:00":
+                    observed_payload = payload
+                    break
+            time.sleep(0.05)
+
+        assert observed_payload is not None
+        assert "completedAt" not in observed_payload
+        assert "finalStatus" not in observed_payload
+        assert "loopExitCode" not in observed_payload
+        assert "recoveryEvent" not in observed_payload
+        assert "validationFiles" not in observed_payload
+        assert "lessonFile" not in observed_payload
+    finally:
+        stdout, stderr = proc.communicate(timeout=10)
+
+    assert proc.returncode == 4, (stdout, stderr)
+
+
 def test_supervised_cycle_recovery_only_verifies_existing_artifacts_and_closes_lease(tmp_path: Path):
     source = tmp_path / "source"
     workspace = tmp_path / "workspace"
     write(source / "FATEM" / "2.lean", "theorem foo : True\n    := by\n  sorry\n")
     write(workspace / "FATEM" / "2.lean", "theorem foo : True\n    := by\n  trivial\n")
+    write_stale_planner_state(workspace, "FATEM/2.lean")
     write(
         workspace / ".archon" / "RUN_SCOPE.md",
         """
@@ -751,10 +942,93 @@ def test_supervised_cycle_recovery_only_verifies_existing_artifacts_and_closes_l
     assert validation_payload["acceptanceStatus"] == "accepted"
     assert validation_payload["recoveryEvent"] == "verified_in_recovery"
 
+    progress_text = (workspace / ".archon" / "PROGRESS.md").read_text(encoding="utf-8")
+    assert "## Current Stage\nCOMPLETE" in progress_text
+    assert "Accepted proof validated" in progress_text
+
+    pending_text = (workspace / ".archon" / "task_pending.md").read_text(encoding="utf-8")
+    assert "No pending tasks in the current scope." in pending_text
+
+    done_text = (workspace / ".archon" / "task_done.md").read_text(encoding="utf-8")
+    assert "`FATEM/2.lean`" in done_text
+    assert "Accepted proof validated" in done_text
+
     lease_payload = json.loads((workspace / ".archon" / "supervisor" / "run-lease.json").read_text(encoding="utf-8"))
     assert lease_payload["active"] is False
     assert lease_payload["finalStatus"] == "clean"
     assert lease_payload["recoveryEvent"] == "verified_in_recovery"
+
+
+def test_supervised_cycle_does_not_mark_complete_when_scope_is_not_closed(tmp_path: Path):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    write(source / "FATEM" / "1.lean", "theorem foo : True := by\n  sorry\n")
+    write(source / "FATEM" / "2.lean", "theorem bar : True := by\n  sorry\n")
+    write(workspace / "FATEM" / "1.lean", "theorem foo : True := by\n  trivial\n")
+    write(workspace / "FATEM" / "2.lean", "theorem bar : True := by\n  sorry\n")
+    write_stale_planner_state(workspace, "FATEM/1.lean")
+    write(
+        workspace / ".archon" / "task_pending.md",
+        """
+        # Pending Tasks
+
+        - `FATEM/1.lean` — queued.
+        - `FATEM/2.lean` — queued.
+        """,
+    )
+    write(
+        workspace / ".archon" / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        ## Allowed Files
+
+        1. `FATEM/1.lean`
+        2. `FATEM/2.lean`
+        """,
+    )
+    verify_script = tmp_path / "verify_changed.py"
+    write(
+        verify_script,
+        """
+        from pathlib import Path
+        import sys
+
+        text = Path(sys.argv[1]).read_text(encoding="utf-8")
+        if "sorry" in text:
+            raise SystemExit(1)
+        print("verified clean")
+        """,
+    )
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(SUPERVISED_CYCLE),
+            "--workspace",
+            str(workspace),
+            "--source",
+            str(source),
+            "--recovery-only",
+            "--skip-process-check",
+            "--changed-file-verify-template",
+            f"python3 {verify_script} {{file}}",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    progress_text = (workspace / ".archon" / "PROGRESS.md").read_text(encoding="utf-8")
+    assert "## Current Stage\nprover" in progress_text
+
+    pending_text = (workspace / ".archon" / "task_pending.md").read_text(encoding="utf-8")
+    assert "`FATEM/2.lean`" in pending_text
+
+    done_text = (workspace / ".archon" / "task_done.md").read_text(encoding="utf-8")
+    assert "None." in done_text
 
 
 def test_supervised_cycle_kills_idle_prover_and_records_hot_notes(tmp_path: Path):

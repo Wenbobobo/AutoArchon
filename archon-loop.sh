@@ -30,7 +30,7 @@ VERBOSE_LOGS=false
 ENABLE_REVIEW=true
 LOG_BASE=""
 CODEX_MODEL="${ARCHON_CODEX_MODEL:-gpt-5.4}"
-CODEX_EXTRA_ARGS="${ARCHON_CODEX_EXEC_ARGS:--c model_reasoning_effort=xhigh}"
+CODEX_EXTRA_ARGS="${ARCHON_CODEX_EXEC_ARGS:--config model_reasoning_effort=xhigh}"
 CODEX_ENABLE_SEARCH="${ARCHON_CODEX_ENABLE_SEARCH:-0}"
 DEFAULT_CODEX_TIMEOUT_SECONDS="${ARCHON_CODEX_TIMEOUT_SECONDS:-}"
 PLAN_TIMEOUT_SECONDS="${ARCHON_PLAN_TIMEOUT_SECONDS:-${DEFAULT_CODEX_TIMEOUT_SECONDS}}"
@@ -201,9 +201,9 @@ parse_objective_files() {
         | sort -u)"
 
     awk '
-        /^## Current Objectives/ { found=1; next }
-        found && /^## /          { exit }
-        found                    { print }
+        /^## Current Objectives/            { found=1; next }
+        found && /^## /                     { exit }
+        found && /^[[:space:]]*[0-9]+\.[[:space:]]+/ { print }
     ' "$PROGRESS_FILE" \
         | grep -oE '(\*\*|`)[^*`]+\.lean(\*\*|`)' \
         | sed 's/\*\*//g; s/`//g' \
@@ -430,7 +430,7 @@ run_parallel_provers() {
 
     if [[ -z "$sorry_files" ]]; then
         warn "No files parsed from PROGRESS.md ## Current Objectives."
-        warn "The plan agent must list target files in **bold** or \`backticks\` (e.g. **Foo/Bar.lean** or \`Foo/Bar.lean\`)."
+        warn "The plan agent must list live target files on numbered objective lines in **bold** or \`backticks\` (e.g. \`1. **Foo/Bar.lean** — ...\`)."
         warn "Skipping this prover iteration."
         return 0
     fi

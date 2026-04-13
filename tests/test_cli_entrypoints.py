@@ -21,26 +21,38 @@ def test_pyproject_declares_core_autoarchon_entrypoints():
     scripts = payload["project"]["scripts"]
 
     assert {
+        "autoarchon-campaign-archive",
         "autoarchon-campaign-status",
+        "autoarchon-campaign-overview",
         "autoarchon-campaign-recover",
         "autoarchon-campaign-compare",
+        "autoarchon-clean-launchers",
         "autoarchon-finalize-campaign",
+        "autoarchon-launch-from-spec",
         "autoarchon-orchestrator-watchdog",
         "autoarchon-run-orchestrator",
         "autoarchon-supervised-cycle",
         "autoarchon-export-run-artifacts",
         "autoarchon-plan-shards",
         "autoarchon-create-campaign",
+        "autoarchon-prewarm-project",
+        "autoarchon-refresh-launch-assets",
     } <= set(scripts)
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required for AutoArchon public entrypoint smoke tests")
 def test_uv_run_help_smokes_for_core_entrypoints():
     commands = [
+        ("autoarchon-campaign-archive", "campaign-root"),
+        ("autoarchon-campaign-overview", "markdown"),
         ("autoarchon-campaign-status", "campaign-root"),
         ("autoarchon-campaign-recover", "campaign-root"),
+        ("autoarchon-clean-launchers", "duplicate-grace-seconds"),
+        ("autoarchon-launch-from-spec", "dry-run"),
         ("autoarchon-orchestrator-watchdog", "campaign-root"),
+        ("autoarchon-refresh-launch-assets", "refresh-prompts"),
         ("autoarchon-supervised-cycle", "workspace"),
+        ("autoarchon-prewarm-project", "verify-file"),
     ]
 
     for command_name, expected_flag in commands:

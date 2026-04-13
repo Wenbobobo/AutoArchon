@@ -26,11 +26,20 @@ from archonlib.supervisor import (
     read_allowed_files,
 )
 from archonlib.lessons import write_lesson_artifact
+from archonlib.project_state import build_task_pending_markdown, stage_markdown
 from archonlib.validation import write_validation_artifacts
 
 
 INFORMAL_NOTE_PATTERN = re.compile(r"\.archon/informal/[A-Za-z0-9._/\-]+\.md")
 LEASE_SCHEMA_VERSION = 1
+TERMINAL_LEASE_FIELDS = (
+    "completedAt",
+    "finalStatus",
+    "lessonFile",
+    "loopExitCode",
+    "recoveryEvent",
+    "validationFiles",
+)
 
 
 def _env_float(name: str, default: float | None = None) -> float | None:
@@ -138,8 +147,11 @@ def _update_lease(
     workspace: Path,
     source: Path,
     fields: dict[str, object],
+    clear_fields: tuple[str, ...] = (),
 ) -> dict[str, object]:
     payload = _read_json(lease_path) or {}
+    for key in clear_fields:
+        payload.pop(key, None)
     payload.update(
         {
             "schemaVersion": LEASE_SCHEMA_VERSION,
@@ -465,6 +477,10 @@ def _task_result_name(rel_path: str) -> str:
     return rel_path.replace("/", "_") + ".md"
 
 
+def _validation_filename(rel_path: str) -> str:
+    return rel_path.replace("/", "_") + ".json"
+
+
 def _extract_informal_note_paths(text: str) -> list[str]:
     return INFORMAL_NOTE_PATTERN.findall(text)
 
@@ -614,6 +630,94 @@ def _recover_after_stall(
     return None
 
 
+def _terminal_sync_records(workspace: Path, *, allowed_files: list[str]) -> list[dict[str, str]] | None:
+    if not allowed_files:
+        return None
+
+    validation_root = workspace / ".archon" / "validation"
+    records: list[dict[str, str]] = []
+    for rel_path in allowed_files:
+        payload = _read_json(validation_root / _validation_filename(rel_path))
+        if payload is None or payload.get("acceptanceStatus") != "accepted":
+            return None
+
+        checks = payload.get("checks")
+        workspace_changed = isinstance(checks, dict) and checks.get("workspaceChanged") is True
+        blocker_notes = payload.get("blockerNotes")
+
+        record = {
+            "relPath": rel_path,
+            "validationFile": _validation_filename(rel_path),
+            "outcome": "accepted",
+        }
+        if isinstance(blocker_notes, list) and blocker_notes and not workspace_changed:
+            record["outcome"] = "blocked"
+            record["blockerNote"] = str(blocker_notes[0])
+        records.append(record)
+    return records
+
+
+def _render_terminal_progress(records: list[dict[str, str]]) -> str:
+    lines = [
+        "# Project Progress",
+        "",
+        "## Current Stage",
+        "COMPLETE",
+        "",
+        stage_markdown("COMPLETE", autoformalize_skipped=True),
+        "",
+        "## Current Objectives",
+        "",
+    ]
+    for index, record in enumerate(records, start=1):
+        rel_path = record["relPath"]
+        if record["outcome"] == "blocked":
+            blocker_note = record["blockerNote"]
+            lines.append(
+                f"{index}. **{rel_path}** — Accepted blocker note `{blocker_note}` validated; no further prover work remains in this run scope."
+            )
+        else:
+            lines.append(
+                f"{index}. **{rel_path}** — Accepted proof validated; no further prover work remains in this run scope."
+            )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _render_terminal_task_done(records: list[dict[str, str]]) -> str:
+    lines = ["# Completed Tasks", ""]
+    for record in records:
+        rel_path = record["relPath"]
+        validation_path = f".archon/validation/{record['validationFile']}"
+        if record["outcome"] == "blocked":
+            blocker_note = record["blockerNote"]
+            lines.append(
+                f"- `{rel_path}` — Accepted blocker note `{blocker_note}` validated by `{validation_path}`."
+            )
+        else:
+            lines.append(f"- `{rel_path}` — Accepted proof validated by `{validation_path}`.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _sync_terminal_planner_state(workspace: Path, *, allowed_files: list[str]) -> dict[str, object] | None:
+    records = _terminal_sync_records(workspace, allowed_files=allowed_files)
+    if records is None:
+        return None
+
+    state_root = workspace / ".archon"
+    _write_text(state_root / "PROGRESS.md", _render_terminal_progress(records))
+    _write_text(state_root / "task_pending.md", build_task_pending_markdown([]))
+    _write_text(state_root / "task_done.md", _render_terminal_task_done(records))
+
+    return {
+        "event": "planner_state_synced",
+        "status": "terminal_complete",
+        "targets": [record["relPath"] for record in records],
+        "outcomes": {record["relPath"]: record["outcome"] for record in records},
+    }
+
+
 def main() -> int:
     args = parse_args()
     workspace = Path(args.workspace).resolve()
@@ -689,6 +793,7 @@ def main() -> int:
             "latestIteration": previous_iter_name,
             "recoveryOnly": args.recovery_only,
         },
+        clear_fields=TERMINAL_LEASE_FIELDS,
     )
 
     if args.recovery_only:
@@ -832,6 +937,9 @@ def main() -> int:
         prover_failures=prover_failures,
         recovered_after_stall=recovered_after_stall,
     )
+    planner_state_sync = _sync_terminal_planner_state(workspace, allowed_files=allowed_files)
+    if planner_state_sync is not None:
+        events.append(planner_state_sync)
 
     if events:
         _append_text(
@@ -907,6 +1015,8 @@ def main() -> int:
         if isinstance(task_results_failures, dict):
             for note_name, detail in task_results_failures.items():
                 hot_notes.append(f"- Verification after idle failed for task result {note_name}: {detail}")
+    if planner_state_sync is not None:
+        hot_notes.append("- Planner state synced: wrote terminal closure to .archon/PROGRESS.md, task_pending.md, and task_done.md")
     for drift in drifts:
         hot_notes.append(f"- Violation: {drift.rel_path}::{drift.declaration_name} -> {drift.mutation_class}")
     if loop_result.returncode != 0 and not created_new_iteration:
@@ -942,6 +1052,7 @@ def main() -> int:
         f"- Lesson artifact: `{lesson_file or '(none)'}`",
         f"- Idle timeout: `{idle_event['idle_seconds']}s`" if idle_event is not None else "- Idle timeout: `(none)`",
         f"- Idle recovery: `{recovered_after_stall['event']}`" if recovered_after_stall is not None else "- Idle recovery: `(none)`",
+        f"- Planner state sync: `{planner_state_sync['status']}`" if planner_state_sync is not None else "- Planner state sync: `(none)`",
         f"- Recovery only: `{args.recovery_only}`",
         f"- New iteration created: `{created_new_iteration}`",
         "",

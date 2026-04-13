@@ -1,26 +1,24 @@
 # Orchestrator
 
-Use this document for the top-level Codex session that owns a whole AutoArchon campaign.
+Use this document when you want an interactive top-level owner session instead of the default tracked-spec launcher.
 
-This role is intentionally separate from both the teacher and the prover:
+The interactive stack is:
 
-- `orchestrator-agent`: accepts the human goal, bootstraps or resumes a campaign, launches teachers, watches campaign health, and finalizes accepted results
-- `supervisor-agent`: owns one run at a time and keeps theorem fidelity under repeated supervised cycles
-- `prover-agent`: edits Lean files inside the scope assigned by the teacher
+- `campaign-operator`: the human or Codex session that owns one campaign objective
+- `orchestrator-agent`: the skill-guided campaign owner inside that session
+- `supervisor-agent`: the per-run teacher
 
-If you want one higher-level owner above the orchestrator, use [manager-watchdog.md](manager-watchdog.md). For a single run, stay in [operations.md](operations.md). For teacher-only prompts and live monitoring commands, use [teacher-agents.md](teacher-agents.md).
+If you only need the default unattended path, use `bash scripts/start_fate_overnight_watchdogs.sh` or `autoarchon-launch-from-spec` and skip this page.
 
-## Quick Start
+## Recommended Interactive Start
 
-This is the recommended entrypoint for new users.
-
-Install the repo-owned skills once:
+Install repo-owned skills once:
 
 ```bash
 bash scripts/install_repo_skill.sh
 ```
 
-Start a fresh interactive Codex session for the top-level owner:
+Start Codex:
 
 ```bash
 codex -C /path/to/AutoArchon \
@@ -30,64 +28,67 @@ codex -C /path/to/AutoArchon \
   -c model_reasoning_effort=xhigh
 ```
 
-Paste this as the first message in that new session:
+First prompt:
 
 ```text
 Use $archon-orchestrator to own this AutoArchon campaign.
 
+You are also acting as the campaign-operator for this session.
+
 Repository root: /path/to/AutoArchon
 Source root: /path/to/FATE-M
 Campaign root: /path/to/campaigns/fate-m-nightly
-Reuse lake from: /path/to/warmed-project
+Reuse lake from: /path/to/FATE-M
 Match regex: '^FATEM/(39|42|43)\\.lean$'
 Shard size: 1
 Run id mode: file_stem
 
 Mission:
-- if the campaign root does not exist yet, bootstrap it yourself with `uv run --directory /path/to/AutoArchon autoarchon-plan-shards` and `uv run --directory /path/to/AutoArchon autoarchon-create-campaign`
-- if the campaign root already exists, treat it as exclusive scope and do not regenerate run specs unless the user changes scope
-- launch teachers only from runs/<id>/control/launch-teacher.sh
-- do not inspect unrelated sibling campaigns just to choose naming or workflow patterns
-- prefer deterministic recovery via `uv run --directory /path/to/AutoArchon autoarchon-campaign-recover` over ad hoc shell logic
-- finalize only validated proofs and accepted blocker notes
-
-Stop only when:
-- all runs are in terminal states and reports/final/ is up to date, or
-- a hard external dependency prevents safe continuation
+- if the campaign root does not exist yet, bootstrap it with `autoarchon-plan-shards` and `autoarchon-create-campaign`
+- if it already exists, treat it as exclusive scope and do not regenerate run specs unless the benchmark scope changed
+- launch teachers only from `runs/<id>/control/launch-teacher.sh`
+- prefer deterministic single-run recovery via `autoarchon-campaign-recover --run-id <id> --execute`
+- refresh `campaign-status.json`, `reports/final/compare-report.json`, and `control/orchestrator-watchdog.json` before making recovery decisions
+- finalize only validated proofs and validated blocker notes
 ```
 
-## Control-Plane CLI
+## CLI Control Plane
 
-These are terminal CLI commands for machine-readable campaign state. They are not the web UI.
+These are local terminal commands, not the web UI:
 
-- `autoarchon-campaign-status`: recompute `campaign-status.json`
-- `autoarchon-campaign-recover`: launch queued teachers, relaunch stale runs, or close interrupted runs with `--recovery-only`
-- `autoarchon-campaign-compare`: build a compact benchmark-facing compare report
-- `autoarchon-finalize-campaign`: copy only accepted proofs and accepted blocker notes into `reports/final/`
+- `autoarchon-plan-shards`
+- `autoarchon-create-campaign`
+- `autoarchon-launch-from-spec`
+- `autoarchon-campaign-status`
+- `autoarchon-campaign-overview`
+- `autoarchon-campaign-recover`
+- `autoarchon-campaign-compare`
+- `autoarchon-finalize-campaign`
+- `autoarchon-campaign-archive`
 
-Typical commands from another shell:
+Common commands:
 
 ```bash
-uv run --directory /path/to/AutoArchon autoarchon-campaign-status --campaign-root /path/to/campaigns/fate-m-nightly
-uv run --directory /path/to/AutoArchon autoarchon-campaign-recover --campaign-root /path/to/campaigns/fate-m-nightly --all-recoverable --execute
-uv run --directory /path/to/AutoArchon autoarchon-campaign-compare --campaign-root /path/to/campaigns/fate-m-nightly
-uv run --directory /path/to/AutoArchon autoarchon-finalize-campaign --campaign-root /path/to/campaigns/fate-m-nightly
+uv run --directory /path/to/AutoArchon autoarchon-launch-from-spec \
+  --spec-file /path/to/spec.json
+
+uv run --directory /path/to/AutoArchon autoarchon-campaign-overview \
+  --campaign-root /path/to/campaign-root \
+  --markdown
+
+uv run --directory /path/to/AutoArchon autoarchon-campaign-recover \
+  --campaign-root /path/to/campaign-root \
+  --run-id teacher-42 \
+  --execute
 ```
 
-While the orchestrator is running, inspect progress from another shell:
+These are local terminal commands, not the web UI.
 
-```bash
-tail -n 40 /path/to/campaigns/fate-m-nightly/runs/teacher-a/workspace/.archon/supervisor/HOT_NOTES.md
-tail -n 40 /path/to/campaigns/fate-m-nightly/runs/teacher-a/workspace/.archon/supervisor/LEDGER.md
-```
+## Manual Deterministic Bootstrap
 
-For a fresh campaign where every run is still `queued`, `autoarchon-campaign-recover --all-recoverable --execute` is the fastest safe fan-out path. Detached launch writes `control/teacher-launch-state.json` before the teacher reaches `run-lease.json`, so a second owner or recovery pass sees that run as in-flight instead of launching another teacher into the same `workspace/`.
+Use this path when you want explicit JSON specs under version control or you are preparing a custom benchmark slice.
 
-## Manual Deterministic CLI Path
-
-Use this when you want fully explicit operator control instead of letting the first owner prompt bootstrap the campaign.
-
-Generate stable run specs:
+Generate run specs:
 
 ```bash
 uv run --directory /path/to/AutoArchon autoarchon-plan-shards \
@@ -99,171 +100,80 @@ uv run --directory /path/to/AutoArchon autoarchon-plan-shards \
   --output /path/to/run-specs.json
 ```
 
-Create the campaign root and all per-run control assets:
+Create the campaign:
 
 ```bash
 uv run --directory /path/to/AutoArchon autoarchon-create-campaign \
   --source-root /path/to/FATE-M \
-  --campaign-root /path/to/campaigns/fate-m-nightly \
-  --reuse-lake-from /path/to/warmed-project \
+  --campaign-root /path/to/campaign-root \
+  --reuse-lake-from /path/to/FATE-M \
   --run-spec-file /path/to/run-specs.json
 ```
 
-`run-specs.json` is a JSON array:
-
-```json
-[
-  {
-    "id": "teacher-39",
-    "objective_regex": "^(FATEM/39\\.lean)$",
-    "objective_limit": 1,
-    "scope_hint": "FATEM/39.lean"
-  },
-  {
-    "id": "teacher-42",
-    "objective_regex": "^(FATEM/42\\.lean)$",
-    "objective_limit": 1,
-    "scope_hint": "FATEM/42.lean"
-  }
-]
-```
-
-For single-file micro-shards, `--run-id-mode file_stem` is the recommended default because it keeps run ids human-readable without requiring the orchestrator to inspect old campaigns.
-
-This creates:
-
-- `CAMPAIGN_MANIFEST.json`
-- `campaign-status.json`
-- `events.jsonl`
-- `runs/<id>/source`
-- `runs/<id>/workspace`
-- `runs/<id>/artifacts`
-- `runs/<id>/control/run-config.json`
-- `runs/<id>/control/teacher-prompt.txt`
-- `runs/<id>/control/launch-teacher.sh`
-
-## Launch Teachers
-
-Start each teacher from its generated control script:
+Or write a tracked launch spec and let `autoarchon-launch-from-spec` do both steps:
 
 ```bash
-bash /path/to/campaign-root/runs/teacher-a/control/launch-teacher.sh
-bash /path/to/campaign-root/runs/teacher-b/control/launch-teacher.sh
+uv run --directory /path/to/AutoArchon autoarchon-launch-from-spec \
+  --spec-file /path/to/spec.json \
+  --shard-size 1
 ```
 
-The launch script:
+Generated control files include:
 
-- prewarms the run workspace when needed
-- initializes `.archon/` if the run has not been initialized yet
-- starts a fresh `codex exec` session using `$archon-supervisor`
+- `control/owner-mode.json`
+- `control/launch-spec.resolved.json`
+- `control/owner-lease.json`
+- `runs/<id>/control/bootstrap-state.json`
+- `runs/<id>/control/teacher-launch-state.json`
+- `runs/<id>/control/prewarm.stdout.log`
+- `runs/<id>/control/prewarm.stderr.log`
+- `runs/<id>/workspace/.archon/supervisor/run-lease.json`
 
-Do not hand-edit the launch prompt unless you also update the stored control files. The campaign root is the control plane source of truth.
+Important bootstrap fields:
 
-## Recover A Run
+- `prewarmRequired`
+- `allowedFiles`
 
-Preview the deterministic recovery command:
+## Launch And Recovery Rules
 
-```bash
-uv run --directory /path/to/AutoArchon autoarchon-campaign-recover \
-  --campaign-root /path/to/campaign-root \
-  --run-id teacher-a
-```
-
-Execute it:
-
-```bash
-uv run --directory /path/to/AutoArchon autoarchon-campaign-recover \
-  --campaign-root /path/to/campaign-root \
-  --run-id teacher-a \
-  --execute
-```
-
-For bulk recovery:
-
-```bash
-uv run --directory /path/to/AutoArchon autoarchon-campaign-recover \
-  --campaign-root /path/to/campaign-root \
-  --all-recoverable \
-  --execute
-```
-
-Key statuses:
-
-- `queued`: no live work has started
-- `running`: recent supervisor or prover activity exists
-- `accepted`: the run closed with accepted proof artifacts
-- `blocked`: the run closed with accepted blocker notes
-- `unverified`: changed files or task results exist without full acceptance closure
-- `needs_relaunch`: the run has partial state but no active progress
-- `contaminated`: validation rejected theorem fidelity or other run integrity
-
-Key state files:
-
-- `runs/<id>/control/teacher-launch-state.json`: detached launch pre-lease marker
-- `runs/<id>/workspace/.archon/supervisor/run-lease.json`: authoritative teacher ownership and heartbeat
+- launch teachers only from `runs/<id>/control/launch-teacher.sh`
+- prefer one `--run-id` recovery at a time
+- do not use `--all-recoverable --execute` from an owner session
+- if launch assets changed after campaign creation, run `autoarchon-refresh-launch-assets`
+- if detached launch processes accumulate, use `autoarchon-clean-launchers`
+- use `--recovery-only` when a run already has useful artifacts and only needs validation/finalization closure
 
 ## Closeout
 
-Build a compact compare report:
+Build a compare snapshot:
 
 ```bash
-uv run --directory /path/to/AutoArchon autoarchon-campaign-compare --campaign-root /path/to/campaign-root
+uv run --directory /path/to/AutoArchon autoarchon-campaign-compare \
+  --campaign-root /path/to/campaign-root
 ```
 
-Then finalize:
+Finalize accepted outputs:
 
 ```bash
-uv run --directory /path/to/AutoArchon autoarchon-finalize-campaign --campaign-root /path/to/campaign-root
+uv run --directory /path/to/AutoArchon autoarchon-finalize-campaign \
+  --campaign-root /path/to/campaign-root
 ```
 
-Review:
+Archive stopped or degraded campaigns before rerunning them:
 
-- `reports/final/compare-report.json`
-- `reports/final/compare-report.md`
-- `reports/final/final-summary.json`
-- `reports/final/proofs/`
-- `reports/final/blockers/`
-- `reports/final/validation/`
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-campaign-archive \
+  --campaign-root /path/to/campaign-root
+```
+
+Per-run campaign timelines live under `reports/final/runs/<run>/timeline.json`.
 
 ## Take Over An Existing Campaign
 
-Use this when the campaign root already exists and you want a fresh owner session to resume after a network interruption or owner-session loss.
+When a network interruption or owner-session loss happens:
 
-Recompute truth first:
-
-```bash
-uv run --directory /path/to/AutoArchon autoarchon-campaign-status --campaign-root /path/to/campaign-root
-```
-
-Start a fresh interactive Codex session:
-
-```bash
-codex -C /path/to/AutoArchon \
-  --model gpt-5.4 \
-  --sandbox danger-full-access \
-  --ask-for-approval never \
-  -c model_reasoning_effort=xhigh
-```
-
-Paste this as the first message:
-
-```text
-Use $archon-orchestrator to own this existing AutoArchon campaign.
-
-Repository root: /path/to/AutoArchon
-Campaign root: /path/to/campaign-root
-
-Mission:
-- treat this campaign root as exclusive scope
-- inspect CAMPAIGN_MANIFEST.json, campaign-status.json, and recommendedRecovery before acting
-- do not regenerate run specs unless the user explicitly changes scope
-- do not inspect unrelated sibling campaigns just to choose naming or workflow patterns
-- apply recommendedRecovery deterministically before inventing custom shell logic
-- finalize only validated proofs and accepted blocker notes
-
-Stop only when:
-- all runs are in terminal states and reports/final/ is current, or
-- a hard external dependency prevents safe continuation
-```
-
-For interrupted campaigns, this takeover flow is safer than rebuilding runs or hand-launching teachers blindly.
+1. refresh truth with `autoarchon-campaign-status`
+2. inspect `control/orchestrator-watchdog.json` and `control/owner-lease.json`
+3. use `autoarchon-campaign-overview --markdown`
+4. refresh launch assets if the runtime changed
+5. resume with either a fresh interactive orchestrator session or `autoarchon-launch-from-spec`

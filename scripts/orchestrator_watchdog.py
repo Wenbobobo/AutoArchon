@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from archonlib.campaign import ensure_campaign_control_root
 from archonlib.orchestrator_watchdog import build_default_orchestrator_prompt, run_watchdog
 
 
@@ -23,12 +24,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--poll-seconds", type=int, default=30, help="Campaign-status polling interval")
     parser.add_argument("--stall-seconds", type=int, default=300, help="Restart the orchestrator if campaign fingerprints stop changing for this long")
     parser.add_argument(
+        "--owner-silence-seconds",
+        type=int,
+        default=1200,
+        help="Restart the orchestrator only after the owner stops emitting logs for this long",
+    )
+    parser.add_argument(
         "--bootstrap-launch-after-seconds",
         type=int,
         default=45,
         help="If the campaign remains entirely queued for this long, let the watchdog launch queued teachers deterministically",
     )
     parser.add_argument("--max-restarts", type=int, default=3, help="Maximum orchestrator restarts or resumes before failing")
+    parser.add_argument(
+        "--max-active-launches",
+        type=int,
+        default=2,
+        help="Maximum number of detached teacher launches allowed in flight at once",
+    )
+    parser.add_argument(
+        "--launch-batch-size",
+        type=int,
+        default=1,
+        help="Maximum number of automatic recoveries or launches to dispatch in one watchdog tick",
+    )
+    parser.add_argument(
+        "--launch-cooldown-seconds",
+        type=int,
+        default=90,
+        help="Minimum cooldown between detached teacher relaunches for the same run",
+    )
     parser.add_argument("--no-finalize", action="store_true", help="Do not run finalize_campaign after terminal closure")
     return parser.parse_args()
 
@@ -36,12 +61,22 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     campaign_root = Path(args.campaign_root).resolve()
-    control_root = campaign_root / "control"
-    control_root.mkdir(parents=True, exist_ok=True)
+    control_root = ensure_campaign_control_root(
+        campaign_root,
+        owner_mode="orchestrator",
+        watchdog_enabled=True,
+        manager_enabled=False,
+        owner_entrypoint="autoarchon-orchestrator-watchdog",
+    )
     prompt_path = Path(args.prompt_file).resolve() if args.prompt_file else control_root / "orchestrator-prompt.txt"
     if not args.prompt_file:
         prompt_path.write_text(
-            build_default_orchestrator_prompt(archon_root=ROOT, campaign_root=campaign_root),
+            build_default_orchestrator_prompt(
+                archon_root=ROOT,
+                campaign_root=campaign_root,
+                max_active_launches=args.max_active_launches,
+                launch_batch_size=args.launch_batch_size,
+            ),
             encoding="utf-8",
         )
 
@@ -55,11 +90,18 @@ def main() -> int:
         reasoning_effort=args.reasoning_effort,
         poll_seconds=args.poll_seconds,
         stall_seconds=args.stall_seconds,
+        owner_silence_seconds=args.owner_silence_seconds,
         bootstrap_launch_after_seconds=args.bootstrap_launch_after_seconds,
         max_restarts=args.max_restarts,
+        max_active_launches=args.max_active_launches,
+        launch_batch_size=args.launch_batch_size,
+        launch_cooldown_seconds=args.launch_cooldown_seconds,
         finalize_on_terminal=not args.no_finalize,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
+    status = result.get("watchdogStatus")
+    if status == "degraded":
+        return 2
     return 0
 
 

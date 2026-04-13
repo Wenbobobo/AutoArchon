@@ -19,6 +19,7 @@ from archonlib.campaign import (
     build_orchestrator_prompt,
     campaign_is_terminal,
     collect_campaign_status,
+    ensure_campaign_control_root,
     finalize_campaign,
 )
 
@@ -150,6 +151,13 @@ def main() -> int:
     campaign_root = Path(args.campaign_root).resolve()
     if not campaign_root.exists():
         raise SystemExit(f"campaign root not found: {campaign_root}")
+    ensure_campaign_control_root(
+        campaign_root,
+        owner_mode="orchestrator",
+        watchdog_enabled=False,
+        manager_enabled=False,
+        owner_entrypoint="autoarchon-run-orchestrator",
+    )
 
     prompt_path = Path(args.prompt_file).resolve() if args.prompt_file else _default_prompt_path(campaign_root)
     if not prompt_path.exists():

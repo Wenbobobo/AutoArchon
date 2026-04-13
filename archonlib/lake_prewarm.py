@@ -109,6 +109,14 @@ def cache_get_needs_repo_fallback(output: str, cache_repo: str | None) -> bool:
     return any(marker in output for marker in repo_flag_markers)
 
 
+def cache_get_unavailable(output: str) -> bool:
+    unavailable_markers = (
+        "unknown executable cache",
+        "unknown executable `cache`",
+    )
+    return any(marker in output for marker in unavailable_markers)
+
+
 def run_cache_get_with_fallback(
     *,
     cwd: Path,
@@ -116,7 +124,7 @@ def run_cache_get_with_fallback(
     cache_repo: str | None,
     retries: int,
     backoff_seconds: int,
-) -> None:
+) -> bool:
     base_cmd = ["lake", "exe", "cache", "get"]
     command = [*base_cmd, "--repo", cache_repo] if cache_repo else list(base_cmd)
     fallback_command = list(base_cmd) if cache_repo else None
@@ -137,8 +145,14 @@ def run_cache_get_with_fallback(
         if result.stderr:
             print(result.stderr, end="", file=sys.stderr)
         if result.returncode == 0:
-            return
+            return True
         combined_output = f"{result.stdout}\n{result.stderr}"
+        if cache_get_unavailable(combined_output):
+            print(
+                "[prewarm] `lake exe cache get` is unavailable for this project; skipping cache download and continuing to `lake build`",
+                file=sys.stderr,
+            )
+            return False
         if (
             fallback_command is not None
             and command != fallback_command
@@ -159,6 +173,8 @@ def run_cache_get_with_fallback(
         )
         time.sleep(wait_seconds)
         attempt += 1
+
+    return False
 
 
 def build_env(use_cloudflare: bool) -> dict[str, str]:

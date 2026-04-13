@@ -1,3 +1,4 @@
+import os
 import json
 import subprocess
 from pathlib import Path
@@ -5,11 +6,16 @@ from pathlib import Path
 from archonlib.lake_prewarm import (
     build_env,
     run_cache_get_with_fallback,
+    cache_get_unavailable,
     find_broken_packages,
     has_warmed_mathlib_cache,
     load_manifest,
     remove_broken_packages,
 )
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PREWARM_PROJECT = ROOT / "scripts" / "prewarm_project.py"
 
 
 def write(path: Path, text: str) -> None:
@@ -118,3 +124,132 @@ def test_run_cache_get_with_fallback_retries_without_repo(monkeypatch, tmp_path:
     ]
     assert "rejected `--repo`" in captured.err
     assert "cache ready" in captured.out
+
+
+def test_cache_get_unavailable_detects_projects_without_cache_executable():
+    assert cache_get_unavailable("error: unknown executable cache\n") is True
+    assert cache_get_unavailable("error: unknown executable `cache`\n") is True
+    assert cache_get_unavailable("other failure\n") is False
+
+
+def test_run_cache_get_with_fallback_skips_when_cache_executable_is_unavailable(monkeypatch, tmp_path: Path, capsys):
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, cwd, env, check, capture_output, text):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1, "", "error: unknown executable cache\n")
+
+    monkeypatch.setattr("archonlib.lake_prewarm.subprocess.run", fake_run)
+
+    result = run_cache_get_with_fallback(
+        cwd=tmp_path,
+        env={"PATH": ""},
+        cache_repo="leanprover-community/mathlib4",
+        retries=1,
+        backoff_seconds=1,
+    )
+
+    captured = capsys.readouterr()
+    assert result is False
+    assert calls == [["lake", "exe", "cache", "get", "--repo", "leanprover-community/mathlib4"]]
+    assert "skipping cache download" in captured.err
+
+
+def test_prewarm_project_verify_file_uses_scoped_lake_env_lean(tmp_path: Path):
+    project = tmp_path / "project"
+    write(project / "lean-toolchain", "leanprover/lean4:v4.28.0\n")
+    write(project / "Foo.lean", "theorem foo : True := by\n  trivial\n")
+
+    fake_bin = tmp_path / "bin"
+    fake_lake = fake_bin / "lake"
+    lake_log = tmp_path / "lake.log"
+    write(
+        fake_lake,
+        f"""#!/usr/bin/env python3
+import os
+import sys
+from pathlib import Path
+
+path = Path({str(lake_log)!r})
+path.parent.mkdir(parents=True, exist_ok=True)
+with path.open("a", encoding="utf-8") as handle:
+    handle.write(" ".join(sys.argv[1:]) + "\\n")
+raise SystemExit(0)
+""",
+    )
+    fake_lake.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(PREWARM_PROJECT),
+            str(project),
+            "--skip-cache",
+            "--verify-file",
+            "Foo.lean",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "scoped verify" in result.stdout
+    assert lake_log.read_text(encoding="utf-8").splitlines() == ["env lean Foo.lean"]
+
+
+def test_prewarm_project_multiple_verify_files_run_in_order(tmp_path: Path):
+    project = tmp_path / "project"
+    write(project / "lean-toolchain", "leanprover/lean4:v4.28.0\n")
+    write(project / "Foo.lean", "theorem foo : True := by\n  trivial\n")
+    write(project / "Bar.lean", "theorem bar : True := by\n  trivial\n")
+
+    fake_bin = tmp_path / "bin"
+    fake_lake = fake_bin / "lake"
+    lake_log = tmp_path / "lake.log"
+    write(
+        fake_lake,
+        f"""#!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+path = Path({str(lake_log)!r})
+path.parent.mkdir(parents=True, exist_ok=True)
+with path.open("a", encoding="utf-8") as handle:
+    handle.write(" ".join(sys.argv[1:]) + "\\n")
+raise SystemExit(0)
+""",
+    )
+    fake_lake.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(PREWARM_PROJECT),
+            str(project),
+            "--skip-cache",
+            "--verify-file",
+            "Foo.lean",
+            "--verify-file",
+            "Bar.lean",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert lake_log.read_text(encoding="utf-8").splitlines() == [
+        "env lean Foo.lean",
+        "env lean Bar.lean",
+    ]
