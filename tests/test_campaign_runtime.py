@@ -684,6 +684,45 @@ def make_fake_uv(tmp_path: Path) -> Path:
     return bin_dir
 
 
+def make_fake_watchdog_exec(tmp_path: Path) -> Path:
+    bin_dir = tmp_path / "bin-watchdog"
+    script = bin_dir / "fake-watchdog"
+    write(
+        script,
+        """
+        #!/usr/bin/env python3
+        import os
+        import sys
+        import time
+        from pathlib import Path
+
+        log_path = os.environ.get("FAKE_WATCHDOG_LOG")
+        if log_path:
+            path = Path(log_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(" ".join(sys.argv[1:]) + "\\n")
+
+        env_log = os.environ.get("FAKE_WATCHDOG_ENV_LOG")
+        if env_log:
+            keys = [item for item in os.environ.get("FAKE_WATCHDOG_ENV_KEYS", "").split(",") if item]
+            path = Path(env_log)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", encoding="utf-8") as handle:
+                for key in keys:
+                    handle.write(f"{key}={os.environ.get(key, '<missing>')}\\n")
+
+        sleep_seconds = float(os.environ.get("FAKE_WATCHDOG_SLEEP_SECONDS", "2"))
+        if sleep_seconds > 0:
+            time.sleep(sleep_seconds)
+
+        raise SystemExit(int(os.environ.get("FAKE_WATCHDOG_EXIT_CODE", "0")))
+        """,
+    )
+    script.chmod(0o755)
+    return script
+
+
 def test_create_campaign_builds_isolated_runs_and_teacher_launch_assets(tmp_path: Path):
     source = make_source_project(tmp_path, file_count=2)
     cache_project = tmp_path / "cache-project"
@@ -2236,11 +2275,12 @@ def test_launch_from_spec_cli_bootstraps_campaign_and_starts_watchdog(tmp_path: 
         encoding="utf-8",
     )
 
-    fake_uv = make_fake_uv(tmp_path)
-    uv_log = tmp_path / "uv.log"
+    fake_watchdog = make_fake_watchdog_exec(tmp_path)
+    watchdog_log = tmp_path / "watchdog.log"
     env = os.environ.copy()
-    env["PATH"] = f"{fake_uv}:{env['PATH']}"
-    env["FAKE_UV_LOG"] = str(uv_log)
+    env["ARCHON_WATCHDOG_EXECUTABLE"] = str(fake_watchdog)
+    env["FAKE_WATCHDOG_LOG"] = str(watchdog_log)
+    env["FAKE_WATCHDOG_SLEEP_SECONDS"] = "2"
 
     result = subprocess.run(
         [
@@ -2279,12 +2319,13 @@ def test_launch_from_spec_cli_bootstraps_campaign_and_starts_watchdog(tmp_path: 
     assert resolved_spec["teacherModel"] == "teacher-model"
 
     watchdog_command = payload["watchdog"]["command"]
+    assert watchdog_command[0] == str(fake_watchdog)
     rendered_watchdog_command = " ".join(watchdog_command)
-    assert "autoarchon-orchestrator-watchdog" in rendered_watchdog_command
     assert str(campaign_root) in rendered_watchdog_command
     assert "--model owner-model" in rendered_watchdog_command
     assert "--reasoning-effort xhigh" in rendered_watchdog_command
     assert "--no-finalize" in rendered_watchdog_command
+    assert "--campaign-root" in watchdog_log.read_text(encoding="utf-8")
 
 
 def test_launch_from_spec_cli_dry_run_does_not_write_campaign_or_mutate_spec(tmp_path: Path):
@@ -2370,29 +2411,13 @@ def test_launch_from_spec_skips_unresolved_optional_env_placeholders(tmp_path: P
         encoding="utf-8",
     )
 
-    fake_bin = tmp_path / "bin-watchdog-env"
-    fake_uv = fake_bin / "uv"
-    write(
-        fake_uv,
-        f"""
-        #!/usr/bin/env python3
-        import os
-        from pathlib import Path
-
-        log_path = Path({str(env_log)!r})
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(
-            "ARCHON_CODEX_READY_RETRIES=" + os.environ.get("ARCHON_CODEX_READY_RETRIES", "<missing>") + "\\n"
-            + "ARCHON_CODEX_READY_RETRY_DELAY_SECONDS=" + os.environ.get("ARCHON_CODEX_READY_RETRY_DELAY_SECONDS", "<missing>") + "\\n",
-            encoding="utf-8",
-        )
-        raise SystemExit(0)
-        """,
-    )
-    fake_uv.chmod(0o755)
+    fake_watchdog = make_fake_watchdog_exec(tmp_path)
 
     env = os.environ.copy()
-    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["ARCHON_WATCHDOG_EXECUTABLE"] = str(fake_watchdog)
+    env["FAKE_WATCHDOG_ENV_LOG"] = str(env_log)
+    env["FAKE_WATCHDOG_ENV_KEYS"] = "ARCHON_CODEX_READY_RETRIES,ARCHON_CODEX_READY_RETRY_DELAY_SECONDS"
+    env["FAKE_WATCHDOG_SLEEP_SECONDS"] = "2"
     env.pop("ARCHON_CODEX_READY_RETRIES", None)
     env.pop("ARCHON_CODEX_READY_RETRY_DELAY_SECONDS", None)
 
@@ -2418,6 +2443,62 @@ def test_launch_from_spec_skips_unresolved_optional_env_placeholders(tmp_path: P
     env_payload = env_log.read_text(encoding="utf-8")
     assert "ARCHON_CODEX_READY_RETRIES=<missing>" in env_payload
     assert "ARCHON_CODEX_READY_RETRY_DELAY_SECONDS=<missing>" in env_payload
+
+
+def test_launch_from_spec_fails_when_watchdog_exits_immediately(tmp_path: Path):
+    source = make_source_project(tmp_path, file_count=1)
+    campaign_root = tmp_path / "campaign"
+    run_spec_output = tmp_path / "run-specs" / "campaign.json"
+    spec_path = tmp_path / "campaign-spec.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "sourceRoot": str(source),
+                "campaignRoot": str(campaign_root),
+                "runSpecOutput": str(run_spec_output),
+                "planShards": {
+                    "runIdPrefix": "teacher-fail",
+                    "runIdMode": "index",
+                    "matchRegex": r"^FATEM/1\.lean$",
+                    "shardSize": 1,
+                },
+                "watchdog": {
+                    "enabled": True,
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    fake_watchdog = make_fake_watchdog_exec(tmp_path)
+    env = os.environ.copy()
+    env["ARCHON_WATCHDOG_EXECUTABLE"] = str(fake_watchdog)
+    env["FAKE_WATCHDOG_EXIT_CODE"] = "7"
+    env["FAKE_WATCHDOG_SLEEP_SECONDS"] = "0"
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(LAUNCH_FROM_SPEC),
+            "--spec-file",
+            str(spec_path),
+            "--shard-size",
+            "1",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["watchdog"]["status"] == "failed"
+    assert payload["watchdog"]["exitCode"] == 7
+    assert not (campaign_root / "control" / "watchdog-launch.pid").exists()
 
 
 def test_build_campaign_overview_flags_stale_watchdog_state(tmp_path: Path):

@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -202,12 +203,16 @@ def _build_watchdog_command(campaign_root: Path, spec: dict[str, Any]) -> tuple[
 
     model = str(watchdog.get("model") or spec.get("teacherModel") or "gpt-5.4")
     reasoning_effort = str(watchdog.get("reasoningEffort") or spec.get("teacherReasoningEffort") or "xhigh")
-    command = [
-        "uv",
-        "run",
-        "--directory",
-        str(ROOT),
-        "autoarchon-orchestrator-watchdog",
+    watchdog_exec_override = os.environ.get("ARCHON_WATCHDOG_EXECUTABLE")
+    if watchdog_exec_override:
+        command = shlex.split(watchdog_exec_override)
+    else:
+        command = [
+            sys.executable,
+            str(ROOT / "scripts" / "orchestrator_watchdog.py"),
+        ]
+    command.extend(
+        [
         "--campaign-root",
         str(campaign_root),
         "--model",
@@ -230,7 +235,8 @@ def _build_watchdog_command(campaign_root: Path, spec: dict[str, Any]) -> tuple[
         str(_as_int(watchdog.get("launchBatchSize") or 1, field="watchdog.launchBatchSize")),
         "--launch-cooldown-seconds",
         str(_as_int(watchdog.get("launchCooldownSeconds") or 90, field="watchdog.launchCooldownSeconds")),
-    ]
+        ]
+    )
     if watchdog.get("finalizeOnTerminal") is False:
         command.append("--no-finalize")
 
@@ -296,8 +302,20 @@ def _start_watchdog(campaign_root: Path, spec: dict[str, Any], *, dry_run: bool)
     finally:
         stdout_handle.close()
         stderr_handle.close()
+    time.sleep(1.0)
+    if proc.poll() is not None:
+        if pid_file.exists():
+            pid_file.unlink()
+        return {
+            "status": "failed",
+            "pid": proc.pid,
+            "pidFile": str(pid_file),
+            "stdoutLog": str(stdout_log),
+            "stderrLog": str(stderr_log),
+            "exitCode": proc.returncode,
+            "command": command,
+        }
     pid_file.write_text(f"{proc.pid}\n", encoding="utf-8")
-    time.sleep(0.05)
     return {
         "status": "started",
         "pid": proc.pid,
@@ -389,6 +407,9 @@ def main() -> int:
         "watchdog": watchdog_payload,
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
+    watchdog_status = watchdog_payload.get("status") if isinstance(watchdog_payload, dict) else None
+    if watchdog_enabled and watchdog_status not in {"started", "already_running", "dry_run"}:
+        return 1
     return 0
 
 
