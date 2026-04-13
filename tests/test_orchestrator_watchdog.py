@@ -11,6 +11,7 @@ from archonlib.orchestrator_watchdog import (
     _stop_output_mirror,
     automatic_recovery_run_ids,
     build_default_orchestrator_prompt,
+    build_watchdog_resume_prompt,
     campaign_has_live_work,
     campaign_progress_fingerprint,
     is_campaign_terminal,
@@ -92,9 +93,23 @@ def test_build_default_orchestrator_prompt_mentions_core_control_plane_contract(
     assert "autoarchon-campaign-recover" in prompt
     assert "--run-id <run-id> --execute" in prompt
     assert "prefer deterministic recovery via" not in prompt
+    assert "outer orchestrator_watchdog.py process is your expected wrapper" in prompt
     assert "never use --all-recoverable --execute from the owner session" in prompt
     assert "launch or recover at most 1 run(s) per decision" in prompt
     assert "finalize only validated proofs and accepted blocker notes" in prompt
+    assert "do not stop to ask the user about ownership" in prompt
+
+
+def test_build_watchdog_resume_prompt_discourages_owner_questions():
+    normal = build_watchdog_resume_prompt(stalled=False)
+    stalled = build_watchdog_resume_prompt(stalled=True)
+
+    assert "orchestrator_watchdog.py process is your wrapper" in normal
+    assert "Do not stop to ask the user about ownership" in normal
+    assert "If all runs are already terminal, finalize the campaign." in normal
+    assert "after a stalled outer session" in stalled
+    assert "orchestrator_watchdog.py process is your wrapper" in stalled
+    assert "do not stop to ask the user about ownership" in stalled
 
 
 def test_launch_codex_session_keeps_draining_owner_output_after_session_id(monkeypatch, tmp_path: Path):

@@ -355,6 +355,7 @@ def build_default_orchestrator_prompt(
             "",
             "Mission:",
             "- treat the campaign root as the control plane source of truth",
+            "- the outer orchestrator_watchdog.py process is your expected wrapper, not a competing owner session",
             "- inspect CAMPAIGN_MANIFEST.json, campaign-status.json, and recommendedRecovery before acting",
             "- launch teachers only from runs/<id>/control/launch-teacher.sh",
             f"- prefer deterministic single-run recovery via {recover_cmd} over ad hoc shell logic",
@@ -366,12 +367,32 @@ def build_default_orchestrator_prompt(
             ),
             "- keep teachers on disjoint run roots",
             "- finalize only validated proofs and accepted blocker notes",
+            "- do not stop to ask the user about ownership, monitor-vs-act, or whether to continue; choose the safest deterministic action yourself",
+            "- if another real owner lease is active, do not ask the user; record monitor-only notes and let the watchdog recover later",
             "",
             "Stop only when:",
             "- all runs are in terminal states and reports/final/ is up to date, or",
             "- a hard external dependency prevents safe continuation",
             "",
         ]
+    )
+
+
+def build_watchdog_resume_prompt(*, stalled: bool) -> str:
+    if stalled:
+        return (
+            "Continue owning this AutoArchon campaign after a stalled outer session. "
+            "The outer orchestrator_watchdog.py process is your wrapper, not a competing owner. "
+            "Refresh campaign truth from campaign-status.json and recommendedRecovery, "
+            "launch or recover only what is still needed, finalize when terminal, "
+            "and do not stop to ask the user about ownership or whether to continue."
+        )
+    return (
+        "Continue owning this AutoArchon campaign. "
+        "The outer orchestrator_watchdog.py process is your wrapper, not a competing owner. "
+        "Refresh campaign truth from campaign-status.json and recommendedRecovery before acting. "
+        "If all runs are already terminal, finalize the campaign. "
+        "Do not stop to ask the user about ownership or whether to continue."
     )
 
 
@@ -699,11 +720,7 @@ def run_watchdog(
                 break
             restart_count += 1
             stall_reason = "owner_exit"
-            resume_prompt = (
-                "Continue owning this AutoArchon campaign. "
-                "Refresh campaign truth from campaign-status.json and recommendedRecovery before acting. "
-                "If all runs are already terminal, finalize the campaign."
-            )
+            resume_prompt = build_watchdog_resume_prompt(stalled=False)
             _write_watchdog_log(
                 launch_result.log_handle,
                 launch_result.output_state,
@@ -825,11 +842,7 @@ def run_watchdog(
                 terminate_process_group(launch_result.process)
                 _stop_output_mirror(launch_result)
                 launch_result.log_handle.close()
-                resume_prompt = (
-                    "Continue owning this AutoArchon campaign after a stalled outer session. "
-                    "Refresh campaign truth from campaign-status.json and recommendedRecovery, "
-                    "launch or recover only what is still needed, and finalize when terminal."
-                )
+                resume_prompt = build_watchdog_resume_prompt(stalled=True)
                 launch_result = launch_codex_session(
                     archon_root=archon_root,
                     prompt_path=prompt_path,
