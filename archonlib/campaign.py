@@ -24,6 +24,7 @@ DEFAULT_OWNER_LEASE_SECONDS = 900
 MAX_SCOPED_PREWARM_FILES = 4
 IGNORED_SHARD_DIRS = {".archon", ".git", ".lake", "build", "lake-packages", "__pycache__"}
 TERMINAL_RUN_STATUSES = {"accepted", "blocked", "contaminated"}
+_UNSET = object()
 
 
 def _utc_now() -> str:
@@ -135,10 +136,10 @@ def _tail_text(path: Path, *, max_bytes: int = 131072) -> str:
 def ensure_campaign_control_root(
     campaign_root: Path,
     *,
-    owner_mode: str = "orchestrator",
-    watchdog_enabled: bool = False,
-    manager_enabled: bool = False,
-    owner_entrypoint: str | None = None,
+    owner_mode: str | object = _UNSET,
+    watchdog_enabled: bool | object = _UNSET,
+    manager_enabled: bool | object = _UNSET,
+    owner_entrypoint: str | None | object = _UNSET,
 ) -> Path:
     control_root = campaign_root / "control"
     control_root.mkdir(parents=True, exist_ok=True)
@@ -147,15 +148,30 @@ def ensure_campaign_control_root(
     created_at = existing.get("createdAt")
     if not isinstance(created_at, str) or not created_at:
         created_at = _utc_now()
+    resolved_owner_mode = owner_mode if owner_mode is not _UNSET else existing.get("ownerMode", "orchestrator")
+    if not isinstance(resolved_owner_mode, str) or not resolved_owner_mode:
+        resolved_owner_mode = "orchestrator"
+    resolved_watchdog_enabled = watchdog_enabled if watchdog_enabled is not _UNSET else existing.get("watchdogEnabled", False)
+    if not isinstance(resolved_watchdog_enabled, bool):
+        resolved_watchdog_enabled = False
+    resolved_manager_enabled = manager_enabled if manager_enabled is not _UNSET else existing.get("managerEnabled", False)
+    if not isinstance(resolved_manager_enabled, bool):
+        resolved_manager_enabled = False
+    if owner_entrypoint is _UNSET:
+        resolved_owner_entrypoint = existing.get("ownerEntrypoint") if "ownerEntrypoint" in existing else None
+    else:
+        resolved_owner_entrypoint = owner_entrypoint
+    if resolved_owner_entrypoint is not None and not isinstance(resolved_owner_entrypoint, str):
+        resolved_owner_entrypoint = None
     payload = {
         "schemaVersion": SCHEMA_VERSION,
         "campaignId": campaign_root.name,
         "createdAt": created_at,
         "updatedAt": _utc_now(),
-        "ownerMode": owner_mode,
-        "watchdogEnabled": watchdog_enabled,
-        "managerEnabled": manager_enabled,
-        "ownerEntrypoint": owner_entrypoint,
+        "ownerMode": resolved_owner_mode,
+        "watchdogEnabled": resolved_watchdog_enabled,
+        "managerEnabled": resolved_manager_enabled,
+        "ownerEntrypoint": resolved_owner_entrypoint,
     }
     _write_json(owner_mode_path, payload)
     return control_root

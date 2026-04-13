@@ -20,11 +20,14 @@ from archonlib.campaign import (
     cleanup_stale_launch_processes,
     collect_campaign_status,
     create_campaign,
+    ensure_campaign_control_root,
     execute_run_recovery,
     finalize_campaign,
     owner_lease_is_live,
     plan_campaign_shards,
     refresh_campaign_launch_assets,
+    refresh_owner_lease,
+    release_owner_lease,
 )
 
 
@@ -2140,6 +2143,58 @@ def test_campaign_overview_and_archive_capture_owner_lease_and_status(tmp_path: 
     archive_cli = json.loads(archive_result.stdout)
     assert archive_cli["overview"]["ownerLease"]["sessionId"] == "session-lease"
     assert archive_cli["runCounts"]["accepted"] == 1
+
+
+def test_owner_lease_operations_preserve_owner_mode_metadata(tmp_path: Path):
+    source = make_source_project(tmp_path, file_count=1)
+    campaign_root = tmp_path / "campaign"
+    create_campaign(
+        archon_root=ROOT,
+        source_root=source,
+        campaign_root=campaign_root,
+        run_specs=[
+            {"id": "teacher-1", "objective_regex": "^FATEM/1\\.lean$", "objective_limit": 1, "scope_hint": "FATEM/1.lean"},
+        ],
+    )
+    ensure_campaign_control_root(
+        campaign_root,
+        owner_mode="campaign_operator",
+        watchdog_enabled=True,
+        manager_enabled=False,
+        owner_entrypoint="autoarchon-orchestrator-watchdog",
+    )
+
+    claimed, _lease = claim_owner_lease(
+        campaign_root,
+        owner_entrypoint="autoarchon-orchestrator-watchdog",
+        owner_pid=os.getpid(),
+        session_id="session-preserve",
+        lease_seconds=120,
+        metadata={"mode": "watchdog"},
+    )
+    assert claimed is True
+
+    refresh_owner_lease(
+        campaign_root,
+        owner_entrypoint="autoarchon-orchestrator-watchdog",
+        owner_pid=os.getpid(),
+        session_id="session-preserve",
+        lease_seconds=120,
+        metadata={"mode": "watchdog", "tick": 2},
+    )
+    release_owner_lease(
+        campaign_root,
+        owner_entrypoint="autoarchon-orchestrator-watchdog",
+        owner_pid=os.getpid(),
+        session_id="session-preserve",
+        release_reason="test-finished",
+    )
+
+    owner_mode = json.loads((campaign_root / "control" / "owner-mode.json").read_text(encoding="utf-8"))
+    assert owner_mode["ownerMode"] == "campaign_operator"
+    assert owner_mode["watchdogEnabled"] is True
+    assert owner_mode["managerEnabled"] is False
+    assert owner_mode["ownerEntrypoint"] == "autoarchon-orchestrator-watchdog"
 
 
 def test_launch_from_spec_cli_bootstraps_campaign_and_starts_watchdog(tmp_path: Path):
