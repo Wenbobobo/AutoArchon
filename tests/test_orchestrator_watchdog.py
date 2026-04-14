@@ -805,3 +805,128 @@ def test_run_watchdog_degrades_instead_of_throwing_when_restart_budget_is_exhaus
     state_payload = json.loads(state_path.read_text(encoding="utf-8"))
     assert state_payload["watchdogStatus"] == "degraded"
     assert state_payload["budgetExhausted"] is True
+
+
+def test_run_watchdog_releases_owner_lease_and_writes_degraded_state_on_exception(tmp_path: Path, monkeypatch):
+    campaign_root = tmp_path / "campaign"
+    prompt_path = tmp_path / "prompt.txt"
+    state_path = tmp_path / "watchdog-state.json"
+    log_path = tmp_path / "watchdog.log"
+    clock = {"now": 0.0}
+    terminated: list[int] = []
+
+    class FakeProcess:
+        pid = 8118
+
+        def __init__(self) -> None:
+            self.stdout = io.StringIO("")
+
+        def poll(self) -> None:
+            return None
+
+    statuses = iter(
+        [
+            {
+                "campaignId": "exception-test",
+                "runs": [{"runId": "teacher-001", "status": "queued", "recommendedRecovery": {"action": "launch_teacher"}}],
+                "counts": {"queued": 1},
+            },
+            {
+                "campaignId": "exception-test",
+                "runs": [{"runId": "teacher-001", "status": "queued", "recommendedRecovery": {"action": "launch_teacher"}}],
+                "counts": {"queued": 1},
+            },
+            {
+                "campaignId": "exception-test",
+                "runs": [{"runId": "teacher-001", "status": "queued", "recommendedRecovery": {"action": "launch_teacher"}}],
+                "counts": {"queued": 1},
+            },
+        ]
+    )
+    fingerprint_calls = {"count": 0}
+
+    def fake_launch_codex_session(**kwargs):
+        log_handle = Path(kwargs["log_path"]).open("a", encoding="utf-8")
+        output_state = type(
+            "OutputState",
+            (),
+            {
+                "session_id": "session-exception",
+                "last_output_at": "2026-01-01T00:00:00+00:00",
+                "last_output_monotonic": clock["now"],
+                "lock": threading.Lock(),
+            },
+        )()
+        output_thread = type(
+            "OutputThread",
+            (),
+            {
+                "is_alive": staticmethod(lambda: False),
+                "join": staticmethod(lambda timeout=None: None),
+            },
+        )()
+        return type(
+            "FakeLaunch",
+            (),
+            {
+                "process": FakeProcess(),
+                "log_handle": log_handle,
+                "session_id": "session-exception",
+                "mode": "start",
+                "command": ["codex", "exec"],
+                "output_state": output_state,
+                "output_thread": output_thread,
+            },
+        )()
+
+    def fake_collect_campaign_status(_campaign_root: Path):
+        return next(statuses)
+
+    def fake_campaign_progress_fingerprint(_campaign_root: Path, _status_payload: dict):
+        fingerprint_calls["count"] += 1
+        if fingerprint_calls["count"] >= 2:
+            raise RuntimeError("fingerprint boom")
+        return {"runFingerprints": [{"runId": "teacher-001", "latestActivityNs": None}], "eventLines": 1}
+
+    def fake_compare_report(_campaign_root: Path, *, heartbeat_seconds: int):
+        final_root = _campaign_root / "reports" / "final"
+        final_root.mkdir(parents=True, exist_ok=True)
+        (final_root / "compare-report.json").write_text("{}", encoding="utf-8")
+        return {"generatedAt": "2026-01-01T00:00:00+00:00"}
+
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.launch_codex_session", fake_launch_codex_session)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.collect_campaign_status", fake_collect_campaign_status)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.campaign_progress_fingerprint", fake_campaign_progress_fingerprint)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.build_campaign_compare_report", fake_compare_report)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.terminate_process_group", lambda proc: terminated.append(proc.pid))
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.time.sleep", lambda seconds: clock.__setitem__("now", clock["now"] + seconds))
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.time.monotonic", lambda: clock["now"])
+
+    result = run_watchdog(
+        archon_root=tmp_path,
+        campaign_root=campaign_root,
+        prompt_path=prompt_path,
+        state_path=state_path,
+        log_path=log_path,
+        model="gpt-5.4",
+        reasoning_effort="xhigh",
+        poll_seconds=5,
+        stall_seconds=300,
+        bootstrap_launch_after_seconds=300,
+        max_restarts=1,
+        finalize_on_terminal=False,
+    )
+
+    assert result["watchdogStatus"] == "degraded"
+    assert result["stallReason"] == "watchdog_exception:RuntimeError"
+    assert result["watchdogError"]["type"] == "RuntimeError"
+    assert terminated == [8118]
+
+    owner_lease = json.loads((campaign_root / "control" / "owner-lease.json").read_text(encoding="utf-8"))
+    assert owner_lease["active"] is False
+    assert owner_lease["releaseReason"] == "degraded"
+
+    state_payload = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state_payload["watchdogStatus"] == "degraded"
+    assert state_payload["stallReason"] == "watchdog_exception:RuntimeError"
+    assert state_payload["ownerLease"]["active"] is False

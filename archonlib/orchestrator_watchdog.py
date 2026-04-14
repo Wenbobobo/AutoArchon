@@ -589,6 +589,7 @@ def run_watchdog(
     restart_count = 0
     bootstrap_done = False
     stall_reason: str | None = None
+    watchdog_error: dict[str, str] | None = None
     manual_interventions = 0
     last_status_refresh_at = utc_now_iso()
     last_progress_at = utc_now_iso()
@@ -641,208 +642,94 @@ def run_watchdog(
         }
         write_watchdog_state(state_path, {**result, "campaignSnapshot": snapshot, "updatedAt": utc_now_iso()})
         return result
-    launch_result = launch_codex_session(
-        archon_root=archon_root,
-        prompt_path=prompt_path,
-        log_path=log_path,
-        model=model,
-        reasoning_effort=reasoning_effort,
-    )
-    session_id = launch_result.session_id
-    progress_at = time.monotonic()
-
-    while True:
-        owner_lease = refresh_owner_lease(
-            campaign_root,
-            owner_entrypoint=owner_entrypoint,
-            owner_pid=owner_pid,
-            session_id=session_id,
-            child_pid=launch_result.process.pid if launch_result.process.poll() is None else None,
-            lease_seconds=owner_lease_seconds,
-            metadata={"mode": "watchdog", "watchdogStatus": watchdog_status},
+    launch_result = None
+    try:
+        launch_result = launch_codex_session(
+            archon_root=archon_root,
+            prompt_path=prompt_path,
+            log_path=log_path,
+            model=model,
+            reasoning_effort=reasoning_effort,
         )
-        compare_freshness = _current_compare_freshness(campaign_root, status)
-        write_watchdog_state(
-            state_path,
-            {
-                "schemaVersion": 1,
-                "campaignId": status.get("campaignId", campaign_root.name),
-                "campaignRoot": str(campaign_root),
-                "updatedAt": utc_now_iso(),
-                "sessionId": session_id,
-                "restartCount": restart_count,
-                "childPid": launch_result.process.pid if launch_result.process.poll() is None else None,
-                "mode": launch_result.mode,
-                "watchdogStatus": watchdog_status,
-                "budgetExhausted": budget_exhausted,
-                "lastFingerprint": fingerprint,
-                "campaignSnapshot": snapshot,
-                "runCounts": snapshot["runCounts"],
-                "statusRunIds": snapshot["statusRunIds"],
-                "recoverableRunIds": snapshot["recoverableRunIds"],
-                "prewarmPlanCounts": snapshot["prewarmPlanCounts"],
-                "prewarmPendingRunIds": snapshot["prewarmPendingRunIds"],
-                "activeLaunches": snapshot["activeLaunches"],
-                "activeWorkRunIds": snapshot["activeWorkRunIds"],
-                "acceptedProofCount": snapshot["acceptedProofCount"],
-                "acceptedBlockerCount": snapshot["acceptedBlockerCount"],
-                "lastStatusRefreshAt": last_status_refresh_at,
-                "lastProgressAt": last_progress_at,
-                "lastRecoveryAt": last_recovery_at,
-                "lastCompareReportAt": last_compare_report_at,
-                "ownerLastLogAt": launch_result.output_state.last_output_at,
-                "stallReason": stall_reason,
-                "launchBudget": {
-                    "maxActiveLaunches": max_active_launches,
-                    "launchBatchSize": launch_batch_size,
-                    "launchCooldownSeconds": launch_cooldown_seconds,
-                },
-                "manualInterventions": manual_interventions,
-                "reportFreshness": compare_freshness,
-                "ownerLease": owner_lease,
-            },
-        )
+        session_id = launch_result.session_id
+        progress_at = time.monotonic()
 
-        if launch_result.process.poll() is not None:
-            _stop_output_mirror(launch_result)
-            status = collect_campaign_status(campaign_root)
-            last_status_refresh_at = utc_now_iso()
-            fingerprint = campaign_progress_fingerprint(campaign_root, status)
-            snapshot = watchdog_campaign_snapshot(status)
-            last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
-            if is_campaign_terminal(status):
-                break
-            if restart_count >= max_restarts:
-                stall_reason = "owner_exit"
-                watchdog_status = "degraded"
-                budget_exhausted = True
-                last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
-                break
-            restart_count += 1
-            stall_reason = "owner_exit"
-            resume_prompt = build_watchdog_resume_prompt(stalled=False)
-            _write_watchdog_log(
-                launch_result.log_handle,
-                launch_result.output_state,
-                f"\n[watchdog] restarting orchestrator at {utc_now_iso()} after child exit; restart={restart_count}\n"
-            )
-            launch_result.log_handle.close()
-            launch_result = launch_codex_session(
-                archon_root=archon_root,
-                prompt_path=prompt_path,
-                log_path=log_path,
-                model=model,
-                reasoning_effort=reasoning_effort,
+        while True:
+            owner_lease = refresh_owner_lease(
+                campaign_root,
+                owner_entrypoint=owner_entrypoint,
+                owner_pid=owner_pid,
                 session_id=session_id,
-                resume_prompt=resume_prompt,
+                child_pid=launch_result.process.pid if launch_result.process.poll() is None else None,
+                lease_seconds=owner_lease_seconds,
+                metadata={"mode": "watchdog", "watchdogStatus": watchdog_status},
             )
-            session_id = launch_result.session_id or session_id
-            progress_at = time.monotonic()
+            compare_freshness = _current_compare_freshness(campaign_root, status)
+            write_watchdog_state(
+                state_path,
+                {
+                    "schemaVersion": 1,
+                    "campaignId": status.get("campaignId", campaign_root.name),
+                    "campaignRoot": str(campaign_root),
+                    "updatedAt": utc_now_iso(),
+                    "sessionId": session_id,
+                    "restartCount": restart_count,
+                    "childPid": launch_result.process.pid if launch_result.process.poll() is None else None,
+                    "mode": launch_result.mode,
+                    "watchdogStatus": watchdog_status,
+                    "budgetExhausted": budget_exhausted,
+                    "lastFingerprint": fingerprint,
+                    "campaignSnapshot": snapshot,
+                    "runCounts": snapshot["runCounts"],
+                    "statusRunIds": snapshot["statusRunIds"],
+                    "recoverableRunIds": snapshot["recoverableRunIds"],
+                    "prewarmPlanCounts": snapshot["prewarmPlanCounts"],
+                    "prewarmPendingRunIds": snapshot["prewarmPendingRunIds"],
+                    "activeLaunches": snapshot["activeLaunches"],
+                    "activeWorkRunIds": snapshot["activeWorkRunIds"],
+                    "acceptedProofCount": snapshot["acceptedProofCount"],
+                    "acceptedBlockerCount": snapshot["acceptedBlockerCount"],
+                    "lastStatusRefreshAt": last_status_refresh_at,
+                    "lastProgressAt": last_progress_at,
+                    "lastRecoveryAt": last_recovery_at,
+                    "lastCompareReportAt": last_compare_report_at,
+                    "ownerLastLogAt": launch_result.output_state.last_output_at,
+                    "stallReason": stall_reason,
+                    "launchBudget": {
+                        "maxActiveLaunches": max_active_launches,
+                        "launchBatchSize": launch_batch_size,
+                        "launchCooldownSeconds": launch_cooldown_seconds,
+                    },
+                    "manualInterventions": manual_interventions,
+                    "reportFreshness": compare_freshness,
+                    "ownerLease": owner_lease,
+                },
+            )
 
-        time.sleep(max(1, poll_seconds))
-        status = collect_campaign_status(campaign_root)
-        last_status_refresh_at = utc_now_iso()
-        new_fingerprint = campaign_progress_fingerprint(campaign_root, status)
-        snapshot = watchdog_campaign_snapshot(status)
-        if new_fingerprint != fingerprint:
-            fingerprint = new_fingerprint
-            progress_at = time.monotonic()
-            last_progress_at = utc_now_iso()
-            stall_reason = None
-            bootstrap_done = False
-            last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
-        elif (
-            not bootstrap_done
-            and bootstrap_launch_after_seconds > 0
-            and time.monotonic() - progress_at >= bootstrap_launch_after_seconds
-            and not campaign_has_live_work(status)
-        ):
-            recoverable_run_ids = select_automatic_recovery_run_ids(
-                status,
-                max_active_launches=max_active_launches,
-                launch_batch_size=launch_batch_size,
-                launch_cooldown_seconds=launch_cooldown_seconds,
-            )
-            if recoverable_run_ids:
-                _cleanup_stale_launchers_best_effort(
-                    campaign_root=campaign_root,
-                    log_handle=launch_result.log_handle,
-                    output_state=launch_result.output_state,
-                    heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS,
-                )
-                for run_id in recoverable_run_ids:
-                    execute_run_recovery(campaign_root, run_id, execute=True)
-                _write_watchdog_log(
-                    launch_result.log_handle,
-                    launch_result.output_state,
-                    f"\n[watchdog] executed automatic recoveries at {utc_now_iso()} for runs: {', '.join(recoverable_run_ids)}\n"
-                )
+            if launch_result.process.poll() is not None:
+                _stop_output_mirror(launch_result)
                 status = collect_campaign_status(campaign_root)
+                last_status_refresh_at = utc_now_iso()
                 fingerprint = campaign_progress_fingerprint(campaign_root, status)
                 snapshot = watchdog_campaign_snapshot(status)
-                progress_at = time.monotonic()
-                last_progress_at = utc_now_iso()
-                last_recovery_at = utc_now_iso()
                 last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
-                stall_reason = None
-                bootstrap_done = True
-        elif time.monotonic() - progress_at >= stall_seconds:
-            recoverable_run_ids = select_automatic_recovery_run_ids(
-                status,
-                max_active_launches=max_active_launches,
-                launch_batch_size=launch_batch_size,
-                launch_cooldown_seconds=launch_cooldown_seconds,
-            )
-            if recoverable_run_ids:
-                _cleanup_stale_launchers_best_effort(
-                    campaign_root=campaign_root,
-                    log_handle=launch_result.log_handle,
-                    output_state=launch_result.output_state,
-                    heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS,
-                )
-                for run_id in recoverable_run_ids:
-                    execute_run_recovery(campaign_root, run_id, execute=True)
-                _write_watchdog_log(
-                    launch_result.log_handle,
-                    launch_result.output_state,
-                    f"\n[watchdog] executed bounded recoveries at {utc_now_iso()} for runs: {', '.join(recoverable_run_ids)}\n",
-                )
-                status = collect_campaign_status(campaign_root)
-                fingerprint = campaign_progress_fingerprint(campaign_root, status)
-                snapshot = watchdog_campaign_snapshot(status)
-                progress_at = time.monotonic()
-                last_progress_at = utc_now_iso()
-                last_recovery_at = utc_now_iso()
-                last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
-                stall_reason = None
-                continue
-
-            owner_last_output = launch_result.output_state.last_output_monotonic
-            owner_silent = (
-                owner_silence_seconds > 0
-                and (
-                    owner_last_output is None
-                    or time.monotonic() - owner_last_output >= owner_silence_seconds
-                )
-            )
-            if owner_silent:
+                if is_campaign_terminal(status):
+                    break
                 if restart_count >= max_restarts:
-                    stall_reason = "campaign_stall"
+                    stall_reason = "owner_exit"
                     watchdog_status = "degraded"
                     budget_exhausted = True
                     last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
                     break
                 restart_count += 1
-                stall_reason = "campaign_stall"
+                stall_reason = "owner_exit"
+                resume_prompt = build_watchdog_resume_prompt(stalled=False)
                 _write_watchdog_log(
                     launch_result.log_handle,
                     launch_result.output_state,
-                    f"\n[watchdog] terminating stalled orchestrator at {utc_now_iso()}; restart={restart_count}\n",
+                    f"\n[watchdog] restarting orchestrator at {utc_now_iso()} after child exit; restart={restart_count}\n"
                 )
-                terminate_process_group(launch_result.process)
-                _stop_output_mirror(launch_result)
                 launch_result.log_handle.close()
-                resume_prompt = build_watchdog_resume_prompt(stalled=True)
                 launch_result = launch_codex_session(
                     archon_root=archon_root,
                     prompt_path=prompt_path,
@@ -854,25 +741,163 @@ def run_watchdog(
                 )
                 session_id = launch_result.session_id or session_id
                 progress_at = time.monotonic()
-            else:
-                stall_reason = "campaign_idle"
+
+            time.sleep(max(1, poll_seconds))
+            status = collect_campaign_status(campaign_root)
+            last_status_refresh_at = utc_now_iso()
+            new_fingerprint = campaign_progress_fingerprint(campaign_root, status)
+            snapshot = watchdog_campaign_snapshot(status)
+            if new_fingerprint != fingerprint:
+                fingerprint = new_fingerprint
+                progress_at = time.monotonic()
+                last_progress_at = utc_now_iso()
+                stall_reason = None
+                bootstrap_done = False
                 last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
+            elif (
+                not bootstrap_done
+                and bootstrap_launch_after_seconds > 0
+                and time.monotonic() - progress_at >= bootstrap_launch_after_seconds
+                and not campaign_has_live_work(status)
+            ):
+                recoverable_run_ids = select_automatic_recovery_run_ids(
+                    status,
+                    max_active_launches=max_active_launches,
+                    launch_batch_size=launch_batch_size,
+                    launch_cooldown_seconds=launch_cooldown_seconds,
+                )
+                if recoverable_run_ids:
+                    _cleanup_stale_launchers_best_effort(
+                        campaign_root=campaign_root,
+                        log_handle=launch_result.log_handle,
+                        output_state=launch_result.output_state,
+                        heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS,
+                    )
+                    for run_id in recoverable_run_ids:
+                        execute_run_recovery(campaign_root, run_id, execute=True)
+                    _write_watchdog_log(
+                        launch_result.log_handle,
+                        launch_result.output_state,
+                        f"\n[watchdog] executed automatic recoveries at {utc_now_iso()} for runs: {', '.join(recoverable_run_ids)}\n"
+                    )
+                    status = collect_campaign_status(campaign_root)
+                    fingerprint = campaign_progress_fingerprint(campaign_root, status)
+                    snapshot = watchdog_campaign_snapshot(status)
+                    progress_at = time.monotonic()
+                    last_progress_at = utc_now_iso()
+                    last_recovery_at = utc_now_iso()
+                    last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
+                    stall_reason = None
+                    bootstrap_done = True
+            elif time.monotonic() - progress_at >= stall_seconds:
+                recoverable_run_ids = select_automatic_recovery_run_ids(
+                    status,
+                    max_active_launches=max_active_launches,
+                    launch_batch_size=launch_batch_size,
+                    launch_cooldown_seconds=launch_cooldown_seconds,
+                )
+                if recoverable_run_ids:
+                    _cleanup_stale_launchers_best_effort(
+                        campaign_root=campaign_root,
+                        log_handle=launch_result.log_handle,
+                        output_state=launch_result.output_state,
+                        heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS,
+                    )
+                    for run_id in recoverable_run_ids:
+                        execute_run_recovery(campaign_root, run_id, execute=True)
+                    _write_watchdog_log(
+                        launch_result.log_handle,
+                        launch_result.output_state,
+                        f"\n[watchdog] executed bounded recoveries at {utc_now_iso()} for runs: {', '.join(recoverable_run_ids)}\n",
+                    )
+                    status = collect_campaign_status(campaign_root)
+                    fingerprint = campaign_progress_fingerprint(campaign_root, status)
+                    snapshot = watchdog_campaign_snapshot(status)
+                    progress_at = time.monotonic()
+                    last_progress_at = utc_now_iso()
+                    last_recovery_at = utc_now_iso()
+                    last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
+                    stall_reason = None
+                    continue
 
-        if is_campaign_terminal(status):
-            watchdog_status = "terminal"
-            break
+                owner_last_output = launch_result.output_state.last_output_monotonic
+                owner_silent = (
+                    owner_silence_seconds > 0
+                    and (
+                        owner_last_output is None
+                        or time.monotonic() - owner_last_output >= owner_silence_seconds
+                    )
+                )
+                if owner_silent:
+                    if restart_count >= max_restarts:
+                        stall_reason = "campaign_stall"
+                        watchdog_status = "degraded"
+                        budget_exhausted = True
+                        last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
+                        break
+                    restart_count += 1
+                    stall_reason = "campaign_stall"
+                    _write_watchdog_log(
+                        launch_result.log_handle,
+                        launch_result.output_state,
+                        f"\n[watchdog] terminating stalled orchestrator at {utc_now_iso()}; restart={restart_count}\n",
+                    )
+                    terminate_process_group(launch_result.process)
+                    _stop_output_mirror(launch_result)
+                    launch_result.log_handle.close()
+                    resume_prompt = build_watchdog_resume_prompt(stalled=True)
+                    launch_result = launch_codex_session(
+                        archon_root=archon_root,
+                        prompt_path=prompt_path,
+                        log_path=log_path,
+                        model=model,
+                        reasoning_effort=reasoning_effort,
+                        session_id=session_id,
+                        resume_prompt=resume_prompt,
+                    )
+                    session_id = launch_result.session_id or session_id
+                    progress_at = time.monotonic()
+                else:
+                    stall_reason = "campaign_idle"
+                    last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
 
-    terminate_process_group(launch_result.process)
-    _stop_output_mirror(launch_result)
-    launch_result.log_handle.close()
+            if is_campaign_terminal(status):
+                watchdog_status = "terminal"
+                break
 
-    if finalize_on_terminal and is_campaign_terminal(status):
-        finalize_campaign(campaign_root)
-        status = collect_campaign_status(campaign_root)
-        snapshot = watchdog_campaign_snapshot(status)
-        last_compare_report_at = utc_now_iso()
-    elif not is_campaign_terminal(status):
-        last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
+        if finalize_on_terminal and is_campaign_terminal(status):
+            finalize_campaign(campaign_root)
+            status = collect_campaign_status(campaign_root)
+            snapshot = watchdog_campaign_snapshot(status)
+            last_compare_report_at = utc_now_iso()
+        elif not is_campaign_terminal(status):
+            last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
+    except BaseException as exc:
+        watchdog_status = "degraded"
+        stall_reason = f"watchdog_exception:{type(exc).__name__}"
+        watchdog_error = {"type": type(exc).__name__, "message": str(exc)}
+        try:
+            status = collect_campaign_status(campaign_root)
+            snapshot = watchdog_campaign_snapshot(status)
+            fingerprint = campaign_progress_fingerprint(campaign_root, status)
+            last_status_refresh_at = utc_now_iso()
+        except (FileNotFoundError, OSError, RuntimeError, ValueError):
+            pass
+        try:
+            last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
+        except (FileNotFoundError, OSError, RuntimeError, ValueError):
+            pass
+        if launch_result is not None:
+            _write_watchdog_log(
+                launch_result.log_handle,
+                launch_result.output_state,
+                f"\n[watchdog] exception at {utc_now_iso()}: {type(exc).__name__}: {exc}\n",
+            )
+    finally:
+        if launch_result is not None:
+            terminate_process_group(launch_result.process)
+            _stop_output_mirror(launch_result)
+            launch_result.log_handle.close()
 
     compare_freshness = _current_compare_freshness(campaign_root, status)
     owner_lease = release_owner_lease(
@@ -907,7 +932,7 @@ def run_watchdog(
         "lastProgressAt": last_progress_at,
         "lastRecoveryAt": last_recovery_at,
         "lastCompareReportAt": last_compare_report_at,
-        "ownerLastLogAt": launch_result.output_state.last_output_at,
+        "ownerLastLogAt": launch_result.output_state.last_output_at if launch_result is not None else None,
         "stallReason": stall_reason,
         "launchBudget": {
             "maxActiveLaunches": max_active_launches,
@@ -918,5 +943,7 @@ def run_watchdog(
         "reportFreshness": compare_freshness,
         "ownerLease": owner_lease,
     }
+    if watchdog_error is not None:
+        result["watchdogError"] = watchdog_error
     write_watchdog_state(state_path, {**result, "campaignSnapshot": snapshot, "updatedAt": utc_now_iso()})
     return result
