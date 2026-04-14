@@ -31,7 +31,7 @@ def test_codex_command_uses_current_noninteractive_flags():
     assert "--search" in command
 
 
-def test_codex_command_reads_prompt_from_stdin_with_explicit_prompt_marker():
+def test_codex_command_reads_prompt_from_stdin_without_prompt_marker():
     command = codex_command(
         "gpt-5.4",
         extra_args="--config model_reasoning_effort=xhigh",
@@ -50,7 +50,8 @@ def test_codex_command_reads_prompt_from_stdin_with_explicit_prompt_marker():
         "approval_policy=never",
     ]
     assert command[command.index("--model") + 1] == "gpt-5.4"
-    assert command[-3:] == ["--config", "model_reasoning_effort=xhigh", "-"]
+    assert command[-2:] == ["--config", "model_reasoning_effort=xhigh"]
+    assert "-" not in command
 
 
 def test_codex_command_strips_search_when_cli_lacks_support():

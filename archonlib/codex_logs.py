@@ -230,7 +230,6 @@ def codex_command(
             search_supported=search_supported,
         )
         cmd.extend(parsed_extra_args)
-    cmd.append("-")
     wrapped_cmd, _ = wrap_command_with_timeout(
         cmd,
         timeout_seconds,

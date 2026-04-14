@@ -91,7 +91,9 @@ def make_fake_codex(tmp_path: Path) -> Path:
             print("Usage: codex exec [--search]")
             raise SystemExit(0)
 
-        prompt = sys.stdin.read() if args and args[-1] == "-" else (args[-1] if args else "")
+        prompt = sys.stdin.read()
+        if not prompt:
+            prompt = args[-1] if args else ""
         if "plan agent" in prompt:
             role = "plan"
         elif "prover agent" in prompt:
