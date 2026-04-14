@@ -757,7 +757,7 @@ def run_watchdog(
                 stall_reason = None
                 bootstrap_done = False
                 last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
-            elif (
+            if (
                 not bootstrap_done
                 and bootstrap_launch_after_seconds > 0
                 and time.monotonic() - progress_at >= bootstrap_launch_after_seconds
@@ -792,7 +792,8 @@ def run_watchdog(
                     last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
                     stall_reason = None
                     bootstrap_done = True
-            elif campaign_has_live_work(status):
+                    continue
+            if campaign_has_live_work(status):
                 recoverable_run_ids = select_automatic_recovery_run_ids(
                     status,
                     max_active_launches=max_active_launches,
@@ -823,7 +824,7 @@ def run_watchdog(
                     last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
                     stall_reason = None
                     continue
-            elif time.monotonic() - progress_at >= stall_seconds:
+            if time.monotonic() - progress_at >= stall_seconds:
                 recoverable_run_ids = select_automatic_recovery_run_ids(
                     status,
                     max_active_launches=max_active_launches,

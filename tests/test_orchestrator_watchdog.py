@@ -445,41 +445,33 @@ def test_run_watchdog_bootstraps_recovery_once_and_persists_runtime_state(tmp_pa
         def poll(self) -> None:
             return None
 
-    statuses = iter(
-        [
-            {
-                "runs": [
-                    {"runId": "teacher-001", "status": "queued", "recommendedRecovery": {"action": "launch_teacher"}}
-                ],
-                "counts": {"queued": 1},
-            },
-            {
-                "runs": [
-                    {"runId": "teacher-001", "status": "queued", "recommendedRecovery": {"action": "launch_teacher"}}
-                ],
-                "counts": {"queued": 1},
-            },
-            {
-                "runs": [
-                    {"runId": "teacher-001", "status": "accepted", "recommendedRecovery": {"action": "none"}}
-                ],
-                "counts": {"accepted": 1},
-            },
-            {
-                "runs": [
-                    {"runId": "teacher-001", "status": "accepted", "recommendedRecovery": {"action": "none"}}
-                ],
-                "counts": {"accepted": 1},
-            },
-        ]
-    )
-    fingerprints = iter(
-        [
-            {"runFingerprints": [{"runId": "teacher-001", "latestActivityNs": None}], "eventLines": 1},
-            {"runFingerprints": [{"runId": "teacher-001", "latestActivityNs": None}], "eventLines": 1},
-            {"runFingerprints": [{"runId": "teacher-001", "latestActivityNs": 123}], "eventLines": 2},
-        ]
-    )
+    status_sequence = [
+        {
+            "runs": [
+                {"runId": "teacher-001", "status": "queued", "recommendedRecovery": {"action": "launch_teacher"}}
+            ],
+            "counts": {"queued": 1},
+        },
+        {
+            "runs": [
+                {"runId": "teacher-001", "status": "queued", "recommendedRecovery": {"action": "launch_teacher"}}
+            ],
+            "counts": {"queued": 1},
+        },
+        {
+            "runs": [
+                {"runId": "teacher-001", "status": "accepted", "recommendedRecovery": {"action": "none"}}
+            ],
+            "counts": {"accepted": 1},
+        },
+    ]
+    fingerprint_sequence = [
+        {"runFingerprints": [{"runId": "teacher-001", "latestActivityNs": None}], "eventLines": 1},
+        {"runFingerprints": [{"runId": "teacher-001", "latestActivityNs": None}], "eventLines": 1},
+        {"runFingerprints": [{"runId": "teacher-001", "latestActivityNs": 123}], "eventLines": 2},
+    ]
+    status_index = {"value": 0}
+    fingerprint_index = {"value": 0}
 
     def fake_launch_codex_session(**kwargs):
         log_handle = Path(kwargs["log_path"]).open("a", encoding="utf-8")
@@ -516,10 +508,18 @@ def test_run_watchdog_bootstraps_recovery_once_and_persists_runtime_state(tmp_pa
         )()
 
     def fake_collect_campaign_status(_campaign_root: Path):
-        return next(statuses)
+        idx = status_index["value"]
+        status_index["value"] += 1
+        if idx >= len(status_sequence):
+            return status_sequence[-1]
+        return status_sequence[idx]
 
     def fake_campaign_progress_fingerprint(_campaign_root: Path, _status_payload: dict):
-        return next(fingerprints)
+        idx = fingerprint_index["value"]
+        fingerprint_index["value"] += 1
+        if idx >= len(fingerprint_sequence):
+            return fingerprint_sequence[-1]
+        return fingerprint_sequence[idx]
 
     def fake_execute_run_recovery(_campaign_root: Path, run_id: str, execute: bool = True):
         assert execute is True
@@ -602,53 +602,45 @@ def test_run_watchdog_bootstraps_recovery_despite_historical_activity(tmp_path: 
         def poll(self) -> None:
             return None
 
-    statuses = iter(
-        [
-            {
-                "runs": [
-                    {
-                        "runId": "teacher-001",
-                        "status": "needs_relaunch",
-                        "runningSignal": False,
-                        "launchActive": False,
-                        "recommendedRecovery": {"action": "relaunch_teacher"},
-                    }
-                ],
-                "counts": {"needs_relaunch": 1},
-            },
-            {
-                "runs": [
-                    {
-                        "runId": "teacher-001",
-                        "status": "needs_relaunch",
-                        "runningSignal": False,
-                        "launchActive": False,
-                        "recommendedRecovery": {"action": "relaunch_teacher"},
-                    }
-                ],
-                "counts": {"needs_relaunch": 1},
-            },
-            {
-                "runs": [
-                    {"runId": "teacher-001", "status": "accepted", "recommendedRecovery": {"action": "none"}}
-                ],
-                "counts": {"accepted": 1},
-            },
-            {
-                "runs": [
-                    {"runId": "teacher-001", "status": "accepted", "recommendedRecovery": {"action": "none"}}
-                ],
-                "counts": {"accepted": 1},
-            },
-        ]
-    )
-    fingerprints = iter(
-        [
-            {"runFingerprints": [{"runId": "teacher-001", "latestActivityNs": 123}], "eventLines": 1},
-            {"runFingerprints": [{"runId": "teacher-001", "latestActivityNs": 123}], "eventLines": 1},
-            {"runFingerprints": [{"runId": "teacher-001", "latestActivityNs": 456}], "eventLines": 2},
-        ]
-    )
+    status_sequence = [
+        {
+            "runs": [
+                {
+                    "runId": "teacher-001",
+                    "status": "needs_relaunch",
+                    "runningSignal": False,
+                    "launchActive": False,
+                    "recommendedRecovery": {"action": "relaunch_teacher"},
+                }
+            ],
+            "counts": {"needs_relaunch": 1},
+        },
+        {
+            "runs": [
+                {
+                    "runId": "teacher-001",
+                    "status": "needs_relaunch",
+                    "runningSignal": False,
+                    "launchActive": False,
+                    "recommendedRecovery": {"action": "relaunch_teacher"},
+                }
+            ],
+            "counts": {"needs_relaunch": 1},
+        },
+        {
+            "runs": [
+                {"runId": "teacher-001", "status": "accepted", "recommendedRecovery": {"action": "none"}}
+            ],
+            "counts": {"accepted": 1},
+        },
+    ]
+    fingerprint_sequence = [
+        {"runFingerprints": [{"runId": "teacher-001", "latestActivityNs": 123}], "eventLines": 1},
+        {"runFingerprints": [{"runId": "teacher-001", "latestActivityNs": 123}], "eventLines": 1},
+        {"runFingerprints": [{"runId": "teacher-001", "latestActivityNs": 456}], "eventLines": 2},
+    ]
+    status_index = {"value": 0}
+    fingerprint_index = {"value": 0}
 
     def fake_launch_codex_session(**kwargs):
         log_handle = Path(kwargs["log_path"]).open("a", encoding="utf-8")
@@ -685,10 +677,18 @@ def test_run_watchdog_bootstraps_recovery_despite_historical_activity(tmp_path: 
         )()
 
     def fake_collect_campaign_status(_campaign_root: Path):
-        return next(statuses)
+        idx = status_index["value"]
+        status_index["value"] += 1
+        if idx >= len(status_sequence):
+            return status_sequence[-1]
+        return status_sequence[idx]
 
     def fake_campaign_progress_fingerprint(_campaign_root: Path, _status_payload: dict):
-        return next(fingerprints)
+        idx = fingerprint_index["value"]
+        fingerprint_index["value"] += 1
+        if idx >= len(fingerprint_sequence):
+            return fingerprint_sequence[-1]
+        return fingerprint_sequence[idx]
 
     def fake_execute_run_recovery(_campaign_root: Path, run_id: str, execute: bool = True):
         assert execute is True
@@ -1029,13 +1029,13 @@ def test_run_watchdog_tops_up_launches_while_live_work_is_below_budget(tmp_path:
     ]
     fingerprint_sequence = [
         {"runFingerprints": [{"runId": "teacher-live", "latestActivityNs": 100}], "eventLines": 1},
-        {"runFingerprints": [{"runId": "teacher-live", "latestActivityNs": 100}], "eventLines": 1},
+        {"runFingerprints": [{"runId": "teacher-live", "latestActivityNs": 125}], "eventLines": 2},
         {
             "runFingerprints": [
                 {"runId": "teacher-live", "latestActivityNs": 200},
                 {"runId": "teacher-queued", "latestActivityNs": 150},
             ],
-            "eventLines": 2,
+            "eventLines": 3,
         },
     ]
     status_index = {"value": 0}
