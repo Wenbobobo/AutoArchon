@@ -959,7 +959,7 @@ def test_supervised_cycle_recovery_only_verifies_existing_artifacts_and_closes_l
     assert lease_payload["recoveryEvent"] == "verified_in_recovery"
 
 
-def test_supervised_cycle_does_not_mark_complete_when_scope_is_not_closed(tmp_path: Path):
+def test_supervised_cycle_focuses_remaining_scope_when_only_part_of_run_is_accepted(tmp_path: Path):
     source = tmp_path / "source"
     workspace = tmp_path / "workspace"
     write(source / "FATEM" / "1.lean", "theorem foo : True := by\n  sorry\n")
@@ -1023,12 +1023,19 @@ def test_supervised_cycle_does_not_mark_complete_when_scope_is_not_closed(tmp_pa
     assert result.returncode == 0
     progress_text = (workspace / ".archon" / "PROGRESS.md").read_text(encoding="utf-8")
     assert "## Current Stage\nprover" in progress_text
+    assert "**FATEM/2.lean**" in progress_text
+    assert "**FATEM/1.lean**" not in progress_text
 
     pending_text = (workspace / ".archon" / "task_pending.md").read_text(encoding="utf-8")
     assert "`FATEM/2.lean`" in pending_text
+    assert "`FATEM/1.lean`" not in pending_text
 
     done_text = (workspace / ".archon" / "task_done.md").read_text(encoding="utf-8")
-    assert "None." in done_text
+    assert "`FATEM/1.lean`" in done_text
+    assert "Accepted proof validated" in done_text
+
+    hot_notes = (workspace / ".archon" / "supervisor" / "HOT_NOTES.md").read_text(encoding="utf-8")
+    assert "removed accepted targets from the next-cycle objective list" in hot_notes
 
 
 def test_supervised_cycle_kills_idle_prover_and_records_hot_notes(tmp_path: Path):

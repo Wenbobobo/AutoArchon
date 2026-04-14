@@ -26,7 +26,7 @@ from archonlib.supervisor import (
     read_allowed_files,
 )
 from archonlib.lessons import write_lesson_artifact
-from archonlib.project_state import build_task_pending_markdown, stage_markdown
+from archonlib.project_state import build_task_pending_markdown, objective_for_file, stage_markdown
 from archonlib.validation import write_validation_artifacts
 
 
@@ -700,6 +700,92 @@ def _render_terminal_task_done(records: list[dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def _partial_sync_records(workspace: Path, *, allowed_files: list[str]) -> tuple[list[dict[str, str]], list[object]] | None:
+    if not allowed_files:
+        return None
+
+    validation_root = workspace / ".archon" / "validation"
+    completed: list[dict[str, str]] = []
+    remaining = []
+    for rel_path in allowed_files:
+        payload = _read_json(validation_root / _validation_filename(rel_path))
+        if payload is None:
+            return None
+
+        checks = payload.get("checks")
+        workspace_changed = isinstance(checks, dict) and checks.get("workspaceChanged") is True
+        blocker_notes = payload.get("blockerNotes")
+        if payload.get("acceptanceStatus") == "accepted":
+            record = {
+                "relPath": rel_path,
+                "validationFile": _validation_filename(rel_path),
+                "outcome": "accepted",
+            }
+            if isinstance(blocker_notes, list) and blocker_notes and not workspace_changed:
+                record["outcome"] = "blocked"
+                record["blockerNote"] = str(blocker_notes[0])
+            completed.append(record)
+            continue
+
+        target = workspace / rel_path
+        if target.exists():
+            remaining.append(objective_for_file(workspace, target))
+
+    if not completed or not remaining:
+        return None
+    return completed, remaining
+
+
+def _render_focused_progress(remaining: list[object]) -> str:
+    lines = [
+        "# Project Progress",
+        "",
+        "## Current Stage",
+        "prover",
+        "",
+        stage_markdown("prover", autoformalize_skipped=True),
+        "",
+        "## Current Objectives",
+        "",
+    ]
+    for index, objective in enumerate(remaining, start=1):
+        lines.append(objective.to_markdown(index))
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _render_focused_task_done(records: list[dict[str, str]]) -> str:
+    lines = ["# Completed Tasks", ""]
+    for record in records:
+        rel_path = record["relPath"]
+        validation_path = f".archon/validation/{record['validationFile']}"
+        if record["outcome"] == "blocked":
+            blocker_note = record["blockerNote"]
+            lines.append(f"- `{rel_path}` — Accepted blocker note `{blocker_note}` validated by `{validation_path}`.")
+        else:
+            lines.append(f"- `{rel_path}` — Accepted proof validated by `{validation_path}`.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _sync_focused_planner_state(workspace: Path, *, allowed_files: list[str]) -> dict[str, object] | None:
+    records = _partial_sync_records(workspace, allowed_files=allowed_files)
+    if records is None:
+        return None
+
+    completed, remaining = records
+    state_root = workspace / ".archon"
+    _write_text(state_root / "PROGRESS.md", _render_focused_progress(remaining))
+    _write_text(state_root / "task_pending.md", build_task_pending_markdown(remaining))
+    _write_text(state_root / "task_done.md", _render_focused_task_done(completed))
+    return {
+        "event": "planner_state_synced",
+        "status": "focused_remaining_scope",
+        "completedTargets": [record["relPath"] for record in completed],
+        "remainingTargets": [objective.rel_path for objective in remaining],
+    }
+
+
 def _sync_terminal_planner_state(workspace: Path, *, allowed_files: list[str]) -> dict[str, object] | None:
     records = _terminal_sync_records(workspace, allowed_files=allowed_files)
     if records is None:
@@ -938,6 +1024,8 @@ def main() -> int:
         recovered_after_stall=recovered_after_stall,
     )
     planner_state_sync = _sync_terminal_planner_state(workspace, allowed_files=allowed_files)
+    if planner_state_sync is None:
+        planner_state_sync = _sync_focused_planner_state(workspace, allowed_files=allowed_files)
     if planner_state_sync is not None:
         events.append(planner_state_sync)
 
@@ -1016,7 +1104,10 @@ def main() -> int:
             for note_name, detail in task_results_failures.items():
                 hot_notes.append(f"- Verification after idle failed for task result {note_name}: {detail}")
     if planner_state_sync is not None:
-        hot_notes.append("- Planner state synced: wrote terminal closure to .archon/PROGRESS.md, task_pending.md, and task_done.md")
+        if planner_state_sync.get("status") == "terminal_complete":
+            hot_notes.append("- Planner state synced: wrote terminal closure to .archon/PROGRESS.md, task_pending.md, and task_done.md")
+        elif planner_state_sync.get("status") == "focused_remaining_scope":
+            hot_notes.append("- Planner state synced: removed accepted targets from the next-cycle objective list and refreshed task_pending.md/task_done.md")
     for drift in drifts:
         hot_notes.append(f"- Violation: {drift.rel_path}::{drift.declaration_name} -> {drift.mutation_class}")
     if loop_result.returncode != 0 and not created_new_iteration:
