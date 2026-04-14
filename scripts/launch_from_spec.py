@@ -20,6 +20,18 @@ if str(ROOT) not in sys.path:
 from archonlib.campaign import create_campaign, ensure_campaign_control_root, plan_campaign_shards, refresh_campaign_launch_assets
 
 
+WATCHDOG_ENV_OVERRIDES = {
+    "pollSeconds": "POLL_SECONDS",
+    "stallSeconds": "STALL_SECONDS",
+    "ownerSilenceSeconds": "OWNER_SILENCE_SECONDS",
+    "bootstrapLaunchAfterSeconds": "BOOTSTRAP_LAUNCH_AFTER_SECONDS",
+    "maxRestarts": "MAX_RESTARTS",
+    "maxActiveLaunches": "MAX_ACTIVE_LAUNCHES",
+    "launchBatchSize": "LAUNCH_BATCH_SIZE",
+    "launchCooldownSeconds": "LAUNCH_COOLDOWN_SECONDS",
+}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Create or reuse an AutoArchon campaign from a JSON spec, then optionally start the watchdog."
@@ -85,6 +97,16 @@ def _as_int(value: object, *, field: str) -> int:
     raise ValueError(f"{field} must be an integer")
 
 
+def _coalesce_config_value(*values: object) -> object:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return None
+
+
 UNRESOLVED_ENV_RE = re.compile(r"^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)$")
 
 
@@ -115,6 +137,23 @@ def _load_spec(spec_file: Path) -> dict[str, Any]:
         if isinstance(raw_value, str) and raw_value.strip():
             resolved[key] = str(_resolve_path(raw_value, base_dir=base_dir))
 
+    return resolved
+
+
+def _apply_watchdog_env_overrides(spec: dict[str, Any]) -> dict[str, Any]:
+    resolved = dict(spec)
+    watchdog = resolved.get("watchdog")
+    if watchdog is None:
+        watchdog = {}
+    if not isinstance(watchdog, dict):
+        raise ValueError("watchdog must be a JSON object when provided")
+    updated_watchdog = dict(watchdog)
+    for key, env_var in WATCHDOG_ENV_OVERRIDES.items():
+        env_value = os.environ.get(env_var)
+        if env_value is None or not str(env_value).strip():
+            continue
+        updated_watchdog[key] = env_value
+    resolved["watchdog"] = updated_watchdog
     return resolved
 
 
@@ -220,21 +259,21 @@ def _build_watchdog_command(campaign_root: Path, spec: dict[str, Any]) -> tuple[
         "--reasoning-effort",
         reasoning_effort,
         "--poll-seconds",
-        str(_as_int(watchdog.get("pollSeconds") or 30, field="watchdog.pollSeconds")),
+        str(_as_int(_coalesce_config_value(watchdog.get("pollSeconds"), 30), field="watchdog.pollSeconds")),
         "--stall-seconds",
-        str(_as_int(watchdog.get("stallSeconds") or 300, field="watchdog.stallSeconds")),
+        str(_as_int(_coalesce_config_value(watchdog.get("stallSeconds"), 300), field="watchdog.stallSeconds")),
         "--owner-silence-seconds",
-        str(_as_int(watchdog.get("ownerSilenceSeconds") or 1200, field="watchdog.ownerSilenceSeconds")),
+        str(_as_int(_coalesce_config_value(watchdog.get("ownerSilenceSeconds"), 1200), field="watchdog.ownerSilenceSeconds")),
         "--bootstrap-launch-after-seconds",
-        str(_as_int(watchdog.get("bootstrapLaunchAfterSeconds") or 45, field="watchdog.bootstrapLaunchAfterSeconds")),
+        str(_as_int(_coalesce_config_value(watchdog.get("bootstrapLaunchAfterSeconds"), 45), field="watchdog.bootstrapLaunchAfterSeconds")),
         "--max-restarts",
-        str(_as_int(watchdog.get("maxRestarts") or 3, field="watchdog.maxRestarts")),
+        str(_as_int(_coalesce_config_value(watchdog.get("maxRestarts"), 3), field="watchdog.maxRestarts")),
         "--max-active-launches",
-        str(_as_int(watchdog.get("maxActiveLaunches") or 2, field="watchdog.maxActiveLaunches")),
+        str(_as_int(_coalesce_config_value(watchdog.get("maxActiveLaunches"), 2), field="watchdog.maxActiveLaunches")),
         "--launch-batch-size",
-        str(_as_int(watchdog.get("launchBatchSize") or 1, field="watchdog.launchBatchSize")),
+        str(_as_int(_coalesce_config_value(watchdog.get("launchBatchSize"), 1), field="watchdog.launchBatchSize")),
         "--launch-cooldown-seconds",
-        str(_as_int(watchdog.get("launchCooldownSeconds") or 90, field="watchdog.launchCooldownSeconds")),
+        str(_as_int(_coalesce_config_value(watchdog.get("launchCooldownSeconds"), 90), field="watchdog.launchCooldownSeconds")),
         ]
     )
     if watchdog.get("finalizeOnTerminal") is False:
@@ -329,7 +368,7 @@ def _start_watchdog(campaign_root: Path, spec: dict[str, Any], *, dry_run: bool)
 def main() -> int:
     args = parse_args()
     spec_file = Path(args.spec_file).resolve()
-    spec = _load_spec(spec_file)
+    spec = _apply_watchdog_env_overrides(_load_spec(spec_file))
     campaign_root = Path(spec["campaignRoot"])
     source_root = Path(spec["sourceRoot"])
     reuse_lake_from = Path(spec["reuseLakeFrom"]) if isinstance(spec.get("reuseLakeFrom"), str) else None

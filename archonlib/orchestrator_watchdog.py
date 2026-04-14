@@ -201,6 +201,7 @@ def select_automatic_recovery_run_ids(
     max_active_launches: int,
     launch_batch_size: int,
     launch_cooldown_seconds: int,
+    include_recovery_only: bool = True,
 ) -> list[str]:
     runs = status_payload.get("runs")
     if not isinstance(runs, list) or launch_batch_size <= 0:
@@ -221,6 +222,8 @@ def select_automatic_recovery_run_ids(
             continue
         action = recovery.get("action")
         if action not in AUTOMATIC_RECOVERY_ACTIONS:
+            continue
+        if not include_recovery_only and action == "recovery_only":
             continue
         retry_after = _parse_iso_datetime(run.get("retryAfter"))
         if retry_after is not None and retry_after > now:
@@ -789,6 +792,37 @@ def run_watchdog(
                     last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
                     stall_reason = None
                     bootstrap_done = True
+            elif campaign_has_live_work(status):
+                recoverable_run_ids = select_automatic_recovery_run_ids(
+                    status,
+                    max_active_launches=max_active_launches,
+                    launch_batch_size=launch_batch_size,
+                    launch_cooldown_seconds=launch_cooldown_seconds,
+                    include_recovery_only=False,
+                )
+                if recoverable_run_ids:
+                    _cleanup_stale_launchers_best_effort(
+                        campaign_root=campaign_root,
+                        log_handle=launch_result.log_handle,
+                        output_state=launch_result.output_state,
+                        heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS,
+                    )
+                    for run_id in recoverable_run_ids:
+                        execute_run_recovery(campaign_root, run_id, execute=True)
+                    _write_watchdog_log(
+                        launch_result.log_handle,
+                        launch_result.output_state,
+                        f"\n[watchdog] topped up automatic launches at {utc_now_iso()} for runs: {', '.join(recoverable_run_ids)}\n",
+                    )
+                    status = collect_campaign_status(campaign_root)
+                    fingerprint = campaign_progress_fingerprint(campaign_root, status)
+                    snapshot = watchdog_campaign_snapshot(status)
+                    progress_at = time.monotonic()
+                    last_progress_at = utc_now_iso()
+                    last_recovery_at = utc_now_iso()
+                    last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
+                    stall_reason = None
+                    continue
             elif time.monotonic() - progress_at >= stall_seconds:
                 recoverable_run_ids = select_automatic_recovery_run_ids(
                     status,

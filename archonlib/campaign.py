@@ -1235,6 +1235,26 @@ def _unverified_rel_paths(
     return sorted(item for item in unverified if item)
 
 
+def _remaining_targets(
+    *,
+    allowed_files: list[str],
+    configured_allowed_files: list[str],
+    changed_files: list[str],
+    validation_summary: Mapping[str, Any],
+    unverified_rel_paths: list[str],
+) -> list[str]:
+    accepted_proofs = validation_summary.get("acceptedProofs", [])
+    accepted_blockers = validation_summary.get("acceptedBlockers", [])
+    rejected_targets = validation_summary.get("rejectedTargets", [])
+    pending_targets = validation_summary.get("pendingTargets", [])
+    attention_targets = validation_summary.get("attentionTargets", [])
+    closed_targets = set(accepted_proofs) | set(accepted_blockers) | set(rejected_targets)
+    objective_targets = set(allowed_files or configured_allowed_files or changed_files)
+    unverified_targets = {item for item in unverified_rel_paths if item != "task_results"}
+    remaining_targets = (objective_targets | set(pending_targets) | set(attention_targets) | unverified_targets) - closed_targets
+    return sorted(item for item in remaining_targets if item)
+
+
 def _classify_run_status(
     *,
     allowed_files: list[str],
@@ -1763,6 +1783,7 @@ def _campaign_target_counts(status_payload: Mapping[str, Any]) -> dict[str, int]
     accepted_blockers = 0
     unverified_artifacts = 0
     pending_targets = 0
+    remaining_targets = 0
     attention_targets = 0
     rejected_targets = 0
     changed_files = 0
@@ -1776,6 +1797,7 @@ def _campaign_target_counts(status_payload: Mapping[str, Any]) -> dict[str, int]
             accepted_blockers += len(run.get("acceptedBlockers", [])) if isinstance(run.get("acceptedBlockers"), list) else 0
             unverified_artifacts += len(run.get("unverifiedArtifacts", [])) if isinstance(run.get("unverifiedArtifacts"), list) else 0
             pending_targets += len(run.get("pendingTargets", [])) if isinstance(run.get("pendingTargets"), list) else 0
+            remaining_targets += len(run.get("remainingTargets", [])) if isinstance(run.get("remainingTargets"), list) else 0
             attention_targets += len(run.get("attentionTargets", [])) if isinstance(run.get("attentionTargets"), list) else 0
             rejected_targets += len(run.get("rejectedTargets", [])) if isinstance(run.get("rejectedTargets"), list) else 0
             changed_files += len(run.get("changedFiles", [])) if isinstance(run.get("changedFiles"), list) else 0
@@ -1785,6 +1807,7 @@ def _campaign_target_counts(status_payload: Mapping[str, Any]) -> dict[str, int]
         "acceptedBlockers": accepted_blockers,
         "unverifiedArtifacts": unverified_artifacts,
         "pendingTargets": pending_targets,
+        "remainingTargets": remaining_targets,
         "attentionTargets": attention_targets,
         "rejectedTargets": rejected_targets,
         "changedFiles": changed_files,
@@ -1862,13 +1885,20 @@ def _format_duration_seconds(total_seconds: int | None) -> str:
     return " ".join(parts)
 
 
-def estimate_campaign_eta(campaign_root: Path, *, pending_targets: int) -> dict[str, Any]:
-    if pending_targets <= 0:
+def estimate_campaign_eta(campaign_root: Path, *, pending_targets: int, non_terminal_run_count: int = 0) -> dict[str, Any]:
+    if pending_targets <= 0 and non_terminal_run_count <= 0:
         return {
             "state": "complete",
             "etaSeconds": 0,
             "etaText": "0m",
             "reason": "No pending targets remain.",
+        }
+    if pending_targets <= 0:
+        return {
+            "state": "unknown",
+            "etaSeconds": None,
+            "etaText": "unknown",
+            "reason": "Non-terminal runs remain, but remaining file targets are not materialized yet.",
         }
 
     acceptance_times: list[datetime] = []
@@ -1963,6 +1993,7 @@ def build_campaign_overview(
                         "acceptedProofCount": len(run.get("acceptedProofs", [])) if isinstance(run.get("acceptedProofs"), list) else 0,
                         "acceptedBlockerCount": len(run.get("acceptedBlockers", [])) if isinstance(run.get("acceptedBlockers"), list) else 0,
                         "pendingTargetCount": len(run.get("pendingTargets", [])) if isinstance(run.get("pendingTargets"), list) else 0,
+                        "remainingTargetCount": len(run.get("remainingTargets", [])) if isinstance(run.get("remainingTargets"), list) else 0,
                     }
                 )
             recovery = run.get("recommendedRecovery")
@@ -1977,12 +2008,19 @@ def build_campaign_overview(
                         "acceptedProofCount": len(run.get("acceptedProofs", [])) if isinstance(run.get("acceptedProofs"), list) else 0,
                         "acceptedBlockerCount": len(run.get("acceptedBlockers", [])) if isinstance(run.get("acceptedBlockers"), list) else 0,
                         "pendingTargetCount": len(run.get("pendingTargets", [])) if isinstance(run.get("pendingTargets"), list) else 0,
+                        "remainingTargetCount": len(run.get("remainingTargets", [])) if isinstance(run.get("remainingTargets"), list) else 0,
                     }
                 )
     running_rows.sort(key=lambda item: str(item["runId"]))
     recoverable_rows.sort(key=lambda item: str(item["runId"]))
     report_freshness = compare_report_freshness(status_payload, compare_report)
-    eta = estimate_campaign_eta(campaign_root, pending_targets=target_counts["pendingTargets"])
+    eta = estimate_campaign_eta(
+        campaign_root,
+        pending_targets=target_counts.get("remainingTargets", target_counts["pendingTargets"]),
+        non_terminal_run_count=max(0, sum(status_payload.get("counts", {}).values()) - terminal_run_count)
+        if isinstance(status_payload.get("counts"), Mapping)
+        else max(0, len(running_rows) + len(recoverable_rows) - terminal_run_count),
+    )
 
     return {
         "schemaVersion": SCHEMA_VERSION,
@@ -2062,7 +2100,8 @@ def render_campaign_overview_markdown(overview: Mapping[str, Any]) -> str:
         for row in running_runs:
             lines.append(
                 f"- `{row.get('runId')}` iter={row.get('latestIteration')} pending={row.get('pendingTargetCount')} "
-                f"accepted_proofs={row.get('acceptedProofCount')} accepted_blockers={row.get('acceptedBlockerCount')}"
+                f"remaining={row.get('remainingTargetCount')} accepted_proofs={row.get('acceptedProofCount')} "
+                f"accepted_blockers={row.get('acceptedBlockerCount')}"
             )
     else:
         lines.append("- none")
@@ -2071,7 +2110,8 @@ def render_campaign_overview_markdown(overview: Mapping[str, Any]) -> str:
         for row in recoverable_runs[:16]:
             lines.append(
                 f"- `{row.get('runId')}` status={row.get('status')} action={row.get('action')} "
-                f"class={row.get('recoveryClass')} pending={row.get('pendingTargetCount')}"
+                f"class={row.get('recoveryClass')} pending={row.get('pendingTargetCount')} "
+                f"remaining={row.get('remainingTargetCount')}"
             )
     else:
         lines.append("- none")
@@ -2691,6 +2731,13 @@ def collect_campaign_status(campaign_root: Path, *, heartbeat_seconds: int = DEF
             task_results=task_results,
             validation_payloads=workspace_validation_payloads + artifact_validation_payloads,
         )
+        remaining_targets = _remaining_targets(
+            allowed_files=allowed_files,
+            configured_allowed_files=configured_allowed_files,
+            changed_files=changed_files,
+            validation_summary=validation_summary,
+            unverified_rel_paths=unverified_paths,
+        )
         status = _classify_run_status(
             allowed_files=allowed_files,
             changed_files=changed_files,
@@ -2739,6 +2786,7 @@ def collect_campaign_status(campaign_root: Path, *, heartbeat_seconds: int = DEF
             "acceptedBlockers": accepted_blockers,
             "pendingTargets": validation_summary["pendingTargets"],
             "attentionTargets": validation_summary["attentionTargets"],
+            "remainingTargets": remaining_targets,
             "rejectedTargets": validation_summary["rejectedTargets"],
             "unverifiedArtifacts": unverified_paths,
             "artifactIndexPresent": artifact_index is not None,
@@ -3022,6 +3070,7 @@ def build_campaign_compare_report(
     accepted_blocker_count = 0
     unverified_artifact_count = 0
     pending_target_count = 0
+    remaining_target_count = 0
     attention_target_count = 0
     rejected_target_count = 0
     changed_file_count = 0
@@ -3036,6 +3085,7 @@ def build_campaign_compare_report(
         accepted_blockers = run.get("acceptedBlockers", [])
         unverified_artifacts = run.get("unverifiedArtifacts", [])
         pending_targets = run.get("pendingTargets", [])
+        remaining_targets = run.get("remainingTargets", [])
         attention_targets = run.get("attentionTargets", [])
         rejected_targets = run.get("rejectedTargets", [])
         changed_files = run.get("changedFiles", [])
@@ -3044,6 +3094,7 @@ def build_campaign_compare_report(
         accepted_blocker_count += len(accepted_blockers) if isinstance(accepted_blockers, list) else 0
         unverified_artifact_count += len(unverified_artifacts) if isinstance(unverified_artifacts, list) else 0
         pending_target_count += len(pending_targets) if isinstance(pending_targets, list) else 0
+        remaining_target_count += len(remaining_targets) if isinstance(remaining_targets, list) else 0
         attention_target_count += len(attention_targets) if isinstance(attention_targets, list) else 0
         rejected_target_count += len(rejected_targets) if isinstance(rejected_targets, list) else 0
         changed_file_count += len(changed_files) if isinstance(changed_files, list) else 0
@@ -3064,6 +3115,7 @@ def build_campaign_compare_report(
             "acceptedBlockerCount": len(accepted_blockers) if isinstance(accepted_blockers, list) else 0,
             "unverifiedArtifactCount": len(unverified_artifacts) if isinstance(unverified_artifacts, list) else 0,
             "pendingTargetCount": len(pending_targets) if isinstance(pending_targets, list) else 0,
+            "remainingTargetCount": len(remaining_targets) if isinstance(remaining_targets, list) else 0,
             "attentionTargetCount": len(attention_targets) if isinstance(attention_targets, list) else 0,
             "rejectedTargetCount": len(rejected_targets) if isinstance(rejected_targets, list) else 0,
             "changedFileCount": len(changed_files) if isinstance(changed_files, list) else 0,
@@ -3126,6 +3178,7 @@ def build_campaign_compare_report(
             "acceptedBlockers": accepted_blocker_count,
             "unverifiedArtifacts": unverified_artifact_count,
             "pendingTargets": pending_target_count,
+            "remainingTargets": remaining_target_count,
             "attentionTargets": attention_target_count,
             "rejectedTargets": rejected_target_count,
             "changedFiles": changed_file_count,

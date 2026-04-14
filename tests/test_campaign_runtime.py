@@ -2483,6 +2483,77 @@ def test_launch_from_spec_skips_unresolved_optional_env_placeholders(tmp_path: P
     assert "ARCHON_CODEX_READY_RETRY_DELAY_SECONDS=<missing>" in env_payload
 
 
+def test_launch_from_spec_applies_watchdog_env_overrides_to_command_and_resolved_spec(tmp_path: Path):
+    source = make_source_project(tmp_path, file_count=1)
+    campaign_root = tmp_path / "campaign"
+    run_spec_output = tmp_path / "run-specs" / "campaign.json"
+    spec_path = tmp_path / "campaign-spec.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "sourceRoot": str(source),
+                "campaignRoot": str(campaign_root),
+                "runSpecOutput": str(run_spec_output),
+                "planShards": {
+                    "runIdPrefix": "teacher-override",
+                    "runIdMode": "index",
+                    "matchRegex": r"^FATEM/1\.lean$",
+                    "shardSize": 1,
+                },
+                "watchdog": {
+                    "enabled": True,
+                    "pollSeconds": 5,
+                    "maxActiveLaunches": 1,
+                    "launchBatchSize": 1,
+                    "launchCooldownSeconds": 90,
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    fake_watchdog = make_fake_watchdog_exec(tmp_path)
+    env = os.environ.copy()
+    env["ARCHON_WATCHDOG_EXECUTABLE"] = str(fake_watchdog)
+    env["FAKE_WATCHDOG_SLEEP_SECONDS"] = "2"
+    env["POLL_SECONDS"] = "17"
+    env["MAX_ACTIVE_LAUNCHES"] = "3"
+    env["LAUNCH_BATCH_SIZE"] = "2"
+    env["LAUNCH_COOLDOWN_SECONDS"] = "11"
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(LAUNCH_FROM_SPEC),
+            "--spec-file",
+            str(spec_path),
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    resolved_spec = json.loads((campaign_root / "control" / "launch-spec.resolved.json").read_text(encoding="utf-8"))
+    watchdog_command = payload["watchdog"]["command"]
+    rendered_watchdog_command = " ".join(watchdog_command)
+
+    assert payload["watchdog"]["status"] == "started"
+    assert resolved_spec["watchdog"]["pollSeconds"] == "17"
+    assert resolved_spec["watchdog"]["maxActiveLaunches"] == "3"
+    assert resolved_spec["watchdog"]["launchBatchSize"] == "2"
+    assert resolved_spec["watchdog"]["launchCooldownSeconds"] == "11"
+    assert "--poll-seconds 17" in rendered_watchdog_command
+    assert "--max-active-launches 3" in rendered_watchdog_command
+    assert "--launch-batch-size 2" in rendered_watchdog_command
+    assert "--launch-cooldown-seconds 11" in rendered_watchdog_command
+
+
 def test_launch_from_spec_fails_when_watchdog_exits_immediately(tmp_path: Path):
     source = make_source_project(tmp_path, file_count=1)
     campaign_root = tmp_path / "campaign"
@@ -2571,3 +2642,31 @@ def test_build_campaign_overview_flags_stale_watchdog_state(tmp_path: Path):
 
     archive_payload = archive_campaign_postmortem(campaign_root, heartbeat_seconds=0)
     assert "stale_watchdog_state" in archive_payload["incidentTags"]
+
+
+def test_build_campaign_overview_uses_remaining_targets_for_fresh_campaign_eta(tmp_path: Path):
+    source = make_source_project(tmp_path, file_count=2)
+    campaign_root = tmp_path / "campaign"
+    create_campaign(
+        archon_root=ROOT,
+        source_root=source,
+        campaign_root=campaign_root,
+        run_specs=[
+            {
+                "id": "teacher-001",
+                "objective_regex": r"^(FATEM/1\.lean|FATEM/2\.lean)$",
+                "objective_limit": 2,
+                "scope_hint": "FATEM/1.lean, FATEM/2.lean",
+            },
+        ],
+    )
+
+    overview = build_campaign_overview(campaign_root, heartbeat_seconds=0)
+
+    assert overview["runCounts"] == {"queued": 1}
+    assert overview["targetCounts"]["pendingTargets"] == 0
+    assert overview["targetCounts"]["remainingTargets"] == 2
+    assert overview["eta"]["state"] == "unknown"
+    assert overview["eta"]["reason"] != "No pending targets remain."
+    assert overview["recoverableRuns"][0]["runId"] == "teacher-001"
+    assert overview["recoverableRuns"][0]["remainingTargetCount"] == 2
