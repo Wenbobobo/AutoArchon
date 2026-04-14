@@ -960,6 +960,32 @@ def _effective_launch_activity(
     return heartbeat_age <= min(heartbeat_seconds, LAUNCH_GRACE_SECONDS), heartbeat_age
 
 
+def _effective_lease_activity(
+    lease: Mapping[str, Any] | None,
+    *,
+    heartbeat_seconds: int,
+) -> tuple[bool | None, float | None]:
+    if not isinstance(lease, Mapping):
+        return None, None
+    heartbeat_age = _heartbeat_age_from_iso(lease.get("lastHeartbeatAt"))
+    active = lease.get("active")
+    if active is False:
+        return False, heartbeat_age
+    if active is not True:
+        return None, heartbeat_age
+
+    supervisor_pid = _coerce_pid(lease.get("supervisorPid"))
+    loop_pid = _coerce_pid(lease.get("loopPid"))
+    pid_candidates = [pid for pid in (supervisor_pid, loop_pid) if pid is not None]
+    if pid_candidates:
+        if any(_pid_is_live(pid) for pid in pid_candidates):
+            return True, heartbeat_age
+        return False, heartbeat_age
+    if heartbeat_age is None:
+        return True, None
+    return heartbeat_age <= heartbeat_seconds, heartbeat_age
+
+
 def _launch_has_live_identity(
     launch_state: Mapping[str, Any] | None,
     *,
@@ -1100,12 +1126,15 @@ def _is_running_signal(
         live_launch_scripts=live_launch_scripts,
     )
     if lease is not None:
-        heartbeat_age = _heartbeat_age_from_iso(lease.get("lastHeartbeatAt"))
-        if lease.get("active") is True:
+        lease_active, heartbeat_age = _effective_lease_activity(
+            lease,
+            heartbeat_seconds=heartbeat_seconds,
+        )
+        if lease_active is True:
             if heartbeat_age is None:
                 return True, None
             return heartbeat_age <= heartbeat_seconds, heartbeat_age
-        if lease.get("active") is False:
+        if lease_active is False or lease.get("active") is False:
             if launch_active is True:
                 return True, launch_heartbeat_age
             # A completed or explicitly inactive supervisor lease is authoritative.
@@ -2616,6 +2645,10 @@ def collect_campaign_status(campaign_root: Path, *, heartbeat_seconds: int = DEF
             launch_script=launch_script,
             live_launch_scripts=live_launch_scripts,
         )
+        lease_active, _ = _effective_lease_activity(
+            lease_payload,
+            heartbeat_seconds=heartbeat_seconds,
+        )
         bootstrap_payload = _read_json(control_root / "bootstrap-state.json")
         run_manifest = _read_json(run_root / "RUN_MANIFEST.json")
 
@@ -2717,7 +2750,8 @@ def collect_campaign_status(campaign_root: Path, *, heartbeat_seconds: int = DEF
             "launchPhase": launch_state.get("phase") if isinstance(launch_state, dict) else None,
             "launchUpdatedAt": launch_state.get("updatedAt") if isinstance(launch_state, dict) else None,
             "lastLaunchExitCode": launch_failure["lastLaunchExitCode"],
-            "leaseActive": lease_payload.get("active") if isinstance(lease_payload, dict) else None,
+            "leaseActive": lease_active,
+            "leaseRecordedActive": lease_payload.get("active") if isinstance(lease_payload, dict) else None,
             "leaseStatus": lease_payload.get("status") if isinstance(lease_payload, dict) else None,
             "latestActivityAt": _latest_run_activity_timestamp(run_root, latest_iter_name),
             "recoveryClass": recovery_class,

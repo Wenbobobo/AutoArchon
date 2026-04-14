@@ -1271,8 +1271,6 @@ def test_collect_campaign_status_classifies_run_health_states(tmp_path: Path):
                 "schemaVersion": 1,
                 "active": True,
                 "status": "running",
-                "supervisorPid": 99999,
-                "loopPid": 88888,
                 "lastHeartbeatAt": datetime.now(timezone.utc).isoformat(),
             },
             indent=2,
@@ -1337,6 +1335,46 @@ def test_collect_campaign_status_classifies_run_health_states(tmp_path: Path):
     assert status["counts"]["unverified"] == 1
     assert status["counts"]["contaminated"] == 1
     assert status["counts"]["needs_relaunch"] == 1
+
+
+def test_collect_campaign_status_treats_dead_active_lease_as_needs_relaunch(tmp_path: Path):
+    source = make_source_project(tmp_path, file_count=1)
+    campaign_root = tmp_path / "campaign"
+    create_campaign(
+        archon_root=ROOT,
+        source_root=source,
+        campaign_root=campaign_root,
+        run_specs=[
+            {"id": "lease-run", "objective_regex": "^FATEM/1\\.lean$", "objective_limit": 1, "scope_hint": "FATEM/1.lean"},
+        ],
+    )
+
+    workspace = campaign_root / "runs" / "lease-run" / "workspace"
+    write(workspace / ".archon" / "RUN_SCOPE.md", run_scope_markdown("FATEM/1.lean"))
+    write(
+        workspace / ".archon" / "supervisor" / "run-lease.json",
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "active": True,
+                "status": "running",
+                "supervisorPid": 99999,
+                "loopPid": 88888,
+                "lastHeartbeatAt": datetime.now(timezone.utc).isoformat(),
+            },
+            indent=2,
+        ),
+    )
+
+    status = collect_campaign_status(campaign_root, heartbeat_seconds=900)
+    run = status["runs"][0]
+
+    assert run["status"] == "needs_relaunch"
+    assert run["runningSignal"] is False
+    assert run["leaseActive"] is False
+    assert run["leaseRecordedActive"] is True
+    assert run["recommendedRecovery"]["action"] == "relaunch_teacher"
+    assert run["recoveryClass"] == "launch_failed_retry"
 
 
 def test_collect_campaign_status_treats_recent_launch_bootstrap_as_running(tmp_path: Path):
