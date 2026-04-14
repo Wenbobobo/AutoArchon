@@ -2522,6 +2522,11 @@ def test_launch_from_spec_applies_watchdog_env_overrides_to_command_and_resolved
     env["MAX_ACTIVE_LAUNCHES"] = "3"
     env["LAUNCH_BATCH_SIZE"] = "2"
     env["LAUNCH_COOLDOWN_SECONDS"] = "11"
+    env["OWNER_RESTART_BUDGET"] = "9"
+    env["PROVIDER_COOLDOWN_BASE_SECONDS"] = "41"
+    env["PROVIDER_COOLDOWN_STEP_SECONDS"] = "43"
+    env["PROVIDER_COOLDOWN_MAX_SECONDS"] = "47"
+    env["RESOURCE_SNAPSHOT_INTERVAL_SECONDS"] = "29"
 
     result = subprocess.run(
         [
@@ -2548,10 +2553,20 @@ def test_launch_from_spec_applies_watchdog_env_overrides_to_command_and_resolved
     assert resolved_spec["watchdog"]["maxActiveLaunches"] == "3"
     assert resolved_spec["watchdog"]["launchBatchSize"] == "2"
     assert resolved_spec["watchdog"]["launchCooldownSeconds"] == "11"
+    assert resolved_spec["watchdog"]["ownerRestartBudget"] == "9"
+    assert resolved_spec["watchdog"]["providerCooldownBaseSeconds"] == "41"
+    assert resolved_spec["watchdog"]["providerCooldownStepSeconds"] == "43"
+    assert resolved_spec["watchdog"]["providerCooldownMaxSeconds"] == "47"
+    assert resolved_spec["watchdog"]["resourceSnapshotIntervalSeconds"] == "29"
     assert "--poll-seconds 17" in rendered_watchdog_command
     assert "--max-active-launches 3" in rendered_watchdog_command
     assert "--launch-batch-size 2" in rendered_watchdog_command
     assert "--launch-cooldown-seconds 11" in rendered_watchdog_command
+    assert "--owner-restart-budget 9" in rendered_watchdog_command
+    assert "--provider-cooldown-base-seconds 41" in rendered_watchdog_command
+    assert "--provider-cooldown-step-seconds 43" in rendered_watchdog_command
+    assert "--provider-cooldown-max-seconds 47" in rendered_watchdog_command
+    assert "--resource-snapshot-interval-seconds 29" in rendered_watchdog_command
 
 
 def test_launch_from_spec_fails_when_watchdog_exits_immediately(tmp_path: Path):
@@ -2642,6 +2657,50 @@ def test_build_campaign_overview_flags_stale_watchdog_state(tmp_path: Path):
 
     archive_payload = archive_campaign_postmortem(campaign_root, heartbeat_seconds=0)
     assert "stale_watchdog_state" in archive_payload["incidentTags"]
+
+
+def test_build_campaign_overview_and_postmortem_surface_watchdog_cooldown_and_cause(tmp_path: Path):
+    source = make_source_project(tmp_path, file_count=1)
+    campaign_root = tmp_path / "campaign"
+    create_campaign(
+        archon_root=ROOT,
+        source_root=source,
+        campaign_root=campaign_root,
+        run_specs=[
+            {"id": "teacher-001", "objective_regex": "^FATEM/1\\.lean$", "objective_limit": 1, "scope_hint": "FATEM/1.lean"},
+        ],
+    )
+    write(
+        campaign_root / "control" / "orchestrator-watchdog.json",
+        json.dumps(
+            {
+                "watchdogStatus": "degraded",
+                "restartCount": 3,
+                "effectiveMaxActiveLaunches": 1,
+                "providerCooldownUntil": "2026-04-14T12:00:00+00:00",
+                "providerCooldownSeconds": 180,
+                "likelyCause": "likely_provider_transport",
+                "resourceSnapshot": {
+                    "loadPerCpu": 0.2,
+                    "memAvailableRatio": 0.52,
+                    "swapUsedBytes": 0,
+                },
+            },
+            indent=2,
+        ),
+    )
+
+    overview = build_campaign_overview(campaign_root, heartbeat_seconds=0)
+
+    assert overview["watchdogStatus"] == "degraded"
+    assert overview["watchdogRuntime"]["effectiveMaxActiveLaunches"] == 1
+    assert overview["watchdogRuntime"]["providerCooldownUntil"] == "2026-04-14T12:00:00+00:00"
+    assert overview["watchdogRuntime"]["likelyCause"] == "likely_provider_transport"
+    assert overview["watchdogRuntime"]["resourceSnapshot"]["loadPerCpu"] == 0.2
+
+    archive_payload = archive_campaign_postmortem(campaign_root, heartbeat_seconds=0)
+    assert "provider_transport_instability" in archive_payload["incidentTags"]
+    assert archive_payload["overview"]["watchdogRuntime"]["effectiveMaxActiveLaunches"] == 1
 
 
 def test_build_campaign_overview_uses_remaining_targets_for_fresh_campaign_eta(tmp_path: Path):

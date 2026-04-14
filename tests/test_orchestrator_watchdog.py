@@ -8,6 +8,8 @@ import threading
 from pathlib import Path
 
 from archonlib.orchestrator_watchdog import (
+    _classify_watchdog_likely_cause,
+    _resource_snapshot_indicates_pressure,
     _stop_output_mirror,
     automatic_recovery_run_ids,
     build_default_orchestrator_prompt,
@@ -94,10 +96,12 @@ def test_build_default_orchestrator_prompt_mentions_core_control_plane_contract(
     assert "--run-id <run-id> --execute" in prompt
     assert "prefer deterministic recovery via" not in prompt
     assert "outer orchestrator_watchdog.py process is your expected wrapper" in prompt
+    assert "ownerEntrypoint=autoarchon-orchestrator-watchdog" in prompt
     assert "never use --all-recoverable --execute from the owner session" in prompt
     assert "launch or recover at most 1 run(s) per decision" in prompt
     assert "finalize only validated proofs and accepted blocker notes" in prompt
     assert "do not stop to ask the user about ownership" in prompt
+    assert "watchdog wrapper lease is expected and should not block you" in prompt
 
 
 def test_build_watchdog_resume_prompt_discourages_owner_questions():
@@ -105,10 +109,12 @@ def test_build_watchdog_resume_prompt_discourages_owner_questions():
     stalled = build_watchdog_resume_prompt(stalled=True)
 
     assert "orchestrator_watchdog.py process is your wrapper" in normal
+    assert "keep acting under that wrapper lease" in normal
     assert "Do not stop to ask the user about ownership" in normal
     assert "If all runs are already terminal, finalize the campaign." in normal
     assert "after a stalled outer session" in stalled
     assert "orchestrator_watchdog.py process is your wrapper" in stalled
+    assert "keep acting under that wrapper lease" in stalled
     assert "do not stop to ask the user about ownership" in stalled
 
 
@@ -426,6 +432,52 @@ def test_orchestrator_watchdog_cli_writes_owner_mode_and_uses_control_paths(tmp_
     assert captured["prompt_path"] == control_root / "orchestrator-prompt.txt"
     assert captured["state_path"] == control_root / "orchestrator-watchdog.json"
     assert captured["log_path"] == control_root / "orchestrator-watchdog.log"
+
+
+def test_classify_watchdog_likely_cause_distinguishes_provider_and_resource_pressure():
+    healthy_snapshot = {
+        "loadPerCpu": 0.2,
+        "memAvailableRatio": 0.45,
+        "swapUsedBytes": 0,
+    }
+    warm_swap_snapshot = {
+        "loadPerCpu": 0.2,
+        "memAvailableRatio": 0.18,
+        "swapUsedBytes": 6 * 1024 * 1024 * 1024,
+    }
+    pressured_snapshot = {
+        "loadPerCpu": 1.35,
+        "memAvailableRatio": 0.02,
+        "swapUsedBytes": 1024,
+    }
+
+    assert _resource_snapshot_indicates_pressure(healthy_snapshot) is False
+    assert _resource_snapshot_indicates_pressure(warm_swap_snapshot) is False
+    assert _resource_snapshot_indicates_pressure(pressured_snapshot) is True
+    assert (
+        _classify_watchdog_likely_cause(
+            reconnect_count=12,
+            stream_disconnect_count=2,
+            resource_snapshot=healthy_snapshot,
+        )
+        == "likely_provider_transport"
+    )
+    assert (
+        _classify_watchdog_likely_cause(
+            reconnect_count=0,
+            stream_disconnect_count=0,
+            resource_snapshot=pressured_snapshot,
+        )
+        == "likely_local_resource_pressure"
+    )
+    assert (
+        _classify_watchdog_likely_cause(
+            reconnect_count=6,
+            stream_disconnect_count=1,
+            resource_snapshot=pressured_snapshot,
+        )
+        == "mixed_or_unknown"
+    )
 
 
 def test_run_watchdog_bootstraps_recovery_once_and_persists_runtime_state(tmp_path: Path, monkeypatch):
@@ -1136,3 +1188,456 @@ def test_run_watchdog_tops_up_launches_while_live_work_is_below_budget(tmp_path:
     assert result["watchdogStatus"] == "terminal"
     assert recoveries == ["teacher-queued"]
     assert "topped up automatic launches" in log_path.read_text(encoding="utf-8")
+
+
+def test_run_watchdog_applies_provider_cooldown_after_transport_exit(tmp_path: Path, monkeypatch):
+    campaign_root = tmp_path / "campaign"
+    prompt_path = tmp_path / "prompt.txt"
+    state_path = tmp_path / "watchdog-state.json"
+    log_path = tmp_path / "watchdog.log"
+    recoveries: list[str] = []
+    clock = {"now": 0.0}
+    launch_counter = {"value": 0}
+
+    class ExitingProcess:
+        pid = 9201
+
+        def __init__(self) -> None:
+            self.stdout = io.StringIO("")
+
+        def poll(self) -> int | None:
+            return 1
+
+    class RunningProcess:
+        pid = 9202
+
+        def __init__(self) -> None:
+            self.stdout = io.StringIO("")
+
+        def poll(self) -> None:
+            return None
+
+    status_sequence = [
+        {
+            "campaignId": "provider-cooldown-test",
+            "runs": [
+                {
+                    "runId": "teacher-live",
+                    "status": "running",
+                    "runningSignal": True,
+                    "launchActive": False,
+                    "recommendedRecovery": {"action": "none"},
+                },
+                {
+                    "runId": "teacher-queued",
+                    "status": "queued",
+                    "recommendedRecovery": {"action": "launch_teacher"},
+                    "recoveryClass": "queued_launch",
+                    "launchUpdatedAt": "2000-01-01T00:00:00+00:00",
+                },
+            ],
+            "counts": {"queued": 1, "running": 1},
+        },
+        {
+            "campaignId": "provider-cooldown-test",
+            "runs": [
+                {
+                    "runId": "teacher-live",
+                    "status": "running",
+                    "runningSignal": True,
+                    "launchActive": False,
+                    "recommendedRecovery": {"action": "none"},
+                },
+                {
+                    "runId": "teacher-queued",
+                    "status": "queued",
+                    "recommendedRecovery": {"action": "launch_teacher"},
+                    "recoveryClass": "queued_launch",
+                    "launchUpdatedAt": "2000-01-01T00:00:00+00:00",
+                },
+            ],
+            "counts": {"queued": 1, "running": 1},
+        },
+        {
+            "campaignId": "provider-cooldown-test",
+            "runs": [
+                {"runId": "teacher-live", "status": "accepted", "recommendedRecovery": {"action": "none"}},
+                {"runId": "teacher-queued", "status": "accepted", "recommendedRecovery": {"action": "none"}},
+            ],
+            "counts": {"accepted": 2},
+        },
+    ]
+    fingerprint_sequence = [
+        {"runFingerprints": [{"runId": "teacher-live", "latestActivityNs": 100}], "eventLines": 1},
+        {"runFingerprints": [{"runId": "teacher-live", "latestActivityNs": 100}], "eventLines": 1},
+        {"runFingerprints": [{"runId": "teacher-live", "latestActivityNs": 200}], "eventLines": 2},
+    ]
+    status_index = {"value": 0}
+    fingerprint_index = {"value": 0}
+
+    def fake_launch_codex_session(**kwargs):
+        launch_counter["value"] += 1
+        log_handle = Path(kwargs["log_path"]).open("a", encoding="utf-8")
+        if launch_counter["value"] == 1:
+            process = ExitingProcess()
+            reconnect_count = 8
+            stream_disconnect_count = 1
+        else:
+            process = RunningProcess()
+            reconnect_count = 0
+            stream_disconnect_count = 0
+        output_state = type(
+            "OutputState",
+            (),
+            {
+                "session_id": "session-provider-cooldown",
+                "last_output_at": "2026-01-01T00:00:00+00:00",
+                "last_output_monotonic": clock["now"],
+                "reconnect_count": reconnect_count,
+                "stream_disconnect_count": stream_disconnect_count,
+                "last_transport_event_at": "2026-01-01T00:00:00+00:00" if reconnect_count or stream_disconnect_count else None,
+                "lock": threading.Lock(),
+            },
+        )()
+        output_thread = type(
+            "OutputThread",
+            (),
+            {
+                "is_alive": staticmethod(lambda: False),
+                "join": staticmethod(lambda timeout=None: None),
+            },
+        )()
+        return type(
+            "FakeLaunch",
+            (),
+            {
+                "process": process,
+                "log_handle": log_handle,
+                "session_id": "session-provider-cooldown",
+                "mode": "start",
+                "command": ["codex", "exec"],
+                "output_state": output_state,
+                "output_thread": output_thread,
+            },
+        )()
+
+    def fake_collect_campaign_status(_campaign_root: Path):
+        idx = status_index["value"]
+        status_index["value"] += 1
+        if idx >= len(status_sequence):
+            return status_sequence[-1]
+        return status_sequence[idx]
+
+    def fake_campaign_progress_fingerprint(_campaign_root: Path, _status_payload: dict):
+        idx = fingerprint_index["value"]
+        fingerprint_index["value"] += 1
+        if idx >= len(fingerprint_sequence):
+            return fingerprint_sequence[-1]
+        return fingerprint_sequence[idx]
+
+    def fake_execute_run_recovery(_campaign_root: Path, run_id: str, execute: bool = True):
+        recoveries.append(run_id)
+        return {"runId": run_id, "executed": execute}
+
+    def fake_finalize_campaign(_campaign_root: Path):
+        final_root = _campaign_root / "reports" / "final"
+        final_root.mkdir(parents=True, exist_ok=True)
+        (final_root / "final-summary.json").write_text("{}", encoding="utf-8")
+
+    def fake_compare_report(_campaign_root: Path, *, heartbeat_seconds: int):
+        final_root = _campaign_root / "reports" / "final"
+        final_root.mkdir(parents=True, exist_ok=True)
+        (final_root / "compare-report.json").write_text("{}", encoding="utf-8")
+        return {"generatedAt": "2026-01-01T00:00:00+00:00"}
+
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.launch_codex_session", fake_launch_codex_session)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.collect_campaign_status", fake_collect_campaign_status)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.campaign_progress_fingerprint", fake_campaign_progress_fingerprint)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.execute_run_recovery", fake_execute_run_recovery)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.finalize_campaign", fake_finalize_campaign)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.build_campaign_compare_report", fake_compare_report)
+    monkeypatch.setattr(
+        "archonlib.orchestrator_watchdog.collect_resource_snapshot",
+        lambda: {"loadPerCpu": 0.1, "memAvailableRatio": 0.6, "swapUsedBytes": 0},
+    )
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.terminate_process_group", lambda *args, **kwargs: None)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.time.sleep", lambda seconds: clock.__setitem__("now", clock["now"] + seconds))
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.time.monotonic", lambda: clock["now"])
+
+    result = run_watchdog(
+        archon_root=tmp_path,
+        campaign_root=campaign_root,
+        prompt_path=prompt_path,
+        state_path=state_path,
+        log_path=log_path,
+        model="gpt-5.4",
+        reasoning_effort="xhigh",
+        poll_seconds=5,
+        stall_seconds=300,
+        bootstrap_launch_after_seconds=300,
+        max_active_launches=2,
+        launch_batch_size=1,
+        provider_cooldown_base_seconds=30,
+        provider_cooldown_step_seconds=30,
+        provider_cooldown_max_seconds=120,
+        finalize_on_terminal=True,
+    )
+
+    assert result["terminal"] is True
+    assert result["ownerExitCount"] == 1
+    assert result["reconnectCount"] == 8
+    assert result["streamDisconnectCount"] == 1
+    assert result["likelyCause"] == "likely_provider_transport"
+    assert result["effectiveMaxActiveLaunches"] == 1
+    assert result["providerCooldownUntil"] is not None
+    assert recoveries == []
+    assert "restarting orchestrator" in log_path.read_text(encoding="utf-8")
+
+
+def test_run_watchdog_restores_launch_capacity_after_provider_cooldown_expires(tmp_path: Path, monkeypatch):
+    campaign_root = tmp_path / "campaign"
+    prompt_path = tmp_path / "prompt.txt"
+    state_path = tmp_path / "watchdog-state.json"
+    log_path = tmp_path / "watchdog.log"
+    recoveries: list[str] = []
+    clock = {"now": 0.0}
+    launch_counter = {"value": 0}
+
+    class ExitingProcess:
+        pid = 9301
+
+        def __init__(self) -> None:
+            self.stdout = io.StringIO("")
+
+        def poll(self) -> int | None:
+            return 1
+
+    class RunningProcess:
+        pid = 9302
+
+        def __init__(self) -> None:
+            self.stdout = io.StringIO("")
+
+        def poll(self) -> None:
+            return None
+
+    status_sequence = [
+        {
+            "campaignId": "provider-recover-test",
+            "runs": [
+                {
+                    "runId": "teacher-live",
+                    "status": "running",
+                    "runningSignal": True,
+                    "launchActive": False,
+                    "recommendedRecovery": {"action": "none"},
+                },
+                {
+                    "runId": "teacher-queued",
+                    "status": "queued",
+                    "recommendedRecovery": {"action": "launch_teacher"},
+                    "recoveryClass": "queued_launch",
+                    "launchUpdatedAt": "2000-01-01T00:00:00+00:00",
+                },
+            ],
+            "counts": {"queued": 1, "running": 1},
+        },
+        {
+            "campaignId": "provider-recover-test",
+            "runs": [
+                {
+                    "runId": "teacher-live",
+                    "status": "running",
+                    "runningSignal": True,
+                    "launchActive": False,
+                    "recommendedRecovery": {"action": "none"},
+                },
+                {
+                    "runId": "teacher-queued",
+                    "status": "queued",
+                    "recommendedRecovery": {"action": "launch_teacher"},
+                    "recoveryClass": "queued_launch",
+                    "launchUpdatedAt": "2000-01-01T00:00:00+00:00",
+                },
+            ],
+            "counts": {"queued": 1, "running": 1},
+        },
+        {
+            "campaignId": "provider-recover-test",
+            "runs": [
+                {
+                    "runId": "teacher-live",
+                    "status": "running",
+                    "runningSignal": True,
+                    "launchActive": False,
+                    "recommendedRecovery": {"action": "none"},
+                },
+                {
+                    "runId": "teacher-queued",
+                    "status": "queued",
+                    "recommendedRecovery": {"action": "launch_teacher"},
+                    "recoveryClass": "queued_launch",
+                    "launchUpdatedAt": "2000-01-01T00:00:00+00:00",
+                },
+            ],
+            "counts": {"queued": 1, "running": 1},
+        },
+        {
+            "campaignId": "provider-recover-test",
+            "runs": [
+                {
+                    "runId": "teacher-live",
+                    "status": "running",
+                    "runningSignal": True,
+                    "launchActive": False,
+                    "recommendedRecovery": {"action": "none"},
+                },
+                {
+                    "runId": "teacher-queued",
+                    "status": "queued",
+                    "recommendedRecovery": {"action": "launch_teacher"},
+                    "recoveryClass": "queued_launch",
+                    "launchUpdatedAt": "2000-01-01T00:00:00+00:00",
+                },
+            ],
+            "counts": {"queued": 1, "running": 1},
+        },
+        {
+            "campaignId": "provider-recover-test",
+            "runs": [
+                {"runId": "teacher-live", "status": "accepted", "recommendedRecovery": {"action": "none"}},
+                {"runId": "teacher-queued", "status": "accepted", "recommendedRecovery": {"action": "none"}},
+            ],
+            "counts": {"accepted": 2},
+        },
+    ]
+    fingerprint_sequence = [
+        {"runFingerprints": [{"runId": "teacher-live", "latestActivityNs": 100}], "eventLines": 1},
+        {"runFingerprints": [{"runId": "teacher-live", "latestActivityNs": 100}], "eventLines": 1},
+        {"runFingerprints": [{"runId": "teacher-live", "latestActivityNs": 100}], "eventLines": 1},
+        {"runFingerprints": [{"runId": "teacher-live", "latestActivityNs": 100}], "eventLines": 1},
+        {
+            "runFingerprints": [
+                {"runId": "teacher-live", "latestActivityNs": 200},
+                {"runId": "teacher-queued", "latestActivityNs": 150},
+            ],
+            "eventLines": 2,
+        },
+    ]
+    status_index = {"value": 0}
+    fingerprint_index = {"value": 0}
+
+    def fake_launch_codex_session(**kwargs):
+        launch_counter["value"] += 1
+        log_handle = Path(kwargs["log_path"]).open("a", encoding="utf-8")
+        if launch_counter["value"] == 1:
+            process = ExitingProcess()
+            reconnect_count = 6
+            stream_disconnect_count = 1
+        else:
+            process = RunningProcess()
+            reconnect_count = 0
+            stream_disconnect_count = 0
+        output_state = type(
+            "OutputState",
+            (),
+            {
+                "session_id": "session-provider-recover",
+                "last_output_at": "2026-01-01T00:00:00+00:00",
+                "last_output_monotonic": clock["now"],
+                "reconnect_count": reconnect_count,
+                "stream_disconnect_count": stream_disconnect_count,
+                "last_transport_event_at": "2026-01-01T00:00:00+00:00" if reconnect_count or stream_disconnect_count else None,
+                "lock": threading.Lock(),
+            },
+        )()
+        output_thread = type(
+            "OutputThread",
+            (),
+            {
+                "is_alive": staticmethod(lambda: False),
+                "join": staticmethod(lambda timeout=None: None),
+            },
+        )()
+        return type(
+            "FakeLaunch",
+            (),
+            {
+                "process": process,
+                "log_handle": log_handle,
+                "session_id": "session-provider-recover",
+                "mode": "start",
+                "command": ["codex", "exec"],
+                "output_state": output_state,
+                "output_thread": output_thread,
+            },
+        )()
+
+    def fake_collect_campaign_status(_campaign_root: Path):
+        idx = status_index["value"]
+        status_index["value"] += 1
+        if idx >= len(status_sequence):
+            return status_sequence[-1]
+        return status_sequence[idx]
+
+    def fake_campaign_progress_fingerprint(_campaign_root: Path, _status_payload: dict):
+        idx = fingerprint_index["value"]
+        fingerprint_index["value"] += 1
+        if idx >= len(fingerprint_sequence):
+            return fingerprint_sequence[-1]
+        return fingerprint_sequence[idx]
+
+    def fake_execute_run_recovery(_campaign_root: Path, run_id: str, execute: bool = True):
+        recoveries.append(run_id)
+        return {"runId": run_id, "executed": execute}
+
+    def fake_finalize_campaign(_campaign_root: Path):
+        final_root = _campaign_root / "reports" / "final"
+        final_root.mkdir(parents=True, exist_ok=True)
+        (final_root / "final-summary.json").write_text("{}", encoding="utf-8")
+
+    def fake_compare_report(_campaign_root: Path, *, heartbeat_seconds: int):
+        final_root = _campaign_root / "reports" / "final"
+        final_root.mkdir(parents=True, exist_ok=True)
+        (final_root / "compare-report.json").write_text("{}", encoding="utf-8")
+        return {"generatedAt": "2026-01-01T00:00:00+00:00"}
+
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.launch_codex_session", fake_launch_codex_session)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.collect_campaign_status", fake_collect_campaign_status)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.campaign_progress_fingerprint", fake_campaign_progress_fingerprint)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.execute_run_recovery", fake_execute_run_recovery)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.finalize_campaign", fake_finalize_campaign)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.build_campaign_compare_report", fake_compare_report)
+    monkeypatch.setattr(
+        "archonlib.orchestrator_watchdog.collect_resource_snapshot",
+        lambda: {"loadPerCpu": 0.1, "memAvailableRatio": 0.6, "swapUsedBytes": 0},
+    )
+    monkeypatch.setattr("archonlib.orchestrator_watchdog._cleanup_stale_launchers_best_effort", lambda **kwargs: None)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.terminate_process_group", lambda *args, **kwargs: None)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.time.sleep", lambda seconds: clock.__setitem__("now", clock["now"] + seconds))
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.time.monotonic", lambda: clock["now"])
+
+    result = run_watchdog(
+        archon_root=tmp_path,
+        campaign_root=campaign_root,
+        prompt_path=prompt_path,
+        state_path=state_path,
+        log_path=log_path,
+        model="gpt-5.4",
+        reasoning_effort="xhigh",
+        poll_seconds=5,
+        stall_seconds=300,
+        bootstrap_launch_after_seconds=300,
+        max_active_launches=2,
+        launch_batch_size=1,
+        provider_cooldown_base_seconds=8,
+        provider_cooldown_step_seconds=8,
+        provider_cooldown_max_seconds=60,
+        finalize_on_terminal=True,
+    )
+
+    assert result["terminal"] is True
+    assert recoveries == ["teacher-queued"]
+    assert result["effectiveMaxActiveLaunches"] == 2
+    state_payload = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state_payload["effectiveMaxActiveLaunches"] == 2

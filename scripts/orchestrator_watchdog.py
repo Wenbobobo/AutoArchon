@@ -37,6 +37,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-restarts", type=int, default=3, help="Maximum orchestrator restarts or resumes before failing")
     parser.add_argument(
+        "--owner-restart-budget",
+        type=int,
+        help="Owner-session restart budget. Defaults to --max-restarts when omitted.",
+    )
+    parser.add_argument(
         "--max-active-launches",
         type=int,
         default=2,
@@ -53,6 +58,30 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=90,
         help="Minimum cooldown between detached teacher relaunches for the same run",
+    )
+    parser.add_argument(
+        "--provider-cooldown-base-seconds",
+        type=int,
+        default=180,
+        help="Base cooldown after an owner exit likely caused by provider transport instability",
+    )
+    parser.add_argument(
+        "--provider-cooldown-step-seconds",
+        type=int,
+        default=180,
+        help="Additional cooldown added for each repeated provider-transport owner exit",
+    )
+    parser.add_argument(
+        "--provider-cooldown-max-seconds",
+        type=int,
+        default=900,
+        help="Maximum provider-transport cooldown window",
+    )
+    parser.add_argument(
+        "--resource-snapshot-interval-seconds",
+        type=int,
+        default=60,
+        help="Refresh host resource snapshots at most this often while the watchdog is running",
     )
     parser.add_argument("--no-finalize", action="store_true", help="Do not run finalize_campaign after terminal closure")
     return parser.parse_args()
@@ -93,9 +122,14 @@ def main() -> int:
         owner_silence_seconds=args.owner_silence_seconds,
         bootstrap_launch_after_seconds=args.bootstrap_launch_after_seconds,
         max_restarts=args.max_restarts,
+        owner_restart_budget=args.owner_restart_budget,
         max_active_launches=args.max_active_launches,
         launch_batch_size=args.launch_batch_size,
         launch_cooldown_seconds=args.launch_cooldown_seconds,
+        provider_cooldown_base_seconds=args.provider_cooldown_base_seconds,
+        provider_cooldown_step_seconds=args.provider_cooldown_step_seconds,
+        provider_cooldown_max_seconds=args.provider_cooldown_max_seconds,
+        resource_snapshot_interval_seconds=args.resource_snapshot_interval_seconds,
         finalize_on_terminal=not args.no_finalize,
     )
     print(json.dumps(result, indent=2, sort_keys=True))

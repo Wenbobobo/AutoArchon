@@ -26,9 +26,14 @@ WATCHDOG_ENV_OVERRIDES = {
     "ownerSilenceSeconds": "OWNER_SILENCE_SECONDS",
     "bootstrapLaunchAfterSeconds": "BOOTSTRAP_LAUNCH_AFTER_SECONDS",
     "maxRestarts": "MAX_RESTARTS",
+    "ownerRestartBudget": "OWNER_RESTART_BUDGET",
     "maxActiveLaunches": "MAX_ACTIVE_LAUNCHES",
     "launchBatchSize": "LAUNCH_BATCH_SIZE",
     "launchCooldownSeconds": "LAUNCH_COOLDOWN_SECONDS",
+    "providerCooldownBaseSeconds": "PROVIDER_COOLDOWN_BASE_SECONDS",
+    "providerCooldownStepSeconds": "PROVIDER_COOLDOWN_STEP_SECONDS",
+    "providerCooldownMaxSeconds": "PROVIDER_COOLDOWN_MAX_SECONDS",
+    "resourceSnapshotIntervalSeconds": "RESOURCE_SNAPSHOT_INTERVAL_SECONDS",
 }
 
 
@@ -268,12 +273,47 @@ def _build_watchdog_command(campaign_root: Path, spec: dict[str, Any]) -> tuple[
         str(_as_int(_coalesce_config_value(watchdog.get("bootstrapLaunchAfterSeconds"), 45), field="watchdog.bootstrapLaunchAfterSeconds")),
         "--max-restarts",
         str(_as_int(_coalesce_config_value(watchdog.get("maxRestarts"), 3), field="watchdog.maxRestarts")),
+        "--owner-restart-budget",
+        str(
+            _as_int(
+                _coalesce_config_value(watchdog.get("ownerRestartBudget"), watchdog.get("maxRestarts"), 3),
+                field="watchdog.ownerRestartBudget",
+            )
+        ),
         "--max-active-launches",
         str(_as_int(_coalesce_config_value(watchdog.get("maxActiveLaunches"), 2), field="watchdog.maxActiveLaunches")),
         "--launch-batch-size",
         str(_as_int(_coalesce_config_value(watchdog.get("launchBatchSize"), 1), field="watchdog.launchBatchSize")),
         "--launch-cooldown-seconds",
         str(_as_int(_coalesce_config_value(watchdog.get("launchCooldownSeconds"), 90), field="watchdog.launchCooldownSeconds")),
+        "--provider-cooldown-base-seconds",
+        str(
+            _as_int(
+                _coalesce_config_value(watchdog.get("providerCooldownBaseSeconds"), 180),
+                field="watchdog.providerCooldownBaseSeconds",
+            )
+        ),
+        "--provider-cooldown-step-seconds",
+        str(
+            _as_int(
+                _coalesce_config_value(watchdog.get("providerCooldownStepSeconds"), 180),
+                field="watchdog.providerCooldownStepSeconds",
+            )
+        ),
+        "--provider-cooldown-max-seconds",
+        str(
+            _as_int(
+                _coalesce_config_value(watchdog.get("providerCooldownMaxSeconds"), 900),
+                field="watchdog.providerCooldownMaxSeconds",
+            )
+        ),
+        "--resource-snapshot-interval-seconds",
+        str(
+            _as_int(
+                _coalesce_config_value(watchdog.get("resourceSnapshotIntervalSeconds"), 60),
+                field="watchdog.resourceSnapshotIntervalSeconds",
+            )
+        ),
         ]
     )
     if watchdog.get("finalizeOnTerminal") is False:

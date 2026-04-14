@@ -2049,6 +2049,15 @@ def build_campaign_overview(
             "watchdogPidLive": watchdog_pid_live,
             "ownerLeaseLive": owner_lease_live,
             "stateLikelyStale": watchdog_state_likely_stale,
+            "effectiveMaxActiveLaunches": watchdog_state.get("effectiveMaxActiveLaunches")
+            if isinstance(watchdog_state, Mapping)
+            else None,
+            "providerCooldownUntil": watchdog_state.get("providerCooldownUntil") if isinstance(watchdog_state, Mapping) else None,
+            "providerCooldownSeconds": watchdog_state.get("providerCooldownSeconds")
+            if isinstance(watchdog_state, Mapping)
+            else None,
+            "likelyCause": watchdog_state.get("likelyCause") if isinstance(watchdog_state, Mapping) else None,
+            "resourceSnapshot": watchdog_state.get("resourceSnapshot") if isinstance(watchdog_state, Mapping) else None,
         },
         "eta": eta,
         "ownerMode": owner_mode,
@@ -2075,6 +2084,7 @@ def render_campaign_overview_markdown(overview: Mapping[str, Any]) -> str:
     report_freshness = overview.get("reportFreshness") if isinstance(overview.get("reportFreshness"), Mapping) else {}
     eta = overview.get("eta") if isinstance(overview.get("eta"), Mapping) else {}
     paths = overview.get("paths") if isinstance(overview.get("paths"), Mapping) else {}
+    watchdog_runtime = overview.get("watchdogRuntime") if isinstance(overview.get("watchdogRuntime"), Mapping) else {}
     running_runs = overview.get("runningRuns") if isinstance(overview.get("runningRuns"), list) else []
     recoverable_runs = overview.get("recoverableRuns") if isinstance(overview.get("recoverableRuns"), list) else []
 
@@ -2090,6 +2100,9 @@ def render_campaign_overview_markdown(overview: Mapping[str, Any]) -> str:
         f"- Active work runs: `{active_work_text}`",
         f"- Last progress at: `{overview.get('lastProgressAt') or 'unknown'}`",
         f"- Last recovery at: `{overview.get('lastRecoveryAt') or 'none'}`",
+        f"- Likely cause: `{watchdog_runtime.get('likelyCause') or 'unknown'}`",
+        f"- Effective launch cap: `{watchdog_runtime.get('effectiveMaxActiveLaunches')}`",
+        f"- Provider cooldown until: `{watchdog_runtime.get('providerCooldownUntil') or 'none'}`",
         f"- Compare fresh: `{report_freshness.get('compareIsFresh')}`",
         f"- ETA: `{eta.get('etaText', 'unknown')}`",
         "",
@@ -2152,6 +2165,13 @@ def archive_campaign_postmortem(
     watchdog_log_lower = watchdog_log_tail.lower()
     if isinstance(watchdog_state, Mapping) and watchdog_state.get("budgetExhausted") is True:
         incident_tags.append("restart_budget_exhausted")
+    likely_cause = watchdog_state.get("likelyCause") if isinstance(watchdog_state, Mapping) else None
+    if likely_cause == "likely_provider_transport":
+        incident_tags.append("provider_transport_instability")
+    elif likely_cause == "likely_local_resource_pressure":
+        incident_tags.append("local_resource_pressure")
+    elif likely_cause == "mixed_or_unknown":
+        incident_tags.append("mixed_or_unknown_runtime_cause")
     if (
         (isinstance(watchdog_state, Mapping) and watchdog_state.get("stallReason") == "owner_conflict")
         or "owner conflict" in watchdog_log_lower
@@ -2207,6 +2227,8 @@ def archive_campaign_postmortem(
         f"- Incident tags: `{', '.join(incident_tags) if incident_tags else 'none'}`",
         f"- Compare freshness: `{overview['reportFreshness']['compareIsFresh']}`",
         f"- ETA: `{overview['eta']['etaText']}`",
+        f"- Likely cause: `{overview['watchdogRuntime'].get('likelyCause') if isinstance(overview.get('watchdogRuntime'), Mapping) else 'unknown'}`",
+        f"- Effective launch cap: `{overview['watchdogRuntime'].get('effectiveMaxActiveLaunches') if isinstance(overview.get('watchdogRuntime'), Mapping) else 'unknown'}`",
         "",
         "## Running Runs",
         "",
