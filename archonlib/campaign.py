@@ -858,6 +858,55 @@ def _combine_validation_summaries(
     }
 
 
+def _accepted_proof_events_by_run(campaign_root: Path) -> dict[str, set[str]]:
+    accepted: dict[str, set[str]] = {}
+    for event in _read_event_log(campaign_root / "events.jsonl"):
+        if event.get("event") != "validation_accepted":
+            continue
+        run_id = event.get("runId")
+        rel_path = event.get("relPath")
+        if not isinstance(run_id, str) or not run_id or not isinstance(rel_path, str) or not rel_path:
+            continue
+        accepted.setdefault(run_id, set()).add(rel_path)
+    return accepted
+
+
+def _merge_sticky_artifact_acceptance(
+    validation_summary: dict[str, Any],
+    *,
+    artifacts_root: Path,
+    accepted_from_events: set[str] | None,
+) -> dict[str, Any]:
+    if not accepted_from_events:
+        return validation_summary
+
+    accepted_proofs = set(validation_summary.get("acceptedProofs", []))
+    rejected_targets = set(validation_summary.get("rejectedTargets", []))
+    pending_targets = set(validation_summary.get("pendingTargets", []))
+    attention_targets = set(validation_summary.get("attentionTargets", []))
+
+    changed = False
+    for rel_path in accepted_from_events:
+        if rel_path in accepted_proofs or rel_path in rejected_targets:
+            continue
+        if not (artifacts_root / "proofs" / rel_path).exists():
+            continue
+        accepted_proofs.add(rel_path)
+        pending_targets.discard(rel_path)
+        attention_targets.discard(rel_path)
+        changed = True
+
+    if not changed:
+        return validation_summary
+
+    return {
+        **validation_summary,
+        "acceptedProofs": sorted(accepted_proofs),
+        "pendingTargets": sorted(pending_targets),
+        "attentionTargets": sorted(attention_targets),
+    }
+
+
 def _list_file_names(root: Path, pattern: str) -> list[str]:
     if not root.exists():
         return []
@@ -2687,6 +2736,7 @@ def collect_campaign_status(campaign_root: Path, *, heartbeat_seconds: int = DEF
     run_summaries: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
     live_launch_scripts = _live_launch_script_paths()
+    accepted_proof_events = _accepted_proof_events_by_run(campaign_root)
 
     for run in runs:
         if not isinstance(run, dict):
@@ -2737,6 +2787,11 @@ def collect_campaign_status(campaign_root: Path, *, heartbeat_seconds: int = DEF
         validation_summary = _combine_validation_summaries(
             _validation_summary(workspace_validation_payloads),
             _validation_summary(artifact_validation_payloads),
+        )
+        validation_summary = _merge_sticky_artifact_acceptance(
+            validation_summary,
+            artifacts_root=artifacts_root,
+            accepted_from_events=accepted_proof_events.get(run_id),
         )
         validation_paths = set(validation_summary["validationByPath"])
         task_results = _list_file_names(task_results_root, "*.md")

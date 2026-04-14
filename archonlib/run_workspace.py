@@ -191,6 +191,38 @@ def _read_json_if_exists(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _should_preserve_exported_validation(
+    previous_payload: dict[str, Any] | None,
+    current_payload: dict[str, Any] | None,
+    *,
+    proof_exists: bool,
+) -> bool:
+    if not proof_exists:
+        return False
+    if not isinstance(previous_payload, dict):
+        return False
+    if previous_payload.get("acceptanceStatus") != "accepted":
+        return False
+    if previous_payload.get("validationStatus") != "passed":
+        return False
+    if not isinstance(current_payload, dict):
+        return True
+    if current_payload.get("acceptanceStatus") == "accepted":
+        return False
+    if current_payload.get("acceptanceStatus") == "rejected":
+        return False
+    if current_payload.get("validationStatus") in {"failed", "attention"}:
+        return False
+    checks = current_payload.get("checks")
+    if not isinstance(checks, dict):
+        return True
+    if checks.get("headerDrift") not in {None, "none"}:
+        return False
+    if checks.get("proverError") is True:
+        return False
+    return True
+
+
 def _classified_task_results(validation_root: Path) -> tuple[list[str], list[str]]:
     resolved_notes: set[str] = set()
     blocker_notes: set[str] = set()
@@ -295,7 +327,16 @@ def export_run_artifacts(run_root: Path) -> dict[str, object]:
     if validation_root.exists():
         for path in sorted(validation_root.glob("*.json")):
             validation_files.append(path.name)
-            _copy_file(path, exported_validation_root / path.name)
+            destination = exported_validation_root / path.name
+            current_payload = _read_json_if_exists(path)
+            previous_payload = _read_json_if_exists(destination)
+            rel_path = current_payload.get("relPath") if isinstance(current_payload, dict) else None
+            proof_exists = isinstance(rel_path, str) and (proofs_root / rel_path).exists()
+            if _should_preserve_exported_validation(previous_payload, current_payload, proof_exists=proof_exists):
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(json.dumps(previous_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            else:
+                _copy_file(path, destination)
     resolved_notes, blocker_notes = _classified_task_results(validation_root)
 
     lesson_files: list[str] = []

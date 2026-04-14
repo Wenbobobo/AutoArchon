@@ -1417,6 +1417,72 @@ def test_collect_campaign_status_treats_recent_launch_bootstrap_as_running(tmp_p
     assert status["counts"]["running"] == 1
 
 
+def test_collect_campaign_status_restores_accepted_artifact_proofs_from_event_history(tmp_path: Path):
+    source = make_source_project(tmp_path, file_count=1)
+    campaign_root = tmp_path / "campaign"
+    create_campaign(
+        archon_root=ROOT,
+        source_root=source,
+        campaign_root=campaign_root,
+        run_specs=[
+            {"id": "accepted-run", "objective_regex": "^FATEM/1\\.lean$", "objective_limit": 1, "scope_hint": "FATEM/1.lean"},
+        ],
+    )
+
+    run_root = campaign_root / "runs" / "accepted-run"
+    workspace = run_root / "workspace"
+    artifacts = run_root / "artifacts"
+    write(workspace / "FATEM" / "1.lean", "theorem file_1 : True := by\n  trivial\n")
+    write(
+        workspace / ".archon" / "validation" / "FATEM_1.lean.json",
+        json.dumps(
+            {
+                "relPath": "FATEM/1.lean",
+                "acceptanceStatus": "none",
+                "validationStatus": "no_progress",
+                "checks": {"workspaceChanged": True},
+            },
+            indent=2,
+        ),
+    )
+    write(artifacts / "proofs" / "FATEM" / "1.lean", "theorem file_1 : True := by\n  trivial\n")
+    write(
+        artifacts / "validation" / "FATEM_1.lean.json",
+        json.dumps(
+            {
+                "relPath": "FATEM/1.lean",
+                "acceptanceStatus": "none",
+                "validationStatus": "no_progress",
+                "checks": {"workspaceChanged": True},
+            },
+            indent=2,
+        ),
+    )
+    with (campaign_root / "events.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "timestamp": "2026-04-14T00:00:00+00:00",
+                    "event": "validation_accepted",
+                    "campaignId": campaign_root.name,
+                    "runId": "accepted-run",
+                    "relPath": "FATEM/1.lean",
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+
+    status = collect_campaign_status(campaign_root, heartbeat_seconds=60)
+    run = status["runs"][0]
+
+    assert run["status"] == "accepted"
+    assert run["acceptedProofs"] == ["FATEM/1.lean"]
+    assert run["remainingTargets"] == []
+    assert run["recommendedRecovery"]["action"] == "none"
+
+
 def test_collect_campaign_status_marks_stale_launch_as_needs_relaunch(tmp_path: Path):
     source = make_source_project(tmp_path, file_count=1)
     campaign_root = tmp_path / "campaign"

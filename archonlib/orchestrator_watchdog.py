@@ -1043,6 +1043,11 @@ def run_watchdog(
             launch_selection_budget = 0 if provider_cooldown_active else effective_launch_budget
             if new_fingerprint != fingerprint:
                 fingerprint = new_fingerprint
+                # Treat the restart budget as consecutive owner exits without campaign
+                # progress. Long healthy campaigns can rotate owner sessions many times.
+                if restart_count:
+                    restart_count = 0
+                    budget_exhausted = False
                 progress_at = time.monotonic()
                 last_progress_at = utc_now_iso()
                 stall_reason = None

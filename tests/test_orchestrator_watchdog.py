@@ -887,6 +887,133 @@ def test_run_watchdog_degrades_instead_of_throwing_when_restart_budget_is_exhaus
     assert state_payload["budgetExhausted"] is True
 
 
+def test_run_watchdog_resets_restart_budget_after_campaign_progress(tmp_path: Path, monkeypatch):
+    campaign_root = tmp_path / "campaign"
+    prompt_path = tmp_path / "prompt.txt"
+    state_path = tmp_path / "watchdog-state.json"
+    log_path = tmp_path / "watchdog.log"
+    clock = {"now": 0.0}
+    launch_counter = {"value": 0}
+
+    class ScheduledProcess:
+        def __init__(self, pid: int, *, exit_at: float | None) -> None:
+            self.pid = pid
+            self.exit_at = exit_at
+            self.stdout = io.StringIO("")
+
+        def poll(self) -> int | None:
+            if self.exit_at is not None and clock["now"] >= self.exit_at:
+                return 0
+            return None
+
+    def fake_launch_codex_session(**kwargs):
+        launch_counter["value"] += 1
+        launch_id = launch_counter["value"]
+        exit_at = {1: 10.0, 2: 20.0}.get(launch_id)
+        process = ScheduledProcess(8400 + launch_id, exit_at=exit_at)
+        log_handle = Path(kwargs["log_path"]).open("a", encoding="utf-8")
+        output_state = type(
+            "OutputState",
+            (),
+            {
+                "session_id": "session-progress-reset",
+                "last_output_at": "2026-01-01T00:00:00+00:00",
+                "last_output_monotonic": clock["now"],
+                "reconnect_count": 0,
+                "stream_disconnect_count": 0,
+                "last_transport_event_at": None,
+                "lock": threading.Lock(),
+            },
+        )()
+        output_thread = type(
+            "OutputThread",
+            (),
+            {
+                "is_alive": staticmethod(lambda: False),
+                "join": staticmethod(lambda timeout=None: None),
+            },
+        )()
+        return type(
+            "FakeLaunch",
+            (),
+            {
+                "process": process,
+                "log_handle": log_handle,
+                "session_id": "session-progress-reset",
+                "mode": "resume" if kwargs.get("session_id") else "start",
+                "command": ["codex", "exec"],
+                "output_state": output_state,
+                "output_thread": output_thread,
+            },
+        )()
+
+    def fake_collect_campaign_status(_campaign_root: Path):
+        if clock["now"] >= 25.0:
+            return {
+                "campaignId": "progress-reset-test",
+                "runs": [{"runId": "teacher-001", "status": "accepted", "recommendedRecovery": {"action": "none"}}],
+                "counts": {"accepted": 1},
+            }
+        return {
+            "campaignId": "progress-reset-test",
+            "runs": [{"runId": "teacher-001", "status": "running", "runningSignal": True, "recommendedRecovery": {"action": "none"}}],
+            "counts": {"running": 1},
+        }
+
+    def fake_campaign_progress_fingerprint(_campaign_root: Path, _status_payload: dict):
+        if clock["now"] >= 25.0:
+            latest = 400
+        elif clock["now"] >= 15.0:
+            latest = 300
+        elif clock["now"] >= 5.0:
+            latest = 200
+        else:
+            latest = 100
+        return {"runFingerprints": [{"runId": "teacher-001", "latestActivityNs": latest}], "eventLines": latest}
+
+    def fake_finalize_campaign(_campaign_root: Path):
+        final_root = _campaign_root / "reports" / "final"
+        final_root.mkdir(parents=True, exist_ok=True)
+        (final_root / "final-summary.json").write_text("{}", encoding="utf-8")
+
+    def fake_compare_report(_campaign_root: Path, *, heartbeat_seconds: int):
+        final_root = _campaign_root / "reports" / "final"
+        final_root.mkdir(parents=True, exist_ok=True)
+        (final_root / "compare-report.json").write_text("{}", encoding="utf-8")
+        return {"generatedAt": "2026-01-01T00:00:00+00:00"}
+
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.launch_codex_session", fake_launch_codex_session)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.collect_campaign_status", fake_collect_campaign_status)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.campaign_progress_fingerprint", fake_campaign_progress_fingerprint)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.finalize_campaign", fake_finalize_campaign)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.build_campaign_compare_report", fake_compare_report)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.terminate_process_group", lambda *args, **kwargs: None)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.time.sleep", lambda seconds: clock.__setitem__("now", clock["now"] + seconds))
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.time.monotonic", lambda: clock["now"])
+
+    result = run_watchdog(
+        archon_root=tmp_path,
+        campaign_root=campaign_root,
+        prompt_path=prompt_path,
+        state_path=state_path,
+        log_path=log_path,
+        model="gpt-5.4",
+        reasoning_effort="xhigh",
+        poll_seconds=5,
+        stall_seconds=300,
+        bootstrap_launch_after_seconds=300,
+        max_restarts=1,
+        finalize_on_terminal=True,
+    )
+
+    assert result["terminal"] is True
+    assert result["watchdogStatus"] == "terminal"
+    assert result["ownerExitCount"] == 2
+    assert result["restartCount"] == 0
+    assert launch_counter["value"] == 3
+    assert "restarting orchestrator" in log_path.read_text(encoding="utf-8")
+
+
 def test_run_watchdog_releases_owner_lease_and_writes_degraded_state_on_exception(tmp_path: Path, monkeypatch):
     campaign_root = tmp_path / "campaign"
     prompt_path = tmp_path / "prompt.txt"
