@@ -720,6 +720,103 @@ def test_supervised_cycle_passes_timeout_env_to_archon_loop(tmp_path: Path):
     }
 
 
+def test_supervised_cycle_raises_prover_timeout_for_tail_scope(tmp_path: Path):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    write(source / "FATEM" / "2.lean", "theorem foo : True := by\n  sorry\n")
+    write(source / "FATEM" / "3.lean", "theorem bar : True := by\n  sorry\n")
+    write(workspace / "FATEM" / "2.lean", "theorem foo : True := by\n  sorry\n")
+    write(workspace / "FATEM" / "3.lean", "theorem bar : True := by\n  sorry\n")
+    write(
+        workspace / ".archon" / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        ## Allowed Files
+
+        1. `FATEM/2.lean`
+        2. `FATEM/3.lean`
+        """,
+    )
+    write(
+        workspace / ".archon" / "PROGRESS.md",
+        """
+        # Project Progress
+
+        ## Current Stage
+        prover
+
+        ## Stages
+        - [x] init
+        - [x] autoformalize
+        - [ ] prover
+        - [ ] polish
+
+        ## Current Objectives
+
+        1. **FATEM/2.lean** — Continue prover work.
+        2. **FATEM/3.lean** — Continue prover work.
+        """,
+    )
+    env_dump = tmp_path / "tail-env.json"
+    fake_loop = tmp_path / "fake-archon-loop.sh"
+    write(
+        fake_loop,
+        f"""
+        #!/usr/bin/env bash
+        python3 - <<'EOF'
+        import json
+        import os
+        from pathlib import Path
+
+        Path("{env_dump}").write_text(json.dumps({{
+            "ARCHON_PLAN_TIMEOUT_SECONDS": os.environ.get("ARCHON_PLAN_TIMEOUT_SECONDS"),
+            "ARCHON_PROVER_TIMEOUT_SECONDS": os.environ.get("ARCHON_PROVER_TIMEOUT_SECONDS"),
+            "ARCHON_REVIEW_TIMEOUT_SECONDS": os.environ.get("ARCHON_REVIEW_TIMEOUT_SECONDS"),
+        }}, sort_keys=True), encoding="utf-8")
+        EOF
+        exit 0
+        """,
+    )
+    fake_loop.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(SUPERVISED_CYCLE),
+            "--workspace",
+            str(workspace),
+            "--source",
+            str(source),
+            "--archon-loop",
+            str(fake_loop),
+            "--plan-timeout-seconds",
+            "180",
+            "--prover-timeout-seconds",
+            "240",
+            "--tail-scope-objective-threshold",
+            "2",
+            "--tail-scope-prover-timeout-seconds",
+            "360",
+            "--skip-process-check",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 4
+    payload = json.loads(env_dump.read_text(encoding="utf-8"))
+    assert payload == {
+        "ARCHON_PLAN_TIMEOUT_SECONDS": "180",
+        "ARCHON_PROVER_TIMEOUT_SECONDS": "360",
+        "ARCHON_REVIEW_TIMEOUT_SECONDS": None,
+    }
+    hot_notes = (workspace / ".archon" / "supervisor" / "HOT_NOTES.md").read_text(encoding="utf-8")
+    assert "Tail-scope runtime override: raised prover timeout to 360s for 2 current objectives" in hot_notes
+
+
 def test_supervised_cycle_refuses_to_start_when_run_local_lease_is_active(tmp_path: Path):
     source = tmp_path / "source"
     workspace = tmp_path / "workspace"

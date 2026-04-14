@@ -151,6 +151,8 @@ uv run --directory /path/to/AutoArchon autoarchon-supervised-cycle \
   --source /path/to/run-root/source \
   --plan-timeout-seconds 180 \
   --prover-timeout-seconds 240 \
+  --tail-scope-objective-threshold 2 \
+  --tail-scope-prover-timeout-seconds 360 \
   --prover-idle-seconds 90 \
   --no-review
 ```

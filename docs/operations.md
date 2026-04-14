@@ -61,12 +61,16 @@ uv run --directory /path/to/AutoArchon autoarchon-supervised-cycle \
   --source /path/to/run-root/source \
   --plan-timeout-seconds 180 \
   --prover-timeout-seconds 240 \
+  --tail-scope-objective-threshold 2 \
+  --tail-scope-prover-timeout-seconds 360 \
   --prover-idle-seconds 90 \
   --no-review
 
 uv run --directory /path/to/AutoArchon autoarchon-export-run-artifacts \
   --run-root /path/to/run-root
 ```
+
+The tail-scope override is deliberate: once a run has been narrowed to the last 1-2 files, the supervisor gives each prover more wall-clock time instead of clipping those final attempts at the bulk-run timeout.
 
 ## Monitor
 

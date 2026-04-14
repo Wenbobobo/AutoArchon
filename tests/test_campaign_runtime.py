@@ -765,6 +765,8 @@ def test_create_campaign_builds_isolated_runs_and_teacher_launch_assets(tmp_path
     assert "Bootstrap state:" in prompt
     assert "freshRun = true" in prompt
     assert "autoarchon-supervised-cycle" in prompt
+    assert "--tail-scope-objective-threshold 2" in prompt
+    assert "--tail-scope-prover-timeout-seconds 360" in prompt
     assert "codex exec" in launch_script
     assert "--skip-mcp" in launch_script
     assert "--model gpt-5.4" in launch_script

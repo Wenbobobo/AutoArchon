@@ -31,6 +31,7 @@ from archonlib.validation import write_validation_artifacts
 
 
 INFORMAL_NOTE_PATTERN = re.compile(r"\.archon/informal/[A-Za-z0-9._/\-]+\.md")
+OBJECTIVE_REL_PATH_PATTERN = re.compile(r"(?:\*\*|`)([^*`\n]+\.lean)(?:\*\*|`)")
 LEASE_SCHEMA_VERSION = 1
 TERMINAL_LEASE_FIELDS = (
     "completedAt",
@@ -47,6 +48,13 @@ def _env_float(name: str, default: float | None = None) -> float | None:
     if raw is None or not raw.strip():
         return default
     return float(raw)
+
+
+def _env_int(name: str, default: int | None = None) -> int | None:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return int(raw)
 
 
 def parse_args() -> argparse.Namespace:
@@ -87,6 +95,18 @@ def parse_args() -> argparse.Namespace:
         "--changed-file-verify-template",
         default=os.environ.get("ARCHON_SUPERVISOR_VERIFY_TEMPLATE"),
         help="Optional shell template used to verify changed files after an idle timeout; use {file} as placeholder",
+    )
+    parser.add_argument(
+        "--tail-scope-objective-threshold",
+        type=int,
+        default=_env_int("ARCHON_SUPERVISOR_TAIL_SCOPE_OBJECTIVE_THRESHOLD", 0) or 0,
+        help="When the current objective list has at most this many files, apply tail-scope runtime overrides",
+    )
+    parser.add_argument(
+        "--tail-scope-prover-timeout-seconds",
+        type=int,
+        default=_env_int("ARCHON_SUPERVISOR_TAIL_SCOPE_PROVER_TIMEOUT_SECONDS"),
+        help="Optional prover timeout override used when the current objective count is within the tail-scope threshold",
     )
     return parser.parse_args()
 
@@ -198,7 +218,63 @@ def _lease_conflicts(skip: bool, lease_path: Path, *, current_pid: int) -> list[
     return events
 
 
-def _build_loop_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str] | None]:
+def _current_objective_rel_paths(workspace: Path, *, allowed_files: list[str]) -> list[str]:
+    progress_path = workspace / ".archon" / "PROGRESS.md"
+    if not progress_path.exists():
+        return []
+
+    allowed = set(allowed_files)
+    found_section = False
+    rel_paths: list[str] = []
+    for raw_line in progress_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.rstrip()
+        if not found_section:
+            if line.strip() == "## Current Objectives":
+                found_section = True
+            continue
+        if line.startswith("## "):
+            break
+        if not re.match(r"^[ \t]*[0-9]+\.[ \t]+", line):
+            continue
+        for match in OBJECTIVE_REL_PATH_PATTERN.findall(line):
+            rel_path = match.strip()
+            if allowed and rel_path not in allowed:
+                continue
+            if rel_path not in rel_paths:
+                rel_paths.append(rel_path)
+    return rel_paths
+
+
+def _resolve_runtime_overrides(
+    args: argparse.Namespace,
+    workspace: Path,
+    *,
+    allowed_files: list[str],
+) -> dict[str, object]:
+    overrides: dict[str, object] = {}
+    objective_rel_paths = _current_objective_rel_paths(workspace, allowed_files=allowed_files)
+    objective_count = len(objective_rel_paths)
+    overrides["objectiveCount"] = objective_count
+    overrides["objectiveFiles"] = objective_rel_paths
+
+    if (
+        args.tail_scope_objective_threshold > 0
+        and args.tail_scope_prover_timeout_seconds is not None
+        and 0 < objective_count <= args.tail_scope_objective_threshold
+    ):
+        current_timeout = args.prover_timeout_seconds
+        tail_timeout = args.tail_scope_prover_timeout_seconds
+        if current_timeout is None or tail_timeout > current_timeout:
+            overrides["proverTimeoutSeconds"] = tail_timeout
+            overrides["tailScopeApplied"] = True
+
+    return overrides
+
+
+def _build_loop_command(
+    args: argparse.Namespace,
+    runtime_overrides: dict[str, object] | None = None,
+) -> tuple[list[str], dict[str, str] | None]:
     command = [
         "bash",
         str(Path(args.archon_loop).resolve()),
@@ -213,17 +289,23 @@ def _build_loop_command(args: argparse.Namespace) -> tuple[list[str], dict[str, 
         command.append("--no-review")
     command.append(str(Path(args.workspace).resolve()))
     env = None
+    effective_plan_timeout = args.plan_timeout_seconds
+    effective_prover_timeout = args.prover_timeout_seconds
+    effective_review_timeout = args.review_timeout_seconds
+    if isinstance(runtime_overrides, dict):
+        if isinstance(runtime_overrides.get("proverTimeoutSeconds"), int):
+            effective_prover_timeout = int(runtime_overrides["proverTimeoutSeconds"])
     if any(
         timeout is not None
-        for timeout in (args.plan_timeout_seconds, args.prover_timeout_seconds, args.review_timeout_seconds)
+        for timeout in (effective_plan_timeout, effective_prover_timeout, effective_review_timeout)
     ):
         env = dict(os.environ)
-        if args.plan_timeout_seconds is not None:
-            env["ARCHON_PLAN_TIMEOUT_SECONDS"] = str(args.plan_timeout_seconds)
-        if args.prover_timeout_seconds is not None:
-            env["ARCHON_PROVER_TIMEOUT_SECONDS"] = str(args.prover_timeout_seconds)
-        if args.review_timeout_seconds is not None:
-            env["ARCHON_REVIEW_TIMEOUT_SECONDS"] = str(args.review_timeout_seconds)
+        if effective_plan_timeout is not None:
+            env["ARCHON_PLAN_TIMEOUT_SECONDS"] = str(effective_plan_timeout)
+        if effective_prover_timeout is not None:
+            env["ARCHON_PROVER_TIMEOUT_SECONDS"] = str(effective_prover_timeout)
+        if effective_review_timeout is not None:
+            env["ARCHON_REVIEW_TIMEOUT_SECONDS"] = str(effective_review_timeout)
     return command, env
 
 
@@ -344,8 +426,9 @@ def _run_archon_loop(
     source: Path,
     lease_path: Path,
     allowed_files: list[str],
+    runtime_overrides: dict[str, object] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, object] | None]:
-    command, env = _build_loop_command(args)
+    command, env = _build_loop_command(args, runtime_overrides)
 
     if not args.prover_idle_seconds or args.prover_idle_seconds <= 0:
         result = subprocess.run(
@@ -822,6 +905,7 @@ def main() -> int:
     baseline_task_result_mtimes = _path_mtimes(baseline_task_result_paths)
     previous_iter_name, _ = latest_iteration_meta(workspace)
     lease_conflicts = _lease_conflicts(args.skip_process_check, lease_path, current_pid=os.getpid())
+    runtime_overrides = _resolve_runtime_overrides(args, workspace, allowed_files=allowed_files)
     if lease_conflicts:
         _append_text(
             violations_path,
@@ -886,7 +970,14 @@ def main() -> int:
         loop_result = subprocess.CompletedProcess(["recovery-only"], 0, "", "")
         idle_event = None
     else:
-        loop_result, idle_event = _run_archon_loop(args, workspace, source, lease_path, allowed_files)
+        loop_result, idle_event = _run_archon_loop(
+            args,
+            workspace,
+            source,
+            lease_path,
+            allowed_files,
+            runtime_overrides,
+        )
     stdout_path, stderr_path = _write_loop_output(supervisor_dir, loop_result)
     _update_lease(
         lease_path,
@@ -1103,6 +1194,12 @@ def main() -> int:
         if isinstance(task_results_failures, dict):
             for note_name, detail in task_results_failures.items():
                 hot_notes.append(f"- Verification after idle failed for task result {note_name}: {detail}")
+    if runtime_overrides.get("tailScopeApplied") is True:
+        objective_count = runtime_overrides.get("objectiveCount")
+        prover_timeout = runtime_overrides.get("proverTimeoutSeconds")
+        hot_notes.append(
+            f"- Tail-scope runtime override: raised prover timeout to {prover_timeout}s for {objective_count} current objectives"
+        )
     if planner_state_sync is not None:
         if planner_state_sync.get("status") == "terminal_complete":
             hot_notes.append("- Planner state synced: wrote terminal closure to .archon/PROGRESS.md, task_pending.md, and task_done.md")

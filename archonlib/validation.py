@@ -28,6 +28,16 @@ def _validation_filename(rel_path: str) -> str:
     return rel_path.replace("/", "_") + ".json"
 
 
+def _read_json(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _collect_targets(
     *,
     allowed_files: list[str],
@@ -70,6 +80,28 @@ def _validation_status(
     return "attention"
 
 
+def _should_preserve_previous_acceptance(
+    previous_payload: dict | None,
+    *,
+    drift: HeaderDrift | None,
+    workspace_changed: bool,
+    durable_task_result: bool,
+    prover_error: bool,
+) -> bool:
+    if not isinstance(previous_payload, dict):
+        return False
+    if previous_payload.get("acceptanceStatus") != "accepted":
+        return False
+    if previous_payload.get("validationStatus") != "passed":
+        return False
+    if drift is not None or prover_error:
+        return False
+    if workspace_changed or durable_task_result:
+        return True
+    blocker_notes = previous_payload.get("blockerNotes")
+    return isinstance(blocker_notes, list) and bool(blocker_notes)
+
+
 def write_validation_artifacts(
     workspace: Path,
     *,
@@ -93,11 +125,14 @@ def write_validation_artifacts(
         drifts=drifts,
         prover_failures=prover_failures,
     ):
+        filename = _validation_filename(rel_path)
+        previous_payload = _read_json(validation_root / filename)
         task_result_path = workspace / ".archon" / "task_results" / _task_result_name(rel_path)
         durable_task_result, task_result_kind = classify_task_result(task_result_path)
         drift = drifts_by_path.get(rel_path)
         workspace_changed = rel_path in changed_files
         task_result_name = task_result_path.name if task_result_path.exists() else None
+        prover_error = rel_path in prover_failures
         acceptance_status = _acceptance_status(
             overall_status=status,
             drift=drift,
@@ -113,6 +148,41 @@ def write_validation_artifacts(
         task_result_kinds = {task_result_name: task_result_kind} if task_result_name and task_result_kind else {}
         header_drifts = [drift.to_event()] if drift is not None else []
         recovery_event = recovered_after_stall.get("event") if isinstance(recovered_after_stall, dict) else None
+        task_result_payload = {
+            "present": task_result_path.exists(),
+            "durable": durable_task_result,
+            "kind": task_result_kind,
+            "path": (
+                task_result_path.relative_to(workspace).as_posix() if task_result_path.exists() else None
+            ),
+        }
+
+        if _should_preserve_previous_acceptance(
+            previous_payload,
+            drift=drift,
+            workspace_changed=workspace_changed,
+            durable_task_result=durable_task_result,
+            prover_error=prover_error,
+        ):
+            acceptance_status = "accepted"
+            validation_status = "passed"
+            if not blocker_notes:
+                previous_blocker_notes = previous_payload.get("blockerNotes")
+                if isinstance(previous_blocker_notes, list):
+                    blocker_notes = [str(item) for item in previous_blocker_notes if isinstance(item, str)]
+            if not task_result_kinds:
+                previous_task_result_kinds = previous_payload.get("taskResultKinds")
+                if isinstance(previous_task_result_kinds, dict):
+                    task_result_kinds = {
+                        str(name): str(kind)
+                        for name, kind in previous_task_result_kinds.items()
+                        if isinstance(name, str) and isinstance(kind, str)
+                    }
+            previous_checks = previous_payload.get("checks")
+            if isinstance(previous_checks, dict):
+                previous_task_result = previous_checks.get("taskResult")
+                if isinstance(previous_task_result, dict) and not task_result_payload["present"]:
+                    task_result_payload = dict(previous_task_result)
 
         payload = {
             "schemaVersion": SCHEMA_VERSION,
@@ -131,15 +201,8 @@ def write_validation_artifacts(
             "checks": {
                 "headerDrift": drift.mutation_class if drift is not None else "none",
                 "workspaceChanged": workspace_changed,
-                "taskResult": {
-                    "present": task_result_path.exists(),
-                    "durable": durable_task_result,
-                    "kind": task_result_kind,
-                    "path": (
-                        task_result_path.relative_to(workspace).as_posix() if task_result_path.exists() else None
-                    ),
-                },
-                "proverError": rel_path in prover_failures,
+                "taskResult": task_result_payload,
+                "proverError": prover_error,
             },
             "sources": [
                 ".archon/RUN_SCOPE.md",
@@ -147,7 +210,6 @@ def write_validation_artifacts(
                 ".archon/logs/",
             ],
         }
-        filename = _validation_filename(rel_path)
         (validation_root / filename).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         written.append(filename)
     return written
