@@ -204,3 +204,19 @@ def test_postmortem_doc_records_20260413_nightly_samples_as_archived_only():
     assert "campaign-operator" in roadmap
     assert "autoarchon-launch-from-spec" in roadmap
     assert "nightly FATE samples" in roadmap
+
+
+def test_postmortem_doc_records_20260415_rerun12_as_fresh_finalized_evidence():
+    postmortem_doc = read("docs/postmortem-20260415-rerun12-fatem-42-45-94.md")
+    readme = read("README.md")
+
+    assert "20260415-rerun12-fatem-42-45-94" in postmortem_doc
+    assert "accepted = 2" in postmortem_doc
+    assert "blocked = 1" in postmortem_doc
+    assert "teacher-42:FATEM_42.lean.md" in postmortem_doc
+    assert "teacher-45:FATEM/45.lean" in postmortem_doc
+    assert "teacher-94:FATEM/94.lean" in postmortem_doc
+    assert "reports/final/final-summary.json" in postmortem_doc
+    assert "reuse_build_outputs" in postmortem_doc
+    assert "durable artifact discipline" in postmortem_doc
+    assert "docs/postmortem-20260415-rerun12-fatem-42-45-94.md" in readme

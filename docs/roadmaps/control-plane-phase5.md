@@ -55,31 +55,47 @@ This roadmap records the remaining high-ROI work after the control-plane hardeni
   - the helper wrapper can fail over to the next configured provider without changing proof acceptance ownership
 - upgraded the campaign summary surface:
   - `control/progress-summary.*` now carries restart count, ETA, recent finalized targets, and direct final-report/export paths instead of only the coarse progress bar
+- collected fresh multi-run rerun evidence on the hardened path:
+  - `20260415-rerun12-fatem-42-45-94` reached a real terminal closeout with `accepted = 2`, `blocked = 1`
+  - `teacher-45` and `teacher-94` exported accepted proofs, `teacher-42` exported an accepted blocker note, and `reports/final/final-summary.json` was written cleanly
+  - this rerun confirmed the main remaining bottleneck is durable artifact discipline plus provider transport stability, not theorem-search quality
+- validated sampled prewarm on a fresh wide shard without warmed-build reuse:
+  - the dedicated root `20260415-prewarm-validate-fatem5` reported `prewarmPlan = scoped_verify_sample` with `sample 4/5 files`
+  - the generated prewarm command completed successfully in `1:43.23` using scoped verification on `FATEM/3.lean`, `FATEM/11.lean`, `FATEM/42.lean`, and `FATEM/94.lean`
+  - `lake exe cache get --repo` recovered cleanly by retrying without `--repo`, so the fallback path is now validated on a real root too
 
 ## Current Remaining Gaps
 
-- multi-run unattended rerun evidence is still needed
-  - deterministic pytest coverage is strong now, and single-run real reruns are now validated, but a wider unattended benchmark slice still matters for transport flake, owner-restart behavior, and final acceptance quality
 - run-level observability still lags during long inner loops
   - the new live surface is enough for phase/prover visibility, but a richer operator-facing dashboard can still layer on top later
 - helper-prover policy is still intentionally minimal above the transport layer
   - prompt quality, trigger heuristics, and note-routing policy can go further even though provider fallback is now present
+- historical blocker/proof route reuse is still reactive rather than proactive
+  - relaunches can discover old accepted notes and benefit from them, but fresh runs still do not preload those exact routes before the first planner pass
 - benchmark clone retention is now observable, but not deduplicated
   - we still do not have a canonical shared-build strategy across multiple benchmark clones that use the same toolchain/mathlib graph
 
-## Remaining High-ROI Steps
+## Original Four TODO Status
 
-1. run one fresh unattended multi-run rerun on the hardened path
-   - prefer a real FATE slice over historical sample roots
-   - validate owner lease, watchdog restarts, terminal finalize, exported proofs, and recovery quality across multiple teachers
-2. validate the new sampled-prewarm path on a fresh wider rerun
-   - confirm that `scoped_verify_sample` materially lowers cold-start time without increasing broken-run recovery
-   - keep warmed-build compatibility checks strict and visible
-3. deepen the helper-prover path without changing acceptance ownership
-   - improve prompt quality and bounded invocation policy on top of the new fallback chain
-   - keep helper outputs strictly advisory
-4. decide whether benchmark clones should share a single warmed build substrate
-   - keep the current clone-aware retention policy until there is a safe deduplication or rehydrate workflow
+1. Fresh unattended multi-run rerun on the hardened path: completed
+   - `20260415-rerun12-fatem-42-45-94` exercised owner lease, deterministic recovery, artifact export, blocker acceptance, and finalization across three teachers on a fresh root
+2. Sampled-prewarm validation on a wider shard: completed
+   - `20260415-prewarm-validate-fatem5` proved the wide-run planning surface selects `scoped_verify_sample`, and the sampled prewarm finished successfully on a real workspace without falling back to full-project `lake build`
+3. Helper-prover deepening without changing acceptance ownership: completed for the current phase
+   - fallback transports now live in `.archon/runtime-config.toml`, helper failures can roll to the next provider, and the prover prompt now prioritizes durable `task_results` over optional cleanup
+   - richer helper prompting and trigger heuristics remain a next-phase quality task, not a phase-5 blocker
+4. Shared-build substrate decision: completed for the current phase
+   - keep one warmed benchmark clone under `benchmarks/` and reuse it via `--reuse-lake-from`
+   - do not deduplicate clone `.lake` directories until a documented rehydrate workflow exists
+
+## Next High-ROI Follow-Ups
+
+1. preload historical accepted blocker/proof routes into fresh relaunches before the next planner pass
+   - this is the clearest route to reducing wasted retries on theorems like `FATEM/42.lean`
+2. deepen helper-prover prompt policy above the now-stable transport layer
+   - focus on bounded invocation heuristics, note routing, and optional external provider mixes such as Gemini or DeepSeek through the existing OpenAI-compatible surface
+3. add a richer operator-facing dashboard without weakening the file-backed source of truth
+   - campaign and supervisor `progress-summary.*` should remain canonical even if a later web surface is added
 
 ## Non-Goals For This Phase
 
