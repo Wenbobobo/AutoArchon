@@ -82,6 +82,8 @@ def test_prover_prompt_bounds_shell_verification_and_prefers_lsp():
     assert "timeout 30s lake env lean <file>" in prover_prompt
     assert "do not sit and wait indefinitely" in prover_prompt
     assert ".archon/runtime-config.toml" in prover_prompt
+    assert "Durable notes outrank cosmetic cleanup" in prover_prompt
+    assert "remaining `simp`/`simpa` suggestion is not a reason to delay the note" in prover_prompt
 
 
 def test_prover_prompt_falls_back_after_lsp_timeout_or_start_failure():
