@@ -65,6 +65,7 @@ $EDITOR /path/to/AutoArchon/examples/helper.env
 
 `scripts/start_campaign_operator.sh` and `scripts/start_fate_overnight_watchdogs.sh` will auto-load `examples/helper.env` when it exists, so later launches inherit helper and progress-surface defaults without extra shell setup.
 For the direct interactive Codex path below, load it yourself with `source examples/helper.env`.
+For `ARCHON_HELPER_API_KEY_ENV` and `ARCHON_HELPER_BASE_URL_ENV`, you may provide either existing environment-variable names such as `OPENAI_API_KEY` / `OPENAI_BASE_URL`, or direct inline values. Generated teacher launchers normalize inline values back into provider-default env vars before `init.sh` and `codex exec`, so future run workspaces avoid storing secrets as literal runtime-config values.
 
 2. Prepare benchmark clones under one root, for example:
 
@@ -306,6 +307,19 @@ uv run --directory /path/to/AutoArchon autoarchon-init-campaign-spec \
 ```
 
 `--source-subdir` lets one generic root hold many warmed Lean project clones, and `--campaign-slug` decouples the campaign name from the tracked template name.
+
+If your upstream source is a JSON problem pack with `informal_statement` and `formal_statement` fields, materialize a standard Lean source root first. This is the current bridge from `FATE-X.json` style data into the operator path:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-materialize-problem-pack \
+  --input-json /path/to/benchmarks/FATE-X-upstream/FATE-X.json \
+  --output-root /path/to/benchmarks/Natural-language/fatex-natural-smoke \
+  --problem-id 1 \
+  --problem-id 2 \
+  --force
+```
+
+That command writes a self-contained Lean root with `lakefile.lean`, `lean-toolchain`, per-problem `.lean` files, `QUESTIONS.md`, and `problem-pack.json`. You can then point `autoarchon-init-campaign-spec` or `autoarchon-init-operator-intake` at that generated source root exactly like any other non-benchmark formalization project.
 
 That template enables route reuse by default:
 

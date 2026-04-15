@@ -41,6 +41,7 @@ $EDITOR /path/to/AutoArchon/examples/helper.env
 ```
 
 `scripts/start_campaign_operator.sh` auto-loads `examples/helper.env` when present, so the operator session inherits helper and observability defaults before it launches any campaign.
+For `ARCHON_HELPER_API_KEY_ENV` and `ARCHON_HELPER_BASE_URL_ENV`, you can use either env-var names or direct inline values. Generated teacher launchers normalize inline values into provider-default env vars before `init.sh` and `codex exec`, so new runs do not need secrets copied into workspace config files.
 
 Start Codex:
 
@@ -259,6 +260,19 @@ uv run --directory /path/to/AutoArchon autoarchon-init-campaign-spec \
 ```
 
 `--source-subdir` selects the warmed source clone under the generic source-roots directory, and `--campaign-slug` keeps the campaign naming independent from the tracked template filename.
+
+If the upstream source arrives as a JSON problem pack with `informal_statement` and `formal_statement` fields, materialize a normal Lean source root before intake:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-materialize-problem-pack \
+  --input-json /path/to/benchmarks/FATE-X-upstream/FATE-X.json \
+  --output-root /path/to/benchmarks/Natural-language/fatex-natural-smoke \
+  --problem-id 1 \
+  --problem-id 2 \
+  --force
+```
+
+Then treat `/path/to/benchmarks/Natural-language/fatex-natural-smoke` as the `Source root` for the operator or the `--source-subdir` target under a shared source-roots directory.
 
 For experience-reuse campaigns, the resolved spec can also carry:
 

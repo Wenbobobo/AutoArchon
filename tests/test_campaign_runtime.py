@@ -158,6 +158,10 @@ def test_refresh_campaign_launch_assets_regenerates_launch_script_without_overwr
             "promptRefreshed": False,
         }
     ]
+    assert 'HELPER_ENV_FILE="${HELPER_ENV_FILE:-${ARCHON_ROOT}/examples/helper.env}"' in refreshed_launch
+    assert 'source "${HELPER_ENV_FILE}"' in refreshed_launch
+    assert 'normalize_helper_binding "ARCHON_HELPER_API_KEY_ENV" "$(helper_default_api_key_env)"' in refreshed_launch
+    assert 'normalize_helper_binding "ARCHON_HELPER_BASE_URL_ENV" "$(helper_default_base_url_env)"' in refreshed_launch
     assert 'write_launch_state "bootstrap" "true" "" "$$"' in refreshed_launch
     assert "custom prompt\n" == refreshed_prompt
 
@@ -852,6 +856,10 @@ def test_create_campaign_builds_isolated_runs_and_teacher_launch_assets(tmp_path
     assert "teacher-launch-state.json" in launch_script
     assert "autoarchon-prewarm-project" in launch_script
     assert "prewarm.stdout.log" in launch_script
+    assert 'HELPER_ENV_FILE="${HELPER_ENV_FILE:-${ARCHON_ROOT}/examples/helper.env}"' in launch_script
+    assert 'source "${HELPER_ENV_FILE}"' in launch_script
+    assert 'normalize_helper_binding "ARCHON_HELPER_API_KEY_ENV" "$(helper_default_api_key_env)"' in launch_script
+    assert 'normalize_helper_binding "ARCHON_HELPER_BASE_URL_ENV" "$(helper_default_base_url_env)"' in launch_script
     assert 'ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES="${ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES:-0}"' in launch_script
     assert "teacher_launch_completed" in launch_script
 
@@ -878,6 +886,10 @@ def test_create_campaign_can_enable_historical_route_preload(tmp_path: Path):
     launch_script = (run_root / "control" / "launch-teacher.sh").read_text(encoding="utf-8")
     assert "--preload-historical-routes" in prompt
     assert "historical accepted routes are preloaded for this run" in prompt
+    assert 'HELPER_ENV_FILE="${HELPER_ENV_FILE:-${ARCHON_ROOT}/examples/helper.env}"' in launch_script
+    assert 'source "${HELPER_ENV_FILE}"' in launch_script
+    assert 'normalize_helper_binding "ARCHON_HELPER_API_KEY_ENV" "$(helper_default_api_key_env)"' in launch_script
+    assert 'normalize_helper_binding "ARCHON_HELPER_BASE_URL_ENV" "$(helper_default_base_url_env)"' in launch_script
     assert 'ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES="${ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES:-1}"' in launch_script
 
 
@@ -2873,6 +2885,63 @@ def test_launch_from_spec_can_enable_historical_route_preload_in_campaign_assets
     assert "--preload-historical-routes" in prompt
     assert 'ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES="${ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES:-1}"' in launch_script
     assert resolved_spec["preloadHistoricalRoutes"] is True
+
+
+def test_launch_from_spec_bootstraps_campaign_when_operator_scaffold_precreated_root(tmp_path: Path):
+    source = make_source_project(tmp_path, file_count=2)
+    campaign_root = tmp_path / "campaign"
+    control_root = campaign_root / "control"
+    control_root.mkdir(parents=True, exist_ok=True)
+    write(control_root / "mission-brief.md", "# Mission Brief\n\nReviewed objective.\n")
+    write(control_root / "operator-journal.md", "# Operator Journal\n\n## 2026-04-16T00:00:00+00:00\n\n- Decision: reviewed launch.\n")
+    run_spec_output = control_root / "planned-run-specs.json"
+    spec_path = control_root / "launch-spec.resolved.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "campaignMode": "formalization",
+                "sourceRoot": str(source),
+                "campaignRoot": str(campaign_root),
+                "reuseLakeFrom": str(source),
+                "runSpecOutput": str(run_spec_output),
+                "planShards": {
+                    "runIdPrefix": "teacher-nl",
+                    "runIdMode": "file_stem",
+                    "matchRegex": r"^FATEM/[1-2]\.lean$",
+                    "shardSize": 1,
+                },
+                "watchdog": {
+                    "enabled": False,
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(LAUNCH_FROM_SPEC),
+            "--spec-file",
+            str(spec_path),
+            "--no-start-watchdog",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["campaignCreated"] is True
+    assert (campaign_root / "CAMPAIGN_MANIFEST.json").exists()
+    assert (campaign_root / "campaign-status.json").exists()
+    manifest = json.loads((campaign_root / "CAMPAIGN_MANIFEST.json").read_text(encoding="utf-8"))
+    assert [run["id"] for run in manifest["runs"]] == ["teacher-nl-1", "teacher-nl-2"]
+    assert (campaign_root / "runs" / "teacher-nl-1" / "control" / "launch-teacher.sh").exists()
 
 
 def test_launch_from_spec_cli_dry_run_does_not_write_campaign_or_mutate_spec(tmp_path: Path):

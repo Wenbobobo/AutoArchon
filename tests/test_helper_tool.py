@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -182,6 +183,71 @@ timeout_seconds = 99
     }
     assert fake_agent.API_KEY_ENVS["openai"] == "OPENAI_API_KEY"
     assert fake_agent.BASE_URL_ENVS["openai"] == "OPENAI_BASE_URL"
+
+
+def test_helper_tool_accepts_inline_transport_values_in_runtime_config(monkeypatch, tmp_path: Path, capsys):
+    config_path = tmp_path / "runtime-config.toml"
+    config_path.write_text(
+        """
+[helper]
+enabled = true
+provider = "openai"
+model = "gpt-5.4-mini"
+api_key_env = "sk-inline-key"
+base_url_env = "https://example.invalid/v1"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_call(prompt: str, model: str, think: bool, *, max_retries: int, initial_backoff_seconds: int, timeout_seconds: int) -> str:
+        api_env_name = fake_agent.API_KEY_ENVS["openai"]
+        base_env_name = fake_agent.BASE_URL_ENVS["openai"]
+        captured["api_env_name"] = api_env_name
+        captured["base_env_name"] = base_env_name
+        captured["api_env_value"] = os.environ.get(api_env_name)
+        captured["base_env_value"] = os.environ.get(base_env_name)
+        return "helper result"
+
+    fake_agent = SimpleNamespace(
+        API_KEY_ENVS={"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "openrouter": "OPENROUTER_API_KEY"},
+        BASE_URL_ENVS={"openai": "OPENAI_BASE_URL", "gemini": "GEMINI_BASE_URL", "openrouter": "OPENROUTER_BASE_URL"},
+        DEFAULTS={"openai": "gpt-5.4", "gemini": "gemini-3.1-pro-preview", "openrouter": "google/gemini-3.1-pro-preview"},
+        MAX_RETRIES=5,
+        INITIAL_BACKOFF_SECONDS=5,
+        TIMEOUT=300,
+        call_openai=fake_call,
+        call_gemini=fake_call,
+        call_openrouter=fake_call,
+    )
+
+    module = load_helper_tool()
+    monkeypatch.setattr(module, "_load_informal_agent", lambda: fake_agent)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "archon-helper",
+            "--config",
+            str(config_path),
+            "route around inline helper transport config",
+        ],
+    )
+
+    assert module.main() == 0
+    assert capsys.readouterr().out == "helper result\n"
+    assert captured == {
+        "api_env_name": "ARCHON_HELPER_INLINE_OPENAI_API_KEY",
+        "base_env_name": "ARCHON_HELPER_INLINE_OPENAI_BASE_URL",
+        "api_env_value": "sk-inline-key",
+        "base_env_value": "https://example.invalid/v1",
+    }
+    assert fake_agent.API_KEY_ENVS["openai"] == "OPENAI_API_KEY"
+    assert fake_agent.BASE_URL_ENVS["openai"] == "OPENAI_BASE_URL"
+    assert os.environ.get("ARCHON_HELPER_INLINE_OPENAI_API_KEY") is None
+    assert os.environ.get("ARCHON_HELPER_INLINE_OPENAI_BASE_URL") is None
 
 
 def test_helper_tool_auto_routes_note_with_metadata(monkeypatch, tmp_path: Path, capsys):

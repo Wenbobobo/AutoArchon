@@ -1,6 +1,7 @@
 # Workspace projects are local working copies, not part of Archon repo
 workspace/*
 !workspace/.gitkeep
+.archon/
 
 .archon-src/tools/lean4/
 .archon-src/docs/lean4/

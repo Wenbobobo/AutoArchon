@@ -43,3 +43,11 @@ def test_base_url_prefers_environment_override(monkeypatch):
     monkeypatch.setenv("OPENAI_BASE_URL", "https://example.invalid/v1")
 
     assert module._base_url("openai") == "https://example.invalid/v1"
+
+
+def test_base_url_appends_provider_default_path_when_override_has_host_only(monkeypatch):
+    module = load_informal_agent()
+
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.invalid")
+
+    assert module._base_url("openai") == "https://example.invalid/v1"

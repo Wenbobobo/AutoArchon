@@ -27,6 +27,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -85,7 +86,14 @@ def _require_key(name: str) -> str:
 def _base_url(provider: str) -> str:
     env_name = BASE_URL_ENVS[provider]
     default = BASE_URL_DEFAULTS[provider]
-    return os.environ.get(env_name, default).rstrip("/")
+    override = os.environ.get(env_name, "").strip()
+    if not override:
+        return default.rstrip("/")
+    parsed = urllib.parse.urlsplit(override)
+    default_path = urllib.parse.urlsplit(default).path.rstrip("/")
+    if parsed.scheme and parsed.netloc and parsed.path in {"", "/"} and default_path:
+        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, default_path, parsed.query, parsed.fragment)).rstrip("/")
+    return override.rstrip("/")
 
 
 def _is_retryable_http_error(code: int) -> bool:

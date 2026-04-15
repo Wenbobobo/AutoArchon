@@ -447,8 +447,9 @@ def main() -> int:
     created = False
     refreshed_runs: list[dict[str, Any]] = []
     refresh_requested = args.refresh_launch_assets or spec.get("refreshLaunchAssets") is True
+    manifest_path = campaign_root / "CAMPAIGN_MANIFEST.json"
     if not args.dry_run:
-        if not campaign_root.exists():
+        if not manifest_path.exists():
             create_campaign(
                 archon_root=ROOT,
                 source_root=source_root,

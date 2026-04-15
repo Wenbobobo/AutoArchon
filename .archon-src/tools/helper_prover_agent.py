@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
 import sys
 from contextlib import contextmanager
@@ -40,6 +41,7 @@ from archonlib.runtime_config import (
 
 
 HELPER_PHASES = ("plan", "prover")
+ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 HELPER_PROMPT_PACKS = (
     "external_reference",
     "first_stuck_attempt",
@@ -165,14 +167,33 @@ def _effective_config(
 def _patched_transport(informal_agent: Any, *, provider: str, api_key_env: str, base_url_env: str | None) -> Iterator[None]:
     original_api_key_env = informal_agent.API_KEY_ENVS[provider]
     original_base_url_env = informal_agent.BASE_URL_ENVS[provider]
-    informal_agent.API_KEY_ENVS[provider] = api_key_env
-    if base_url_env is not None:
-        informal_agent.BASE_URL_ENVS[provider] = base_url_env
+    resolved_api_key_env, injected_api_key = _materialize_transport_binding(
+        provider=provider,
+        configured=api_key_env,
+        kind="API_KEY",
+    )
+    resolved_base_url_env, injected_base_url = _materialize_transport_binding(
+        provider=provider,
+        configured=base_url_env,
+        kind="BASE_URL",
+    )
+    injected_values = {**injected_api_key, **injected_base_url}
+    original_env_values = {name: os.environ.get(name) for name in injected_values}
+    for name, value in injected_values.items():
+        os.environ[name] = value
+    informal_agent.API_KEY_ENVS[provider] = resolved_api_key_env or api_key_env
+    if resolved_base_url_env is not None:
+        informal_agent.BASE_URL_ENVS[provider] = resolved_base_url_env
     try:
         yield
     finally:
         informal_agent.API_KEY_ENVS[provider] = original_api_key_env
         informal_agent.BASE_URL_ENVS[provider] = original_base_url_env
+        for name, previous in original_env_values.items():
+            if previous is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = previous
 
 
 def parse_args() -> argparse.Namespace:
@@ -235,6 +256,19 @@ def _selected_prompt_pack(*, phase: str | None, reason: str | None, requested: s
         if chosen is not None:
             return chosen
     return "generic"
+
+
+def _transport_binding_name(*, provider: str, kind: str) -> str:
+    return f"ARCHON_HELPER_INLINE_{provider.upper()}_{kind}"
+
+
+def _materialize_transport_binding(*, provider: str, configured: str | None, kind: str) -> tuple[str | None, dict[str, str]]:
+    if configured is None:
+        return None, {}
+    if ENV_NAME_RE.fullmatch(configured):
+        return configured, {}
+    env_name = _transport_binding_name(provider=provider, kind=kind)
+    return env_name, {env_name: configured}
 
 
 def _note_dir_for_phase(runtime_config: RuntimeConfig, phase: str) -> str:
