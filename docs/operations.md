@@ -111,7 +111,7 @@ If the supervisor detects that every remaining tail-scope objective already has 
 
 That means the initial planner pass was skipped on purpose and the cycle moved straight into prover work.
 
-At the campaign layer, `control/progress-summary.md` now includes the current ETA, restart count, most recent finalized targets, and direct paths to `compare-report.json`, `final-summary.json`, exported proofs, and exported blockers. Running rows also surface the live phase plus compact helper/blocker note counts when the run-level summary exists. This is the fastest file-backed surface for checking whether a night run is converging without opening the full dashboard.
+At the campaign layer, `control/progress-summary.md` now includes the current ETA, restart count, most recent finalized targets, and direct paths to `compare-report.json`, `final-summary.json`, exported proofs, and exported blockers. Running rows also surface the live phase plus compact helper/blocker note counts when the run-level summary exists. `control/progress-summary.json` remains the canonical machine-readable state, and `control/progress-summary.html` is a cheap browser-friendly mirror over that same payload. This is the fastest file-backed surface for checking whether a night run is converging without opening the full dashboard.
 
 For one accepted run, the main evidence paths are:
 

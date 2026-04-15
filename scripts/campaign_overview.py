@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-write-progress-surface",
         action="store_true",
-        help="Do not refresh control/progress-summary.md and control/progress-summary.json",
+        help="Do not refresh control/progress-summary.md, control/progress-summary.json, and control/progress-summary.html",
     )
     return parser.parse_args()
 

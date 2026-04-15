@@ -2523,12 +2523,17 @@ def test_campaign_overview_and_archive_capture_owner_lease_and_status(tmp_path: 
     assert overview_cli["targetCounts"]["acceptedProofs"] == 1
     assert (campaign_root / "control" / "progress-summary.md").exists()
     assert (campaign_root / "control" / "progress-summary.json").exists()
+    assert (campaign_root / "control" / "progress-summary.html").exists()
     progress_summary = (campaign_root / "control" / "progress-summary.md").read_text(encoding="utf-8")
+    progress_html = (campaign_root / "control" / "progress-summary.html").read_text(encoding="utf-8")
     assert "# Campaign Progress:" in progress_summary
     assert "100% (1/1 finalized targets)" in progress_summary
     assert "## Recent Finalized" in progress_summary
     assert "proof accepted-run:FATEM/1.lean" in progress_summary
     assert "Final summary:" in progress_summary
+    assert "<title>AutoArchon Campaign Progress" in progress_html
+    assert "accepted-run" in progress_html
+    assert "Recent Finalized" in progress_html
 
     archive_result = subprocess.run(
         [
@@ -2683,6 +2688,7 @@ def test_build_campaign_overview_surfaces_run_progress_summary_signals(tmp_path:
     assert "recommendedCommands" in progress_payload
     assert "recentTransitions" in progress_payload
     assert "cooldownState" in progress_payload
+    assert progress_payload["paths"]["progressSummaryHtmlPath"].endswith("control/progress-summary.html")
 
 
 def test_create_campaign_scaffolds_operator_surfaces(tmp_path: Path):

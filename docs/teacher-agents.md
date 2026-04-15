@@ -50,10 +50,12 @@ Watch:
 - `workspace/.archon/supervisor/LEDGER.md`
 - `workspace/.archon/supervisor/progress-summary.md`
 - `workspace/.archon/supervisor/progress-summary.json`
+- `control/progress-summary.html`
 - `workspace/.archon/task_results/`
 - `workspace/.archon/logs/iter-*/`
 
 Per-run campaign timelines are exported under `reports/final/runs/<run>/timeline.json`.
+`control/progress-summary.html` is the campaign-level browser mirror; keep trusting the matching `progress-summary.json` files as canonical if terminal output and browser output ever disagree.
 If `progress-summary.json` shows `planFastPathApplied = true` and `planFastPathReason = "known_routes"`, the supervisor intentionally skipped the initial planner pass and reused an already-recorded exact route or blocker route for the tail-scope objective set.
 
 ## Results

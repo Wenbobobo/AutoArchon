@@ -226,8 +226,9 @@ That command also refreshes these lightweight observability surfaces by default:
 
 - `control/progress-summary.md`
 - `control/progress-summary.json`
+- `control/progress-summary.html`
 
-The campaign summary is the canonical observability surface: it shows ETA, restart count, active runs, and recent finalized targets. Each run also keeps `workspace/.archon/supervisor/progress-summary.{md,json}` with live phase, active prover rows, helper-note breakdowns, and task-result kind counts.
+The campaign summary is the canonical observability surface: `control/progress-summary.json` is the source of truth, `control/progress-summary.md` is the terminal-friendly mirror, and `control/progress-summary.html` is a browser-friendly supplementary inspection page generated from the same payload. Together they show ETA, restart count, active runs, and recent finalized targets. Each run also keeps `workspace/.archon/supervisor/progress-summary.{md,json}` with live phase, active prover rows, helper-note breakdowns, and task-result kind counts.
 
 The optional web UI remains useful for supplementary inspection of one run:
 
@@ -342,6 +343,10 @@ Single-run progress lands in:
 
 - `workspace/.archon/supervisor/progress-summary.md`
 - `workspace/.archon/supervisor/progress-summary.json`
+
+Campaign-level browser inspection lands in:
+
+- `control/progress-summary.html`
 
 In the exact-route tail-scope case, those files now tell you whether the planner was skipped intentionally:
 

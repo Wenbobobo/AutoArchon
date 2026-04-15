@@ -41,6 +41,7 @@ def test_readme_centers_interactive_campaign_operator_and_result_paths():
     assert "not the web UI" in readme
     assert "control/progress-summary.md" in readme
     assert "control/progress-summary.json" in readme
+    assert "control/progress-summary.html" in readme
     assert "workspace/.archon/supervisor/progress-summary.md" in readme
     assert "runtime-config.toml" in readme
     assert "examples/helper.env" in readme
@@ -74,6 +75,7 @@ def test_operations_doc_covers_single_run_prewarm_supervisor_and_export_flow():
     assert "autoarchon-export-run-artifacts" in operations
     assert "autoarchon-storage-report" in operations
     assert "workspace/.archon/supervisor/progress-summary.md" in operations
+    assert "control/progress-summary.html" in operations
 
 
 def test_teacher_agents_doc_covers_launch_monitoring_and_results():
@@ -88,6 +90,7 @@ def test_teacher_agents_doc_covers_launch_monitoring_and_results():
     assert "HOT_NOTES.md" in teacher_doc
     assert "LEDGER.md" in teacher_doc
     assert "progress-summary.md" in teacher_doc
+    assert "progress-summary.html" in teacher_doc
     assert "task_results" in teacher_doc
     assert "artifacts/" in teacher_doc
     assert "timeline.json" in teacher_doc
@@ -124,6 +127,7 @@ def test_campaign_operator_doc_covers_default_and_interactive_owner_paths():
     assert "owner-mode.json" in operator_doc
     assert "owner-lease.json" in operator_doc
     assert "launch-spec.resolved.json" in operator_doc
+    assert "progress-summary.html" in operator_doc
 
 
 def test_architecture_doc_contains_global_mermaid_and_future_extension_points():
@@ -147,6 +151,7 @@ def test_architecture_doc_contains_global_mermaid_and_future_extension_points():
     assert "launch-spec.resolved.json" in architecture
     assert "progress-summary.md" in architecture
     assert "progress-summary.json" in architecture
+    assert "progress-summary.html" in architecture
     assert "workspace/.archon/supervisor/progress-summary.md" in architecture
     assert "reportFreshness" in architecture
     assert "input_tokens" in architecture

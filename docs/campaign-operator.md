@@ -180,8 +180,9 @@ For the fastest newcomer-facing snapshot, open either of these files after `auto
 
 - `control/progress-summary.md`
 - `control/progress-summary.json`
+- `control/progress-summary.html`
 
-Treat those file-backed summaries as the canonical observability surface. The browser UI is optional supplementary inspection for one run when you need deeper browsing.
+Treat those file-backed summaries as the canonical observability surface. `control/progress-summary.json` stays canonical, `control/progress-summary.md` is the terminal-friendly mirror, and `control/progress-summary.html` is the low-friction browser mirror generated from the same overview payload. The browser UI is optional supplementary inspection for one run when you need deeper browsing.
 
 Trust these campaign-level files before reacting to terminal noise:
 
@@ -193,6 +194,7 @@ Trust these campaign-level files before reacting to terminal noise:
 - `control/orchestrator-watchdog.json`
 - `control/progress-summary.md`
 - `control/progress-summary.json`
+- `control/progress-summary.html`
 - `campaign-status.json`
 - `reports/final/compare-report.json`
 - `reports/postmortem/postmortem-summary.json`

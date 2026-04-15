@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -2212,6 +2213,7 @@ def build_campaign_overview(
             "watchdogStatePath": str(campaign_root / "control" / "orchestrator-watchdog.json"),
             "progressSummaryPath": str(campaign_root / "control" / "progress-summary.md"),
             "progressSummaryJsonPath": str(campaign_root / "control" / "progress-summary.json"),
+            "progressSummaryHtmlPath": str(campaign_root / "control" / "progress-summary.html"),
         },
     }
 
@@ -2534,16 +2536,308 @@ def render_campaign_progress_markdown(overview: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _html_text(value: object) -> str:
+    return html.escape(str(value))
+
+
+def _html_code(value: object) -> str:
+    return f"<code>{_html_text(value)}</code>"
+
+
+def _html_list_items(rows: list[str], *, empty: str = "none") -> str:
+    if not rows:
+        return f"<li>{_html_text(empty)}</li>"
+    return "".join(f"<li>{row}</li>" for row in rows)
+
+
+def render_campaign_progress_html(overview: Mapping[str, Any]) -> str:
+    campaign_id = str(overview.get("campaignId", "unknown"))
+    progress = overview.get("progress") if isinstance(overview.get("progress"), Mapping) else {}
+    target_counts = overview.get("targetCounts") if isinstance(overview.get("targetCounts"), Mapping) else {}
+    running_runs = overview.get("runningRuns") if isinstance(overview.get("runningRuns"), list) else []
+    recoverable_runs = overview.get("recoverableRuns") if isinstance(overview.get("recoverableRuns"), list) else []
+    watchdog_runtime = overview.get("watchdogRuntime") if isinstance(overview.get("watchdogRuntime"), Mapping) else {}
+    eta = overview.get("eta") if isinstance(overview.get("eta"), Mapping) else {}
+    paths = overview.get("paths") if isinstance(overview.get("paths"), Mapping) else {}
+    recent_finalized = overview.get("recentFinalizedTargets") if isinstance(overview.get("recentFinalizedTargets"), list) else []
+    recent_transitions = overview.get("recentTransitions") if isinstance(overview.get("recentTransitions"), list) else []
+    recommended_commands = overview.get("recommendedCommands") if isinstance(overview.get("recommendedCommands"), list) else []
+    cooldown_state = overview.get("cooldownState") if isinstance(overview.get("cooldownState"), Mapping) else {}
+    status_buckets = overview.get("statusBuckets") if isinstance(overview.get("statusBuckets"), Mapping) else {}
+
+    running_rows: list[str] = []
+    for row in running_runs[:12]:
+        if not isinstance(row, Mapping):
+            continue
+        running_rows.append(
+            " ".join(
+                [
+                    _html_code(row.get("runId", "unknown")),
+                    f"scope={_html_code(row.get('scopeHint') or 'unknown')}",
+                    f"phase={_html_code(row.get('livePhase') or 'unknown')}",
+                    f"iter={_html_code(row.get('latestIteration') or '(none)')}",
+                    f"remaining={_html_code(row.get('remainingTargetCount', 0))}",
+                    f"helper_notes={_html_code(row.get('helperNoteCount', 0))}",
+                ]
+            )
+        )
+
+    attention_rows: list[str] = []
+    for row in recoverable_runs[:12]:
+        if not isinstance(row, Mapping):
+            continue
+        attention_rows.append(
+            " ".join(
+                [
+                    _html_code(row.get("runId", "unknown")),
+                    f"status={_html_code(row.get('status') or 'unknown')}",
+                    f"action={_html_code(row.get('action') or 'none')}",
+                    f"class={_html_code(row.get('recoveryClass') or 'unknown')}",
+                ]
+            )
+        )
+
+    finalized_rows: list[str] = []
+    for row in recent_finalized[:12]:
+        if not isinstance(row, Mapping):
+            continue
+        finalized_rows.append(
+            " ".join(
+                [
+                    _html_code(row.get("kind", "unknown")),
+                    _html_code(f"{row.get('runId', 'unknown')}:{row.get('relPath', 'unknown')}"),
+                ]
+            )
+        )
+
+    transition_rows: list[str] = []
+    for row in recent_transitions[:12]:
+        if not isinstance(row, Mapping):
+            continue
+        transition_rows.append(
+            " ".join(
+                [
+                    _html_code(row.get("timestamp") or "unknown"),
+                    _html_code(row.get("event") or "unknown"),
+                    _html_text(row.get("summary") or "unknown"),
+                ]
+            )
+        )
+
+    command_rows: list[str] = []
+    for row in recommended_commands[:12]:
+        if not isinstance(row, Mapping):
+            continue
+        command_rows.append(
+            f"<strong>{_html_text(row.get('label', 'command'))}</strong><br><code>{_html_text(row.get('command', ''))}</code>"
+        )
+
+    path_rows = [
+        f"<strong>Canonical JSON</strong><br>{_html_code(paths.get('progressSummaryJsonPath', 'unknown'))}",
+        f"<strong>Markdown Summary</strong><br>{_html_code(paths.get('progressSummaryPath', 'unknown'))}",
+        f"<strong>Compare Report</strong><br>{_html_code(paths.get('compareReportPath', 'unknown'))}",
+        f"<strong>Final Summary</strong><br>{_html_code(paths.get('finalSummaryPath', 'unknown'))}",
+    ]
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="30">
+  <title>AutoArchon Campaign Progress - {_html_text(campaign_id)}</title>
+  <style>
+    :root {{
+      --bg: #f4f1e8;
+      --panel: #fffdf8;
+      --ink: #1d1b18;
+      --muted: #6f665c;
+      --line: #d7cec1;
+      --accent: #14532d;
+      --accent-2: #9a3412;
+      --chip: #efe7da;
+      --shadow: 0 10px 30px rgba(40, 31, 20, 0.08);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: "Iosevka Aile", "IBM Plex Sans", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(20,83,45,0.08), transparent 28rem),
+        radial-gradient(circle at top right, rgba(154,52,18,0.08), transparent 22rem),
+        var(--bg);
+      color: var(--ink);
+    }}
+    .shell {{
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 2rem 1.25rem 3rem;
+    }}
+    h1, h2 {{ margin: 0 0 0.75rem; }}
+    p {{ margin: 0; }}
+    .hero {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: 1.5rem;
+      box-shadow: var(--shadow);
+      margin-bottom: 1rem;
+    }}
+    .hero-grid, .metric-grid, .section-grid {{
+      display: grid;
+      gap: 1rem;
+    }}
+    .hero-grid {{
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      margin-top: 1rem;
+    }}
+    .metric-grid {{
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      margin: 1rem 0;
+    }}
+    .section-grid {{
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    }}
+    .card {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 1rem 1rem 1.1rem;
+      box-shadow: var(--shadow);
+    }}
+    .eyebrow {{
+      color: var(--muted);
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 0.35rem;
+    }}
+    .metric {{
+      font-size: 1.5rem;
+      font-weight: 700;
+    }}
+    .progress-bar {{
+      display: inline-block;
+      padding: 0.3rem 0.55rem;
+      border-radius: 999px;
+      background: var(--chip);
+      color: var(--accent);
+      font-weight: 700;
+    }}
+    .subtle {{
+      color: var(--muted);
+      font-size: 0.95rem;
+      line-height: 1.45;
+    }}
+    ul {{
+      margin: 0.6rem 0 0;
+      padding-left: 1.1rem;
+      line-height: 1.45;
+    }}
+    li + li {{ margin-top: 0.35rem; }}
+    code {{
+      font-family: "Iosevka", "IBM Plex Mono", monospace;
+      font-size: 0.92em;
+      background: #f3ece1;
+      padding: 0.08rem 0.24rem;
+      border-radius: 6px;
+    }}
+    .json-block {{
+      margin-top: 0.5rem;
+      padding: 0.75rem;
+      border-radius: 14px;
+      background: #faf5ed;
+      overflow-x: auto;
+      font-family: "Iosevka", "IBM Plex Mono", monospace;
+      font-size: 0.88rem;
+      white-space: pre-wrap;
+    }}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <div class="eyebrow">Supplementary inspection only</div>
+      <h1>AutoArchon Campaign Progress</h1>
+      <p class="subtle">This browser view is generated from the canonical file-backed overview. The source of truth remains <code>{_html_text(paths.get('progressSummaryJsonPath', 'control/progress-summary.json'))}</code>.</p>
+      <div class="hero-grid">
+        <div>
+          <div class="eyebrow">Campaign</div>
+          <div class="metric">{_html_text(campaign_id)}</div>
+          <p class="subtle">Updated {_html_code(overview.get('generatedAt', 'unknown'))}</p>
+        </div>
+        <div>
+          <div class="eyebrow">Progress</div>
+          <div class="metric"><span class="progress-bar">{_html_text(progress.get('bar', '[--------------------]'))} {_html_text(progress.get('percent', 0))}%</span></div>
+          <p class="subtle">{_html_text(progress.get('completed', 0))}/{_html_text(progress.get('total', 0))} {_html_text(progress.get('label', 'items'))}</p>
+        </div>
+        <div>
+          <div class="eyebrow">Watchdog</div>
+          <div class="metric">{_html_text(overview.get('watchdogStatus') or 'unknown')}</div>
+          <p class="subtle">cause={_html_text(watchdog_runtime.get('likelyCause') or 'unknown')} restart_count={_html_text(overview.get('restartCount') if overview.get('restartCount') is not None else 'unknown')}</p>
+        </div>
+      </div>
+      <div class="metric-grid">
+        <div class="card"><div class="eyebrow">Remaining Targets</div><div class="metric">{_html_text(target_counts.get('remainingTargets', 0))}</div></div>
+        <div class="card"><div class="eyebrow">Accepted Proofs</div><div class="metric">{_html_text(target_counts.get('acceptedProofs', 0))}</div></div>
+        <div class="card"><div class="eyebrow">Accepted Blockers</div><div class="metric">{_html_text(target_counts.get('acceptedBlockers', 0))}</div></div>
+        <div class="card"><div class="eyebrow">ETA</div><div class="metric">{_html_text(eta.get('etaText', 'unknown'))}</div></div>
+      </div>
+    </section>
+
+    <div class="section-grid">
+      <section class="card">
+        <h2>Running</h2>
+        <ul>{_html_list_items(running_rows)}</ul>
+      </section>
+      <section class="card">
+        <h2>Recent Finalized</h2>
+        <ul>{_html_list_items(finalized_rows)}</ul>
+      </section>
+      <section class="card">
+        <h2>Attention</h2>
+        <ul>{_html_list_items(attention_rows)}</ul>
+      </section>
+      <section class="card">
+        <h2>Recommended Commands</h2>
+        <ul>{_html_list_items(command_rows)}</ul>
+      </section>
+      <section class="card">
+        <h2>Recent Transitions</h2>
+        <ul>{_html_list_items(transition_rows)}</ul>
+      </section>
+      <section class="card">
+        <h2>Paths</h2>
+        <ul>{_html_list_items(path_rows)}</ul>
+      </section>
+      <section class="card">
+        <h2>Status Buckets</h2>
+        <div class="json-block">{_html_text(json.dumps(status_buckets, indent=2, sort_keys=True))}</div>
+      </section>
+      <section class="card">
+        <h2>Cooldown State</h2>
+        <div class="json-block">{_html_text(json.dumps(cooldown_state, indent=2, sort_keys=True))}</div>
+      </section>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+
 def write_campaign_progress_surface(campaign_root: Path, overview: Mapping[str, Any]) -> dict[str, str]:
     control_root = campaign_root / "control"
     control_root.mkdir(parents=True, exist_ok=True)
     markdown_path = control_root / "progress-summary.md"
     json_path = control_root / "progress-summary.json"
+    html_path = control_root / "progress-summary.html"
     markdown_path.write_text(render_campaign_progress_markdown(overview), encoding="utf-8")
     json_path.write_text(json.dumps(dict(overview), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    html_path.write_text(render_campaign_progress_html(overview), encoding="utf-8")
     return {
         "markdown": str(markdown_path),
         "json": str(json_path),
+        "html": str(html_path),
     }
 
 
