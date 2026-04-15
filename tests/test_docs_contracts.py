@@ -27,7 +27,10 @@ def test_readme_centers_interactive_campaign_operator_and_result_paths():
     assert "Shortcut: Scripted Start" in readme
     assert "preloadHistoricalRoutes" in readme
     assert "formalization-default.json" in readme
+    assert "open-problem-default.json" in readme
     assert "--source-roots-root" in readme
+    assert "--source-subdir" in readme
+    assert "--campaign-slug" in readme
     assert "bash scripts/watch_campaign.sh" in readme
     assert "bash scripts/watch_run.sh" in readme
     assert "Control-plane commands" in readme
@@ -96,6 +99,9 @@ def test_campaign_operator_doc_covers_default_and_interactive_owner_paths():
     assert "autoarchon-init-campaign-spec" in operator_doc
     assert "autoarchon-launch-from-spec" in operator_doc
     assert "preloadHistoricalRoutes" in operator_doc
+    assert "open-problem-default.json" in operator_doc
+    assert "--source-subdir" in operator_doc
+    assert "--campaign-slug" in operator_doc
     assert "bash scripts/start_fate_overnight_watchdogs.sh" in operator_doc
     assert "bash scripts/watch_campaign.sh" in operator_doc
     assert "scripts/start_campaign_operator.sh" in operator_doc

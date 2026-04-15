@@ -128,3 +128,87 @@ def test_init_campaign_spec_supports_generic_source_roots_and_formalization_temp
     assert payload["sourceRoot"] == str((source_roots_root / "formalization-upstream").resolve())
     assert payload["reuseLakeFrom"] == str((source_roots_root / "formalization-upstream").resolve())
     assert payload["preloadHistoricalRoutes"] is True
+
+
+def test_init_campaign_spec_allows_generic_campaign_slug_and_source_subdir_overrides(tmp_path: Path):
+    source_roots_root = tmp_path / "sources"
+    campaigns_root = tmp_path / "campaigns"
+    run_specs_root = tmp_path / "run-specs"
+    source_roots_root.mkdir()
+    campaigns_root.mkdir()
+    run_specs_root.mkdir()
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(SCRIPT),
+            "--template",
+            str(ROOT / "campaign_specs" / "formalization-default.json"),
+            "--source-roots-root",
+            str(source_roots_root),
+            "--campaigns-root",
+            str(campaigns_root),
+            "--run-specs-root",
+            str(run_specs_root),
+            "--date-tag",
+            "20260415-open",
+            "--campaign-slug",
+            "riemann-local-formalization",
+            "--source-subdir",
+            "riemann-upstream",
+            "--dry-run",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["campaignRoot"] == str((campaigns_root / "20260415-open-riemann-local-formalization").resolve())
+    assert payload["runSpecOutput"] == str((run_specs_root / "20260415-open-riemann-local-formalization.json").resolve())
+    assert payload["sourceRoot"] == str((source_roots_root / "riemann-upstream").resolve())
+    assert payload["reuseLakeFrom"] == str((source_roots_root / "riemann-upstream").resolve())
+
+
+def test_init_campaign_spec_supports_open_problem_template(tmp_path: Path):
+    source_roots_root = tmp_path / "sources"
+    campaigns_root = tmp_path / "campaigns"
+    run_specs_root = tmp_path / "run-specs"
+    source_roots_root.mkdir()
+    campaigns_root.mkdir()
+    run_specs_root.mkdir()
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(SCRIPT),
+            "--template",
+            str(ROOT / "campaign_specs" / "open-problem-default.json"),
+            "--source-roots-root",
+            str(source_roots_root),
+            "--campaigns-root",
+            str(campaigns_root),
+            "--run-specs-root",
+            str(run_specs_root),
+            "--date-tag",
+            "20260416-riemann",
+            "--source-subdir",
+            "riemann-upstream",
+            "--dry-run",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["campaignMode"] == "open_problem"
+    assert payload["campaignRoot"] == str((campaigns_root / "20260416-riemann-open-problem-default").resolve())
+    assert payload["sourceRoot"] == str((source_roots_root / "riemann-upstream").resolve())
+    assert payload["reuseLakeFrom"] == str((source_roots_root / "riemann-upstream").resolve())
+    assert payload["preloadHistoricalRoutes"] is True
+    assert payload["planShards"]["runIdPrefix"] == "teacher-o"

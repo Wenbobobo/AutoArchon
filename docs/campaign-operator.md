@@ -199,12 +199,31 @@ For non-benchmark formalization or open-problem campaigns, prefer the generic te
 uv run --directory /path/to/AutoArchon autoarchon-init-campaign-spec \
   --template /path/to/AutoArchon/campaign_specs/formalization-default.json \
   --source-roots-root /path/to/source-roots \
+  --source-subdir riemann-upstream \
+  --campaign-slug riemann-local-formalization \
   --campaigns-root /path/to/runs/campaigns \
   --run-specs-root /path/to/runs/campaigns/_run_specs \
   --date-tag 20260414-open \
   --model gpt-5.4 \
   --reasoning-effort xhigh
 ```
+
+For a dedicated open-problem run, prefer the explicit template:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-init-campaign-spec \
+  --template /path/to/AutoArchon/campaign_specs/open-problem-default.json \
+  --source-roots-root /path/to/source-roots \
+  --source-subdir riemann-upstream \
+  --campaign-slug riemann-open-problem \
+  --campaigns-root /path/to/runs/campaigns \
+  --run-specs-root /path/to/runs/campaigns/_run_specs \
+  --date-tag 20260414-open \
+  --model gpt-5.4 \
+  --reasoning-effort xhigh
+```
+
+`--source-subdir` selects the warmed source clone under the generic source-roots directory, and `--campaign-slug` keeps the campaign naming independent from the tracked template filename.
 
 For experience-reuse campaigns, the resolved spec can also carry:
 

@@ -1,16 +1,16 @@
 {
-  "campaignMode": "formalization",
-  "campaignRoot": "${CAMPAIGNS_ROOT}/${RUN_TAG}-formalization-default",
-  "sourceRoot": "${SOURCE_ROOTS_ROOT}/formalization-upstream",
-  "reuseLakeFrom": "${SOURCE_ROOTS_ROOT}/formalization-upstream",
-  "runSpecOutput": "${RUN_SPECS_ROOT}/${RUN_TAG}-formalization-default.json",
+  "campaignMode": "open_problem",
+  "campaignRoot": "${CAMPAIGNS_ROOT}/${RUN_TAG}-open-problem-default",
+  "sourceRoot": "${SOURCE_ROOTS_ROOT}/open-problem-upstream",
+  "reuseLakeFrom": "${SOURCE_ROOTS_ROOT}/open-problem-upstream",
+  "runSpecOutput": "${RUN_SPECS_ROOT}/${RUN_TAG}-open-problem-default.json",
   "teacherModel": "${MODEL}",
   "teacherReasoningEffort": "${REASONING_EFFORT}",
   "preloadHistoricalRoutes": true,
   "planShards": {
     "matchRegex": "^.*\\.lean$",
-    "shardSize": 4,
-    "runIdPrefix": "teacher-f",
+    "shardSize": 2,
+    "runIdPrefix": "teacher-o",
     "runIdMode": "index"
   },
   "watchdog": {

@@ -30,6 +30,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--campaigns-root", required=True, help="Root directory for campaign outputs")
     parser.add_argument("--run-specs-root", required=True, help="Root directory for generated run specs and resolved launch specs")
     parser.add_argument("--date-tag", required=True, help="Stable date or run tag used in campaign and spec naming")
+    parser.add_argument("--campaign-slug", help="Optional override for the campaign/run-spec slug appended after --date-tag")
+    parser.add_argument("--source-subdir", help="Optional override for the source clone subdirectory under --source-roots-root")
     parser.add_argument("--model", default="gpt-5.4", help="Teacher and watchdog model name")
     parser.add_argument("--reasoning-effort", default="xhigh", help="Teacher and watchdog reasoning effort")
     parser.add_argument("--shard-size", type=int, help="Optional override for planShards.shardSize")
@@ -91,9 +93,28 @@ def _template_path(raw: str) -> Path:
     raise FileNotFoundError(f"campaign template not found: {raw}")
 
 
-def _default_output_path(template_path: Path, *, run_specs_root: Path, date_tag: str) -> Path:
-    slug = template_path.stem
+def _default_output_path(template_path: Path, *, run_specs_root: Path, date_tag: str, campaign_slug: str | None) -> Path:
+    slug = campaign_slug or template_path.stem
     return (run_specs_root / f"{date_tag}-{slug}.launch.json").resolve()
+
+
+def _apply_source_subdir_override(spec: dict[str, Any], *, source_roots_root: Path, source_subdir: str | None) -> dict[str, Any]:
+    if not source_subdir:
+        return spec
+    override_path = (source_roots_root / source_subdir).resolve()
+    updated = dict(spec)
+    updated["sourceRoot"] = str(override_path)
+    updated["reuseLakeFrom"] = str(override_path)
+    return updated
+
+
+def _apply_campaign_slug_override(spec: dict[str, Any], *, campaigns_root: Path, run_specs_root: Path, date_tag: str, campaign_slug: str | None) -> dict[str, Any]:
+    if not campaign_slug:
+        return spec
+    updated = dict(spec)
+    updated["campaignRoot"] = str((campaigns_root / f"{date_tag}-{campaign_slug}").resolve())
+    updated["runSpecOutput"] = str((run_specs_root / f"{date_tag}-{campaign_slug}.json").resolve())
+    return updated
 
 
 def _resolve_spec(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
@@ -102,14 +123,20 @@ def _resolve_spec(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
     source_roots_root = args.source_roots_root or args.benchmark_root
     if not source_roots_root:
         raise ValueError("either --source-roots-root or --benchmark-root is required")
+    source_roots_root_path = Path(source_roots_root).resolve()
+    campaigns_root_path = Path(args.campaigns_root).resolve()
+    run_specs_root_path = Path(args.run_specs_root).resolve()
     mapping = dict(os.environ)
     mapping.update(
         {
-            "BENCHMARK_ROOT": str(Path(source_roots_root).resolve()),
-            "SOURCE_ROOTS_ROOT": str(Path(source_roots_root).resolve()),
-            "CAMPAIGNS_ROOT": str(Path(args.campaigns_root).resolve()),
-            "RUN_SPECS_ROOT": str(Path(args.run_specs_root).resolve()),
+            "BENCHMARK_ROOT": str(source_roots_root_path),
+            "SOURCE_ROOTS_ROOT": str(source_roots_root_path),
+            "CAMPAIGNS_ROOT": str(campaigns_root_path),
+            "RUN_SPECS_ROOT": str(run_specs_root_path),
             "FATE_DATE_TAG": args.date_tag,
+            "RUN_TAG": args.date_tag,
+            "CAMPAIGN_SLUG": args.campaign_slug or template_path.stem,
+            "SOURCE_SUBDIR": args.source_subdir or "",
             "MODEL": args.model,
             "REASONING_EFFORT": args.reasoning_effort,
         }
@@ -122,11 +149,24 @@ def _resolve_spec(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
         plan_shards = dict(plan_shards)
         plan_shards["shardSize"] = args.shard_size
         resolved["planShards"] = plan_shards
+    resolved = _apply_source_subdir_override(
+        resolved,
+        source_roots_root=source_roots_root_path,
+        source_subdir=args.source_subdir,
+    )
+    resolved = _apply_campaign_slug_override(
+        resolved,
+        campaigns_root=campaigns_root_path,
+        run_specs_root=run_specs_root_path,
+        date_tag=args.date_tag,
+        campaign_slug=args.campaign_slug,
+    )
     resolved = _drop_unresolved_optional_environment(resolved)
     output = Path(args.output).resolve() if args.output else _default_output_path(
         template_path,
-        run_specs_root=Path(args.run_specs_root).resolve(),
+        run_specs_root=run_specs_root_path,
         date_tag=args.date_tag,
+        campaign_slug=args.campaign_slug,
     )
     return output, resolved
 

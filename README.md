@@ -234,12 +234,31 @@ For formalization or open-problem style runs, use the generic source-root flag a
 uv run --directory /path/to/AutoArchon autoarchon-init-campaign-spec \
   --template /path/to/AutoArchon/campaign_specs/formalization-default.json \
   --source-roots-root /path/to/source-roots \
+  --source-subdir riemann-upstream \
+  --campaign-slug riemann-local-formalization \
   --campaigns-root /path/to/runs/campaigns \
   --run-specs-root /path/to/runs/campaigns/_run_specs \
   --date-tag 20260414-open \
   --model gpt-5.4 \
   --reasoning-effort xhigh
 ```
+
+For a pure open-problem campaign, swap the template:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-init-campaign-spec \
+  --template /path/to/AutoArchon/campaign_specs/open-problem-default.json \
+  --source-roots-root /path/to/source-roots \
+  --source-subdir riemann-upstream \
+  --campaign-slug riemann-open-problem \
+  --campaigns-root /path/to/runs/campaigns \
+  --run-specs-root /path/to/runs/campaigns/_run_specs \
+  --date-tag 20260414-open \
+  --model gpt-5.4 \
+  --reasoning-effort xhigh
+```
+
+`--source-subdir` lets one generic root hold many warmed Lean project clones, and `--campaign-slug` decouples the campaign name from the tracked template name.
 
 That template enables route reuse by default:
 
