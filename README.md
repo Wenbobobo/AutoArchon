@@ -107,14 +107,36 @@ The operator should then:
 - validate the contract before launch with `autoarchon-validate-launch-contract`
 - only then launch or resume the watchdog
 
-5. Validate the launch contract explicitly when you want a deterministic preflight:
+5. If you want a deterministic intake scaffold before the operator reviews it, write the three control files in one shot:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-init-operator-intake \
+  --repo-root /path/to/AutoArchon \
+  --campaign-root /path/to/runs/campaigns/20260414-fate-m-full \
+  --source-root /path/to/benchmarks/FATE-M-upstream \
+  --objective "Run a benchmark-faithful FATE-M campaign on the warmed local clone." \
+  --campaign-mode benchmark_faithful \
+  --match-regex '^FATEM/.*\\.lean$' \
+  --shard-size 8 \
+  --run-id-prefix teacher-m
+```
+
+This writes:
+
+- `control/mission-brief.md`
+- `control/launch-spec.resolved.json`
+- `control/operator-journal.md`
+
+The interactive operator should still review and refine that intake bundle before unattended launch.
+
+6. Validate the launch contract explicitly when you want a deterministic preflight:
 
 ```bash
 uv run --directory /path/to/AutoArchon autoarchon-validate-launch-contract \
   --campaign-root /path/to/runs/campaigns/20260414-fate-m-full
 ```
 
-6. The operator should leave behind these three files before the watchdog starts:
+7. The operator should leave behind these three files before the watchdog starts:
 
 - `control/mission-brief.md`
 - `control/launch-spec.resolved.json`

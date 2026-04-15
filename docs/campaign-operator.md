@@ -74,6 +74,22 @@ uv run --directory /path/to/AutoArchon autoarchon-validate-launch-contract \
   --campaign-root /path/to/runs/campaigns/20260414-fate-m-full
 ```
 
+If you want a deterministic intake scaffold before the interactive review step, use:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-init-operator-intake \
+  --repo-root /path/to/AutoArchon \
+  --campaign-root /path/to/runs/campaigns/20260414-fate-m-full \
+  --source-root /path/to/benchmarks/FATE-M-upstream \
+  --objective "Run a benchmark-faithful FATE-M campaign on the warmed local clone." \
+  --campaign-mode benchmark_faithful \
+  --match-regex '^FATEM/.*\\.lean$' \
+  --shard-size 8 \
+  --run-id-prefix teacher-m
+```
+
+That command writes the three operator-owned control files immediately, but the interactive operator should still review and refine them before unattended launch.
+
 ## Advanced: Rendered Prompt Path
 
 Render a paste-ready operator prompt when you want a fully rendered handoff instead of free-form intake:

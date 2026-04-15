@@ -24,6 +24,7 @@ def test_readme_centers_interactive_campaign_operator_and_result_paths():
     assert "control/launch-spec.resolved.json" in readme
     assert "control/operator-journal.md" in readme
     assert "autoarchon-init-campaign-spec" in readme
+    assert "autoarchon-init-operator-intake" in readme
     assert "Shortcut: Scripted Start" in readme
     assert "preloadHistoricalRoutes" in readme
     assert "formalization-default.json" in readme
@@ -97,6 +98,7 @@ def test_campaign_operator_doc_covers_default_and_interactive_owner_paths():
     assert "control/operator-journal.md" in operator_doc
     assert "Detailed TODO" in operator_doc
     assert "autoarchon-init-campaign-spec" in operator_doc
+    assert "autoarchon-init-operator-intake" in operator_doc
     assert "autoarchon-launch-from-spec" in operator_doc
     assert "preloadHistoricalRoutes" in operator_doc
     assert "open-problem-default.json" in operator_doc
