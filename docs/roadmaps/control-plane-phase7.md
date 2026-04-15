@@ -6,6 +6,25 @@ Default outer path:
 
 `interactive campaign-operator -> mission brief + resolved spec + operator journal -> watchdog -> orchestrator-agent -> supervisor-agent`
 
+## Status Snapshot
+
+Implemented in the current branch:
+
+- direct interactive `campaign-operator` is now the default user path, with `scripts/start_campaign_operator.sh` kept as an optional wrapper only
+- launch-contract validation exists through `autoarchon-validate-launch-contract`
+- campaign observability stays file-backed, and now exposes `control/progress-summary.json` plus Markdown and static HTML mirrors generated from the same overview payload
+- reminder artifacts already export as `lesson-clusters.*` and `lesson-reminders.*`
+- helper transport moved to `.archon/runtime-config.toml` with bounded fallback providers, per-reason budgets, cooldowns, and note reuse
+- non-benchmark campaigns can bootstrap from formalization/open-problem defaults instead of only FATE-shaped inputs
+- `analysis/mathlib-agent/` exists as an explicit research track outside the default runtime path
+
+Still open or only partially complete:
+
+- operator-facing remote viewing is still intentionally lightweight; `progress-summary.html` is a local/static mirror, not yet a richer served kanban
+- helper policy is implemented, but large-sample tuning from repeated overnight campaigns is still pending
+- open-problem readiness still needs more end-to-end natural-language intake samples and theorem-review ergonomics beyond benchmark clones
+- `mathlib-agent` remains research only, with no runtime integration
+
 ## Objectives
 
 1. make interactive operator intake the primary user path
@@ -136,3 +155,9 @@ Initial topics:
 4. reminder-layer generation
 5. formalization/open-problem template polish
 6. `analysis/mathlib-agent/` research skeleton and follow-up experiments
+
+## Next High-ROI Cuts
+
+1. gather evidence from the next unattended rerun and tune helper budgets/cooldowns using real repeated-failure distributions
+2. make the operator-facing browser view easier to consume remotely without introducing a second state store
+3. add one or two real open-problem or natural-language formalization smoke tests so the non-benchmark path is exercised continuously
