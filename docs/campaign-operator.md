@@ -174,6 +174,11 @@ uv run --directory /path/to/AutoArchon autoarchon-campaign-overview \
 
 uv run --directory /path/to/AutoArchon autoarchon-campaign-status \
   --campaign-root /path/to/campaign-root
+
+uv run --directory /path/to/AutoArchon autoarchon-campaign-observe \
+  --campaign-root /path/to/campaign-root \
+  --bind 0.0.0.0 \
+  --port 8765
 ```
 
 For the fastest newcomer-facing snapshot, open either of these files after `autoarchon-campaign-overview` runs:
@@ -182,7 +187,7 @@ For the fastest newcomer-facing snapshot, open either of these files after `auto
 - `control/progress-summary.json`
 - `control/progress-summary.html`
 
-Treat those file-backed summaries as the canonical observability surface. `control/progress-summary.json` stays canonical, `control/progress-summary.md` is the terminal-friendly mirror, and `control/progress-summary.html` is the low-friction browser mirror generated from the same overview payload. The browser UI is optional supplementary inspection for one run when you need deeper browsing.
+Treat those file-backed summaries as the canonical observability surface. `control/progress-summary.json` stays canonical, `control/progress-summary.md` is the terminal-friendly mirror, and `control/progress-summary.html` is the low-friction browser mirror generated from the same overview payload. `autoarchon-campaign-observe` only refreshes and serves those same files for remote viewing. The browser UI is optional supplementary inspection for one run when you need deeper browsing.
 
 Trust these campaign-level files before reacting to terminal noise:
 

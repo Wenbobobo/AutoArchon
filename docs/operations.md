@@ -130,6 +130,11 @@ uv run --directory /path/to/AutoArchon autoarchon-campaign-overview \
   --campaign-root /path/to/campaign-root \
   --markdown
 
+uv run --directory /path/to/AutoArchon autoarchon-campaign-observe \
+  --campaign-root /path/to/campaign-root \
+  --bind 0.0.0.0 \
+  --port 8765
+
 uv run --directory /path/to/AutoArchon autoarchon-campaign-archive \
   --campaign-root /path/to/campaign-root \
   --prune-workspace-lake \

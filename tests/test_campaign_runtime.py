@@ -2689,6 +2689,8 @@ def test_build_campaign_overview_surfaces_run_progress_summary_signals(tmp_path:
     assert "recentTransitions" in progress_payload
     assert "cooldownState" in progress_payload
     assert progress_payload["paths"]["progressSummaryHtmlPath"].endswith("control/progress-summary.html")
+    recommended_commands = [row["command"] for row in progress_payload["recommendedCommands"]]
+    assert any("autoarchon-campaign-observe" in command for command in recommended_commands)
 
 
 def test_create_campaign_scaffolds_operator_surfaces(tmp_path: Path):

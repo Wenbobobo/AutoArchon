@@ -22,6 +22,7 @@ def test_pyproject_declares_core_autoarchon_entrypoints():
 
     assert {
         "autoarchon-campaign-archive",
+        "autoarchon-campaign-observe",
         "autoarchon-campaign-status",
         "autoarchon-campaign-overview",
         "autoarchon-campaign-recover",
@@ -50,6 +51,7 @@ def test_pyproject_declares_core_autoarchon_entrypoints():
 def test_uv_run_help_smokes_for_core_entrypoints():
     commands = [
         ("autoarchon-campaign-archive", "prune-workspace-lake"),
+        ("autoarchon-campaign-observe", "refresh-seconds"),
         ("autoarchon-campaign-overview", "markdown"),
         ("autoarchon-campaign-status", "campaign-root"),
         ("autoarchon-campaign-recover", "campaign-root"),

@@ -2330,6 +2330,14 @@ def _recommended_commands(
             "label": "Refresh overview",
             "command": f"uv run autoarchon-campaign-overview --campaign-root {shlex.quote(str(campaign_root))}",
         },
+        {
+            "label": "Serve browser snapshot",
+            "command": (
+                "uv run autoarchon-campaign-observe"
+                f" --campaign-root {shlex.quote(str(campaign_root))}"
+                " --bind 127.0.0.1 --port 8765"
+            ),
+        },
     ]
     if recoverable_rows:
         commands.append(

@@ -222,13 +222,22 @@ uv run --directory /path/to/AutoArchon autoarchon-campaign-overview \
   --markdown
 ```
 
+For a lightweight browser mirror that keeps refreshing the same canonical files:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-campaign-observe \
+  --campaign-root /path/to/runs/campaigns/20260414-fate-m-full \
+  --bind 0.0.0.0 \
+  --port 8765
+```
+
 That command also refreshes these lightweight observability surfaces by default:
 
 - `control/progress-summary.md`
 - `control/progress-summary.json`
 - `control/progress-summary.html`
 
-The campaign summary is the canonical observability surface: `control/progress-summary.json` is the source of truth, `control/progress-summary.md` is the terminal-friendly mirror, and `control/progress-summary.html` is a browser-friendly supplementary inspection page generated from the same payload. Together they show ETA, restart count, active runs, and recent finalized targets. Each run also keeps `workspace/.archon/supervisor/progress-summary.{md,json}` with live phase, active prover rows, helper-note breakdowns, and task-result kind counts.
+The campaign summary is the canonical observability surface: `control/progress-summary.json` is the source of truth, `control/progress-summary.md` is the terminal-friendly mirror, and `control/progress-summary.html` is a browser-friendly supplementary inspection page generated from the same payload. `autoarchon-campaign-observe` only refreshes and serves those same files; it does not create a second state store. Together they show ETA, restart count, active runs, and recent finalized targets. Each run also keeps `workspace/.archon/supervisor/progress-summary.{md,json}` with live phase, active prover rows, helper-note breakdowns, and task-result kind counts.
 
 The optional web UI remains useful for supplementary inspection of one run:
 

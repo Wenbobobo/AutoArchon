@@ -20,7 +20,7 @@ Implemented in the current branch:
 
 Still open or only partially complete:
 
-- operator-facing remote viewing is still intentionally lightweight; `progress-summary.html` is a local/static mirror, not yet a richer served kanban
+- operator-facing remote viewing is now available through `autoarchon-campaign-observe`, but it is still intentionally lightweight and file-backed rather than a richer multi-user kanban
 - helper policy is implemented, but large-sample tuning from repeated overnight campaigns is still pending
 - open-problem readiness still needs more end-to-end natural-language intake samples and theorem-review ergonomics beyond benchmark clones
 - `mathlib-agent` remains research only, with no runtime integration

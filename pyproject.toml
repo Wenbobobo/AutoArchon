@@ -10,6 +10,7 @@ dependencies = [
 [project.scripts]
 autoarchon-campaign-compare = "scripts.campaign_compare:main"
 autoarchon-campaign-archive = "scripts.campaign_archive:main"
+autoarchon-campaign-observe = "scripts.campaign_observer:main"
 autoarchon-campaign-overview = "scripts.campaign_overview:main"
 autoarchon-campaign-recover = "scripts.campaign_recover:main"
 autoarchon-campaign-status = "scripts.campaign_status:main"
