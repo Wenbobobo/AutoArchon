@@ -43,6 +43,7 @@ def test_readme_centers_interactive_campaign_operator_and_result_paths():
     assert "reports/postmortem/lessons/lesson-records.jsonl" in readme
     assert "docs/campaign-operator.md" in readme
     assert "autoarchon-storage-report" in readme
+    assert "docs/roadmaps/control-plane-phase6.md" in readme
 
 
 def test_operations_doc_covers_single_run_prewarm_supervisor_and_export_flow():
@@ -233,3 +234,16 @@ def test_postmortem_doc_records_20260415_rerun12_as_fresh_finalized_evidence():
     assert "reuse_build_outputs" in postmortem_doc
     assert "durable artifact discipline" in postmortem_doc
     assert "docs/postmortem-20260415-rerun12-fatem-42-45-94.md" in readme
+
+
+def test_phase6_roadmap_captures_operator_helper_observability_and_knowledge_work():
+    roadmap = read("docs/roadmaps/control-plane-phase6.md")
+
+    assert "Phase 6 Roadmap" in roadmap
+    assert "campaign-operator" in roadmap
+    assert "helper" in roadmap
+    assert "observability" in roadmap
+    assert "progress-summary.json" in roadmap
+    assert "mathlib-agent" in roadmap
+    assert "formalization-default.json" in roadmap
+    assert "operator bootstrap" in roadmap

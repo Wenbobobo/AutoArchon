@@ -445,6 +445,7 @@ AutoArchon/
 - [docs/operations.md](docs/operations.md): single-run operational baseline, prewarm, soak-test commands.
 - [docs/teacher-agents.md](docs/teacher-agents.md): one-run-per-teacher launch and monitoring.
 - [docs/agent-registry.md](docs/agent-registry.md): runtime role contracts and future role notes.
+- [docs/roadmaps/control-plane-phase6.md](docs/roadmaps/control-plane-phase6.md): next-phase plan for operator productization, helper policy, observability, and knowledge capture.
 - [docs/roadmaps/control-plane-phase5.md](docs/roadmaps/control-plane-phase5.md): current unattended-phase roadmap and remaining high-ROI work.
 - [docs/postmortem-20260415-rerun12-fatem-42-45-94.md](docs/postmortem-20260415-rerun12-fatem-42-45-94.md): fresh finalized rerun evidence on the hardened path.
 - [docs/archive/manager-agent.md](docs/archive/manager-agent.md): archived note for the future multi-campaign policy role.
