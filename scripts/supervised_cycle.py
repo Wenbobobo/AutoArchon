@@ -13,6 +13,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -27,6 +28,7 @@ from archonlib.supervisor import (
 )
 from archonlib.lessons import write_lesson_artifact
 from archonlib.project_state import build_task_pending_markdown, objective_for_file, stage_markdown
+from archonlib.runtime_config import RuntimeConfig, load_runtime_config
 from archonlib.validation import write_validation_artifacts
 
 
@@ -41,6 +43,21 @@ TERMINAL_LEASE_FIELDS = (
     "recoveryEvent",
     "validationFiles",
 )
+EXACT_ROUTE_MARKERS = (
+    "exact compile-checked route",
+    "exact compile-checked proof",
+    "exact rewrite route",
+    "expected proof shape",
+    "shortest route",
+)
+BLOCKER_ROUTE_MARKERS = (
+    "lean-validated blocker",
+    "lean-validated obstruction",
+    "false as written",
+    "validated obstruction",
+)
+LEAN_CODE_BLOCK_PATTERN = re.compile(r"```(?:lean)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
+LEAN_PROOF_KEYWORDS = ("simpa", "rw", "exact", "refine", "apply", "convert", "aesop", "trivial")
 
 
 def _env_float(name: str, default: float | None = None) -> float | None:
@@ -107,6 +124,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=_env_int("ARCHON_SUPERVISOR_TAIL_SCOPE_PROVER_TIMEOUT_SECONDS"),
         help="Optional prover timeout override used when the current objective count is within the tail-scope threshold",
+    )
+    parser.add_argument(
+        "--tail-scope-plan-timeout-seconds",
+        type=int,
+        default=_env_int("ARCHON_SUPERVISOR_TAIL_SCOPE_PLAN_TIMEOUT_SECONDS"),
+        help="Optional plan timeout override used when the current objective count is within the tail-scope threshold",
     )
     return parser.parse_args()
 
@@ -185,6 +208,526 @@ def _update_lease(
     return payload
 
 
+def _run_progress_paths(workspace: Path) -> tuple[Path, Path]:
+    supervisor_dir = workspace / ".archon" / "supervisor"
+    return supervisor_dir / "progress-summary.md", supervisor_dir / "progress-summary.json"
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def _relative_to_workspace(path: Path, workspace: Path) -> str:
+    try:
+        return path.resolve().relative_to(workspace.resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _helper_note_dirs(workspace: Path, runtime_config: RuntimeConfig) -> list[Path]:
+    candidates: list[Path] = []
+    for notes_dir in (
+        runtime_config.helper_plan.notes_dir,
+        runtime_config.helper_prover.notes_dir,
+    ):
+        candidate = Path(notes_dir)
+        if not candidate.is_absolute():
+            candidate = workspace / candidate
+        candidates.append(candidate)
+    return [Path(item) for item in _dedupe_strings([str(path) for path in candidates])]
+
+
+def _helper_note_files(workspace: Path, runtime_config: RuntimeConfig) -> list[Path]:
+    note_files: list[Path] = []
+    for note_dir in _helper_note_dirs(workspace, runtime_config):
+        if not note_dir.exists():
+            continue
+        note_files.extend(path for path in note_dir.rglob("*") if path.is_file())
+    return sorted(
+        [Path(item) for item in _dedupe_strings([str(path) for path in note_files])],
+        key=lambda path: path.stat().st_mtime if path.exists() else 0.0,
+        reverse=True,
+    )
+
+
+def _progress_bar(completed: int, total: int, *, width: int = 20) -> tuple[str, int]:
+    if total <= 0:
+        return "[" + "-" * width + "]", 0
+    percent = int(round((completed / total) * 100))
+    filled = max(0, min(width, int(round((percent / 100) * width))))
+    return "[" + "#" * filled + "-" * (width - filled) + "]", percent
+
+
+def _scope_targets(
+    workspace: Path,
+    *,
+    allowed_files: list[str],
+    runtime_overrides: dict[str, object],
+    changed_files: list[str],
+) -> tuple[list[str], str]:
+    if allowed_files:
+        return allowed_files, "run_scope"
+
+    objective_files = runtime_overrides.get("objectiveFiles")
+    if isinstance(objective_files, list):
+        resolved = [str(item) for item in objective_files if isinstance(item, str) and item]
+        if resolved:
+            return _dedupe_strings(resolved), "planner_objectives"
+
+    if changed_files:
+        return _dedupe_strings(changed_files), "changed_files"
+
+    validation_root = workspace / ".archon" / "validation"
+    if validation_root.exists():
+        rel_paths: list[str] = []
+        for path in sorted(validation_root.glob("*.json")):
+            payload = _read_json(path)
+            rel_path = payload.get("relPath") if isinstance(payload, dict) else None
+            if isinstance(rel_path, str) and rel_path:
+                rel_paths.append(rel_path)
+        if rel_paths:
+            return _dedupe_strings(rel_paths), "validation_files"
+
+    return [], "none"
+
+
+def _validation_target_counts(workspace: Path, scope_targets: list[str]) -> dict[str, int]:
+    counts = {
+        "acceptedProofs": 0,
+        "acceptedBlockers": 0,
+        "rejectedTargets": 0,
+        "pendingTargets": 0,
+        "attentionTargets": 0,
+    }
+    validation_root = workspace / ".archon" / "validation"
+    for rel_path in scope_targets:
+        payload = _read_json(validation_root / _validation_filename(rel_path))
+        if payload is None:
+            counts["pendingTargets"] += 1
+            continue
+
+        acceptance_status = payload.get("acceptanceStatus")
+        checks = payload.get("checks")
+        workspace_changed = isinstance(checks, dict) and checks.get("workspaceChanged") is True
+        blocker_notes = payload.get("blockerNotes")
+        if acceptance_status == "accepted":
+            if isinstance(blocker_notes, list) and blocker_notes and not workspace_changed:
+                counts["acceptedBlockers"] += 1
+            else:
+                counts["acceptedProofs"] += 1
+            continue
+        if acceptance_status == "rejected":
+            counts["rejectedTargets"] += 1
+            continue
+        if payload.get("validationStatus") in {"attention", "failed"}:
+            counts["attentionTargets"] += 1
+            continue
+        counts["pendingTargets"] += 1
+    return counts
+
+
+def _active_prover_rows(latest_meta: dict[str, object] | None) -> list[dict[str, str]]:
+    if not isinstance(latest_meta, dict):
+        return []
+    provers = latest_meta.get("provers")
+    if not isinstance(provers, dict):
+        return []
+    rows: list[dict[str, str]] = []
+    for prover_id, payload in sorted(provers.items()):
+        if not isinstance(payload, dict):
+            continue
+        status = payload.get("status")
+        if not isinstance(status, str) or status != "running":
+            continue
+        file_path = payload.get("file")
+        rows.append(
+            {
+                "id": str(prover_id),
+                "file": str(file_path) if isinstance(file_path, str) else str(prover_id),
+                "status": status,
+            }
+        )
+    return rows
+
+
+def _infer_live_phase(latest_meta: dict[str, object] | None) -> str:
+    if not isinstance(latest_meta, dict):
+        return "loop_running"
+    plan = latest_meta.get("plan")
+    if isinstance(plan, dict) and plan.get("status") == "running":
+        return "planning"
+    prover = latest_meta.get("prover")
+    if isinstance(prover, dict) and prover.get("status") == "running":
+        return "proving"
+    review = latest_meta.get("review")
+    if isinstance(review, dict) and review.get("status") == "running":
+        return "review"
+    return "loop_running"
+
+
+def _build_live_runtime_payload(
+    *,
+    latest_iteration: str | None,
+    latest_meta: dict[str, object] | None,
+    loop_pid: int | None,
+    last_activity_at: float | None,
+    tracked_path_count: int,
+) -> dict[str, object]:
+    plan = latest_meta.get("plan") if isinstance(latest_meta, dict) and isinstance(latest_meta.get("plan"), dict) else {}
+    prover = latest_meta.get("prover") if isinstance(latest_meta, dict) and isinstance(latest_meta.get("prover"), dict) else {}
+    review = latest_meta.get("review") if isinstance(latest_meta, dict) and isinstance(latest_meta.get("review"), dict) else {}
+    return {
+        "phase": _infer_live_phase(latest_meta),
+        "iteration": latest_iteration,
+        "loopPid": loop_pid,
+        "planStatus": plan.get("status") if isinstance(plan.get("status"), str) else None,
+        "proverStatus": prover.get("status") if isinstance(prover.get("status"), str) else None,
+        "reviewStatus": review.get("status") if isinstance(review.get("status"), str) else None,
+        "activeProvers": _active_prover_rows(latest_meta),
+        "trackedPathCount": tracked_path_count,
+        "lastActivityAgeSeconds": None if last_activity_at is None else round(max(0.0, time.monotonic() - last_activity_at), 3),
+    }
+
+
+def _text_has_marker(text: str, markers: tuple[str, ...]) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in markers)
+
+
+def _text_has_exact_route(text: str) -> bool:
+    if _text_has_marker(text, EXACT_ROUTE_MARKERS):
+        return True
+    for block in LEAN_CODE_BLOCK_PATTERN.findall(text):
+        lowered_block = block.lower()
+        if "sorry" in lowered_block:
+            continue
+        if any(keyword in lowered_block for keyword in LEAN_PROOF_KEYWORDS):
+            return True
+    return False
+
+
+def _matching_informal_note_paths(workspace: Path, rel_path: str) -> list[Path]:
+    informal_root = workspace / ".archon" / "informal"
+    if not informal_root.exists():
+        return []
+    slug = rel_path.replace("/", "_").removesuffix(".lean").lower()
+    rel_path_lower = rel_path.lower()
+    matches: list[Path] = []
+    for path in sorted(informal_root.rglob("*.md")):
+        stem = path.stem.lower()
+        if stem == slug or stem.startswith(f"{slug}_"):
+            matches.append(path)
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if rel_path_lower in text.lower():
+            matches.append(path)
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in matches:
+        rendered = str(path)
+        if rendered in seen:
+            continue
+        seen.add(rendered)
+        deduped.append(path)
+    return deduped
+
+
+def _exact_route_sources(workspace: Path, rel_path: str) -> list[str]:
+    sources: list[str] = []
+    rel_path_lower = rel_path.lower()
+    for rel_name in (".archon/PROGRESS.md", ".archon/task_pending.md", ".archon/USER_HINTS.md"):
+        path = workspace / rel_name
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if rel_path_lower in text.lower() and _text_has_exact_route(text):
+            sources.append(rel_name)
+    for raw_path in _matching_informal_note_paths(workspace, rel_path):
+        path = Path(raw_path)
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if _text_has_exact_route(text):
+            sources.append(_relative_to_workspace(path, workspace))
+    return _dedupe_strings(sources)
+
+
+def _file_has_single_sorry(path: Path) -> bool:
+    if not path.exists():
+        return False
+    return path.read_text(encoding="utf-8", errors="replace").count("sorry") == 1
+
+
+def _detect_known_route_fast_path(
+    workspace: Path,
+    *,
+    objective_files: list[str],
+    tail_scope_threshold: int,
+) -> dict[str, object] | None:
+    if tail_scope_threshold <= 0 or not objective_files or len(objective_files) > tail_scope_threshold:
+        return None
+    task_results_root = workspace / ".archon" / "task_results"
+    if task_results_root.exists() and any(task_results_root.glob("*.md")):
+        return None
+
+    routes: list[dict[str, object]] = []
+    for rel_path in objective_files:
+        if not _file_has_single_sorry(workspace / rel_path):
+            return None
+        exact_sources = _exact_route_sources(workspace, rel_path)
+        if exact_sources:
+            routes.append({"relPath": rel_path, "kind": "exact", "sources": exact_sources})
+            continue
+        blocker_evidence = _prevalidated_blocker_evidence(workspace, rel_path)
+        if blocker_evidence is not None:
+            provenance, _ = blocker_evidence
+            routes.append({"relPath": rel_path, "kind": "blocker", "sources": provenance})
+            continue
+        return None
+
+    return {"reason": "known_routes", "routes": routes}
+
+
+def _build_run_progress_payload(
+    *,
+    workspace: Path,
+    source: Path,
+    runtime_config: RuntimeConfig,
+    status: str,
+    started_at: str,
+    allowed_files: list[str],
+    runtime_overrides: dict[str, object],
+    latest_iteration: str | None,
+    loop_exit_code: int | None,
+    changed_files: list[str],
+    new_changed_files: list[str],
+    task_results: list[str],
+    new_task_results: list[str],
+    validation_files: list[str],
+    lesson_file: str | None,
+    planner_state_sync: dict[str, object] | None,
+    recovery_event: str | None,
+    live_runtime: dict[str, object] | None = None,
+) -> dict[str, Any]:
+    scope_targets, scope_source = _scope_targets(
+        workspace,
+        allowed_files=allowed_files,
+        runtime_overrides=runtime_overrides,
+        changed_files=changed_files,
+    )
+    target_counts = _validation_target_counts(workspace, scope_targets)
+    closed_targets = (
+        target_counts["acceptedProofs"]
+        + target_counts["acceptedBlockers"]
+        + target_counts["rejectedTargets"]
+    )
+    progress_bar, progress_percent = _progress_bar(closed_targets, len(scope_targets))
+    helper_note_files = _helper_note_files(workspace, runtime_config)
+    helper_model = runtime_config.helper.model if runtime_config.helper is not None else None
+    helper_provider = runtime_config.helper.provider if runtime_config.helper is not None else None
+
+    return {
+        "updatedAt": _now_iso(),
+        "startedAt": started_at,
+        "status": status,
+        "workspace": str(workspace),
+        "source": str(source),
+        "latestIteration": latest_iteration,
+        "loopExitCode": loop_exit_code,
+        "scope": {
+            "kind": scope_source,
+            "targets": scope_targets,
+            "targetCount": len(scope_targets),
+        },
+        "progress": {
+            "bar": progress_bar,
+            "percent": progress_percent,
+            "completed": closed_targets,
+            "total": len(scope_targets),
+            "label": "closed targets",
+        },
+        "targetCounts": target_counts,
+        "changedFiles": changed_files,
+        "newChangedFiles": new_changed_files,
+        "taskResults": task_results,
+        "newTaskResults": new_task_results,
+        "validationFiles": validation_files,
+        "lessonFile": lesson_file,
+        "plannerStateSync": planner_state_sync.get("status") if isinstance(planner_state_sync, dict) else None,
+        "recoveryEvent": recovery_event,
+        "tailScopeApplied": runtime_overrides.get("tailScopeApplied") is True,
+        "planFastPathApplied": runtime_overrides.get("skipInitialPlan") is True,
+        "planFastPathReason": runtime_overrides.get("skipInitialPlanReason"),
+        "tailScopeTimeouts": {
+            "plan": runtime_overrides.get("planTimeoutSeconds"),
+            "prover": runtime_overrides.get("proverTimeoutSeconds"),
+        },
+        "liveRuntime": live_runtime,
+        "helper": {
+            "enabled": runtime_config.helper is not None
+            and (runtime_config.helper_plan.enabled or runtime_config.helper_prover.enabled),
+            "provider": helper_provider,
+            "model": helper_model,
+            "noteDirs": [_relative_to_workspace(path, workspace) for path in _helper_note_dirs(workspace, runtime_config)],
+            "noteCount": len(helper_note_files),
+            "recentNotes": [_relative_to_workspace(path, workspace) for path in helper_note_files[:8]],
+        },
+    }
+
+
+def _render_run_progress_markdown(payload: dict[str, Any]) -> str:
+    progress = payload.get("progress") if isinstance(payload.get("progress"), dict) else {}
+    scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
+    helper = payload.get("helper") if isinstance(payload.get("helper"), dict) else {}
+    target_counts = payload.get("targetCounts") if isinstance(payload.get("targetCounts"), dict) else {}
+    tail_scope_timeouts = payload.get("tailScopeTimeouts") if isinstance(payload.get("tailScopeTimeouts"), dict) else {}
+    live_runtime = payload.get("liveRuntime") if isinstance(payload.get("liveRuntime"), dict) else {}
+    tail_scope_parts: list[str] = []
+    if isinstance(tail_scope_timeouts.get("plan"), int):
+        tail_scope_parts.append(f"plan={tail_scope_timeouts['plan']}s")
+    if isinstance(tail_scope_timeouts.get("prover"), int):
+        tail_scope_parts.append(f"prover={tail_scope_timeouts['prover']}s")
+    lines = [
+        "# Run Progress",
+        "",
+        f"- Updated at: `{payload.get('updatedAt', 'unknown')}`",
+        f"- Started at: `{payload.get('startedAt', 'unknown')}`",
+        f"- Status: `{payload.get('status', 'unknown')}`",
+        f"- Progress: `{progress.get('bar', '[--------------------]')} {progress.get('percent', 0)}% ({progress.get('completed', 0)}/{progress.get('total', 0)} {progress.get('label', 'targets')})`",
+        f"- Scope source: `{scope.get('kind', 'none')}`",
+        f"- Latest iteration: `{payload.get('latestIteration') or '(none)'}`",
+        f"- Loop exit code: `{payload.get('loopExitCode') if payload.get('loopExitCode') is not None else '(none)'}`",
+        f"- Live phase: `{live_runtime.get('phase') or '(none)'}`",
+        f"- Live plan status: `{live_runtime.get('planStatus') or '(none)'}`",
+        f"- Live prover status: `{live_runtime.get('proverStatus') or '(none)'}`",
+        f"- Live review status: `{live_runtime.get('reviewStatus') or '(none)'}`",
+        f"- Accepted proofs: `{target_counts.get('acceptedProofs', 0)}`",
+        f"- Accepted blockers: `{target_counts.get('acceptedBlockers', 0)}`",
+        f"- Rejected targets: `{target_counts.get('rejectedTargets', 0)}`",
+        f"- Pending targets: `{target_counts.get('pendingTargets', 0)}`",
+        f"- Attention targets: `{target_counts.get('attentionTargets', 0)}`",
+        f"- Changed files: `{len(payload.get('changedFiles', [])) if isinstance(payload.get('changedFiles'), list) else 0}`",
+        f"- Task results: `{len(payload.get('taskResults', [])) if isinstance(payload.get('taskResults'), list) else 0}`",
+        f"- Helper enabled: `{helper.get('enabled')}`",
+        f"- Helper notes observed: `{helper.get('noteCount', 0)}`",
+        f"- Planner state sync: `{payload.get('plannerStateSync') or '(none)'}`",
+        f"- Recovery event: `{payload.get('recoveryEvent') or '(none)'}`",
+        f"- Tail-scope applied: `{payload.get('tailScopeApplied')}`",
+        f"- Tail-scope overrides: `{', '.join(tail_scope_parts) if tail_scope_parts else '(none)'}`",
+        f"- Plan fast-path: `{payload.get('planFastPathReason') if payload.get('planFastPathApplied') else '(none)'}`",
+        "",
+        "## Scope",
+        "",
+    ]
+    scope_targets = scope.get("targets")
+    if isinstance(scope_targets, list) and scope_targets:
+        for rel_path in scope_targets[:12]:
+            lines.append(f"- `{rel_path}`")
+    else:
+        lines.append("- none")
+
+    lines.extend(["", "## Live Loop", ""])
+    active_provers = live_runtime.get("activeProvers")
+    if isinstance(active_provers, list) and active_provers:
+        for row in active_provers[:12]:
+            if not isinstance(row, dict):
+                continue
+            lines.append(f"- `{row.get('file', row.get('id', 'unknown'))}` — `{row.get('status', 'unknown')}`")
+    else:
+        lines.append("- none")
+
+    lines.extend(["", "## New This Cycle", ""])
+    new_changed = payload.get("newChangedFiles")
+    if isinstance(new_changed, list) and new_changed:
+        lines.append(f"- New changed files: `{', '.join(new_changed)}`")
+    else:
+        lines.append("- New changed files: `(none)`")
+    new_task_results = payload.get("newTaskResults")
+    if isinstance(new_task_results, list) and new_task_results:
+        lines.append(f"- New task results: `{', '.join(new_task_results)}`")
+    else:
+        lines.append("- New task results: `(none)`")
+
+    lines.extend(["", "## Helper Notes", ""])
+    recent_notes = helper.get("recentNotes")
+    if isinstance(recent_notes, list) and recent_notes:
+        for note in recent_notes:
+            lines.append(f"- `{note}`")
+    else:
+        lines.append("- none")
+
+    return "\n".join(lines) + "\n"
+
+
+def _write_run_progress_surface(
+    workspace: Path,
+    *,
+    runtime_config: RuntimeConfig,
+    payload: dict[str, Any],
+) -> None:
+    if runtime_config.observability.write_progress_surface is not True:
+        return
+    markdown_path, json_path = _run_progress_paths(workspace)
+    _write_text(markdown_path, _render_run_progress_markdown(payload))
+    _write_text(json_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def _emit_live_progress_surface(
+    *,
+    workspace: Path,
+    source: Path,
+    runtime_config: RuntimeConfig,
+    started_at: str,
+    allowed_files: list[str],
+    runtime_overrides: dict[str, object],
+    baseline_changed_mtimes: dict[Path, float],
+    baseline_task_result_mtimes: dict[Path, float],
+    live_runtime: dict[str, object],
+) -> None:
+    changed_files = collect_changed_files(source, workspace, allowed_files=allowed_files or None)
+    task_result_paths = sorted((workspace / ".archon" / "task_results").glob("*.md"))
+    validation_files = sorted(path.name for path in (workspace / ".archon" / "validation").glob("*.json"))
+    new_changed_files = sorted(
+        rel_path
+        for rel_path in changed_files
+        if (workspace / rel_path).stat().st_mtime > baseline_changed_mtimes.get(workspace / rel_path, float("-inf"))
+    )
+    new_task_result_paths = sorted(
+        path
+        for path in task_result_paths
+        if path.stat().st_mtime > baseline_task_result_mtimes.get(path, float("-inf"))
+    )
+    _write_run_progress_surface(
+        workspace,
+        runtime_config=runtime_config,
+        payload=_build_run_progress_payload(
+            workspace=workspace,
+            source=source,
+            runtime_config=runtime_config,
+            status="running",
+            started_at=started_at,
+            allowed_files=allowed_files,
+            runtime_overrides=runtime_overrides,
+            latest_iteration=live_runtime.get("iteration") if isinstance(live_runtime.get("iteration"), str) else None,
+            loop_exit_code=None,
+            changed_files=changed_files,
+            new_changed_files=new_changed_files,
+            task_results=[path.name for path in task_result_paths],
+            new_task_results=[path.name for path in new_task_result_paths],
+            validation_files=validation_files,
+            lesson_file=None,
+            planner_state_sync=None,
+            recovery_event=None,
+            live_runtime=live_runtime,
+        ),
+    )
+
+
 def _lease_conflicts(skip: bool, lease_path: Path, *, current_pid: int) -> list[dict[str, object]]:
     if skip:
         return []
@@ -257,16 +800,35 @@ def _resolve_runtime_overrides(
     overrides["objectiveCount"] = objective_count
     overrides["objectiveFiles"] = objective_rel_paths
 
-    if (
-        args.tail_scope_objective_threshold > 0
-        and args.tail_scope_prover_timeout_seconds is not None
-        and 0 < objective_count <= args.tail_scope_objective_threshold
-    ):
-        current_timeout = args.prover_timeout_seconds
-        tail_timeout = args.tail_scope_prover_timeout_seconds
-        if current_timeout is None or tail_timeout > current_timeout:
-            overrides["proverTimeoutSeconds"] = tail_timeout
+    in_tail_scope = args.tail_scope_objective_threshold > 0 and 0 < objective_count <= args.tail_scope_objective_threshold
+    if in_tail_scope:
+        tail_scope_applied = False
+        if args.tail_scope_plan_timeout_seconds is not None:
+            current_timeout = args.plan_timeout_seconds
+            tail_timeout = args.tail_scope_plan_timeout_seconds
+            if current_timeout is None or tail_timeout > current_timeout:
+                overrides["planTimeoutSeconds"] = tail_timeout
+                tail_scope_applied = True
+
+        if args.tail_scope_prover_timeout_seconds is not None:
+            current_timeout = args.prover_timeout_seconds
+            tail_timeout = args.tail_scope_prover_timeout_seconds
+            if current_timeout is None or tail_timeout > current_timeout:
+                overrides["proverTimeoutSeconds"] = tail_timeout
+                tail_scope_applied = True
+
+        if tail_scope_applied:
             overrides["tailScopeApplied"] = True
+
+    fast_path = _detect_known_route_fast_path(
+        workspace,
+        objective_files=objective_rel_paths,
+        tail_scope_threshold=args.tail_scope_objective_threshold,
+    )
+    if fast_path is not None:
+        overrides["skipInitialPlan"] = True
+        overrides["skipInitialPlanReason"] = fast_path["reason"]
+        overrides["knownRoutes"] = fast_path["routes"]
 
     return overrides
 
@@ -293,6 +855,8 @@ def _build_loop_command(
     effective_prover_timeout = args.prover_timeout_seconds
     effective_review_timeout = args.review_timeout_seconds
     if isinstance(runtime_overrides, dict):
+        if isinstance(runtime_overrides.get("planTimeoutSeconds"), int):
+            effective_plan_timeout = int(runtime_overrides["planTimeoutSeconds"])
         if isinstance(runtime_overrides.get("proverTimeoutSeconds"), int):
             effective_prover_timeout = int(runtime_overrides["proverTimeoutSeconds"])
     if any(
@@ -306,6 +870,13 @@ def _build_loop_command(
             env["ARCHON_PROVER_TIMEOUT_SECONDS"] = str(effective_prover_timeout)
         if effective_review_timeout is not None:
             env["ARCHON_REVIEW_TIMEOUT_SECONDS"] = str(effective_review_timeout)
+    if isinstance(runtime_overrides, dict) and runtime_overrides.get("skipInitialPlan") is True:
+        if env is None:
+            env = dict(os.environ)
+        env["ARCHON_SKIP_INITIAL_PLAN"] = "1"
+        reason = runtime_overrides.get("skipInitialPlanReason")
+        if isinstance(reason, str) and reason:
+            env["ARCHON_SKIP_INITIAL_PLAN_REASON"] = reason
     return command, env
 
 
@@ -365,6 +936,7 @@ def _monitor_for_idle_prover(
     *,
     idle_seconds: float,
     poll_seconds: float,
+    progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, object] | None:
     tracked_iteration: str | None = None
     last_seen_mtime: float | None = None
@@ -391,6 +963,7 @@ def _monitor_for_idle_prover(
             last_activity_at = None
 
         prover_status = None
+        tracked_paths: list[Path] = []
         if isinstance(latest_meta, dict):
             prover_payload = latest_meta.get("prover")
             if isinstance(prover_payload, dict):
@@ -406,6 +979,18 @@ def _monitor_for_idle_prover(
                 last_seen_mtime = newest_mtime
                 last_activity_at = time.monotonic()
 
+        if progress_callback is not None:
+            progress_callback(
+                _build_live_runtime_payload(
+                    latest_iteration=latest_iter_name,
+                    latest_meta=latest_meta,
+                    loop_pid=proc.pid,
+                    last_activity_at=last_activity_at,
+                    tracked_path_count=len(tracked_paths),
+                )
+            )
+
+        if prover_status == "running":
             if last_activity_at is not None and time.monotonic() - last_activity_at > idle_seconds:
                 _terminate_process_group(proc)
                 return {
@@ -427,10 +1012,21 @@ def _run_archon_loop(
     lease_path: Path,
     allowed_files: list[str],
     runtime_overrides: dict[str, object] | None = None,
+    progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, object] | None]:
     command, env = _build_loop_command(args, runtime_overrides)
 
     if not args.prover_idle_seconds or args.prover_idle_seconds <= 0:
+        if progress_callback is not None:
+            progress_callback(
+                _build_live_runtime_payload(
+                    latest_iteration=None,
+                    latest_meta=None,
+                    loop_pid=None,
+                    last_activity_at=None,
+                    tracked_path_count=0,
+                )
+            )
         result = subprocess.run(
                 command,
                 capture_output=True,
@@ -484,6 +1080,16 @@ def _run_archon_loop(
                     "lastHeartbeatAt": _now_iso(),
                 },
             )
+            if progress_callback is not None:
+                progress_callback(
+                    _build_live_runtime_payload(
+                        latest_iteration=None,
+                        latest_meta=None,
+                        loop_pid=proc.pid,
+                        last_activity_at=None,
+                        tracked_path_count=0,
+                    )
+                )
             idle_event = _monitor_for_idle_prover(
                 proc,
                 workspace,
@@ -492,6 +1098,7 @@ def _run_archon_loop(
                 allowed_files,
                 idle_seconds=args.prover_idle_seconds,
                 poll_seconds=args.monitor_poll_seconds,
+                progress_callback=progress_callback,
             )
             returncode = proc.wait()
 
@@ -562,6 +1169,53 @@ def _task_result_name(rel_path: str) -> str:
 
 def _validation_filename(rel_path: str) -> str:
     return rel_path.replace("/", "_") + ".json"
+
+
+def _archive_stale_accepted_task_results(
+    workspace: Path,
+    *,
+    objective_files: list[str],
+) -> list[dict[str, str]]:
+    if not objective_files:
+        return []
+
+    task_results_root = workspace / ".archon" / "task_results"
+    validation_root = workspace / ".archon" / "validation"
+    if not task_results_root.exists() or not validation_root.exists():
+        return []
+
+    objective_set = set(objective_files)
+    archive_root = workspace / ".archon" / "task_results_archived" / "accepted_stale"
+    timestamp_prefix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archived: list[dict[str, str]] = []
+
+    for validation_path in sorted(validation_root.glob("*.json")):
+        payload = _read_json(validation_path)
+        if not isinstance(payload, dict):
+            continue
+        rel_path = payload.get("relPath")
+        if not isinstance(rel_path, str) or rel_path in objective_set:
+            continue
+        if payload.get("acceptanceStatus") != "accepted" or payload.get("validationStatus") != "passed":
+            continue
+
+        note_name = _task_result_name(rel_path)
+        note_path = task_results_root / note_name
+        if not note_path.exists():
+            continue
+
+        archive_root.mkdir(parents=True, exist_ok=True)
+        archive_path = archive_root / f"{timestamp_prefix}-{note_name}"
+        note_path.rename(archive_path)
+        archived.append(
+            {
+                "relPath": rel_path,
+                "noteName": note_name,
+                "archivePath": _relative_to_workspace(archive_path, workspace),
+            }
+        )
+
+    return archived
 
 
 def _extract_informal_note_paths(text: str) -> list[str]:
@@ -905,6 +1559,7 @@ def main() -> int:
     baseline_task_result_mtimes = _path_mtimes(baseline_task_result_paths)
     previous_iter_name, _ = latest_iteration_meta(workspace)
     lease_conflicts = _lease_conflicts(args.skip_process_check, lease_path, current_pid=os.getpid())
+    runtime_config = load_runtime_config(workspace)
     runtime_overrides = _resolve_runtime_overrides(args, workspace, allowed_files=allowed_files)
     if lease_conflicts:
         _append_text(
@@ -945,9 +1600,40 @@ def main() -> int:
                 ]
             ),
         )
+        _write_run_progress_surface(
+            workspace,
+            runtime_config=runtime_config,
+            payload=_build_run_progress_payload(
+                workspace=workspace,
+                source=source,
+                runtime_config=runtime_config,
+                status="run_busy",
+                started_at=started_at,
+                allowed_files=allowed_files,
+                runtime_overrides=runtime_overrides,
+                latest_iteration=previous_iter_name,
+                loop_exit_code=None,
+                changed_files=baseline_changed_files,
+                new_changed_files=[],
+                task_results=sorted(path.name for path in baseline_task_result_paths),
+                new_task_results=[],
+                validation_files=sorted(path.name for path in (workspace / ".archon" / "validation").glob("*.json")),
+                lesson_file=None,
+                planner_state_sync=None,
+                recovery_event="active_run_local_lease",
+            ),
+        )
         print("status=run_busy")
         print(f"policy_events={len(lease_conflicts)}")
         return 6
+
+    objective_files = runtime_overrides.get("objectiveFiles")
+    stale_task_result_archives = _archive_stale_accepted_task_results(
+        workspace,
+        objective_files=objective_files if isinstance(objective_files, list) else [],
+    )
+    baseline_task_result_paths = sorted((workspace / ".archon" / "task_results").glob("*.md"))
+    baseline_task_result_mtimes = _path_mtimes(baseline_task_result_paths)
 
     _update_lease(
         lease_path,
@@ -965,6 +1651,42 @@ def main() -> int:
         },
         clear_fields=TERMINAL_LEASE_FIELDS,
     )
+    _write_run_progress_surface(
+        workspace,
+        runtime_config=runtime_config,
+        payload=_build_run_progress_payload(
+            workspace=workspace,
+            source=source,
+            runtime_config=runtime_config,
+            status="starting",
+            started_at=started_at,
+            allowed_files=allowed_files,
+            runtime_overrides=runtime_overrides,
+            latest_iteration=previous_iter_name,
+            loop_exit_code=None,
+            changed_files=baseline_changed_files,
+            new_changed_files=[],
+            task_results=sorted(path.name for path in baseline_task_result_paths),
+            new_task_results=[],
+            validation_files=sorted(path.name for path in (workspace / ".archon" / "validation").glob("*.json")),
+            lesson_file=None,
+            planner_state_sync=None,
+            recovery_event=None,
+        ),
+    )
+
+    def emit_live_progress(live_runtime: dict[str, object]) -> None:
+        _emit_live_progress_surface(
+            workspace=workspace,
+            source=source,
+            runtime_config=runtime_config,
+            started_at=started_at,
+            allowed_files=allowed_files,
+            runtime_overrides=runtime_overrides,
+            baseline_changed_mtimes=baseline_changed_mtimes,
+            baseline_task_result_mtimes=baseline_task_result_mtimes,
+            live_runtime=live_runtime,
+        )
 
     if args.recovery_only:
         loop_result = subprocess.CompletedProcess(["recovery-only"], 0, "", "")
@@ -977,6 +1699,7 @@ def main() -> int:
             lease_path,
             allowed_files,
             runtime_overrides,
+            progress_callback=emit_live_progress,
         )
     stdout_path, stderr_path = _write_loop_output(supervisor_dir, loop_result)
     _update_lease(
@@ -1062,6 +1785,15 @@ def main() -> int:
         events.append(idle_event)
     if recovered_after_stall is not None:
         events.append(recovered_after_stall)
+    if stale_task_result_archives:
+        events.append(
+            {
+                "event": "archived_stale_accepted_task_results",
+                "task_results": [item["noteName"] for item in stale_task_result_archives],
+                "targets": [item["relPath"] for item in stale_task_result_archives],
+                "archivePaths": [item["archivePath"] for item in stale_task_result_archives],
+            }
+        )
     if loop_result.returncode != 0 and not created_new_iteration:
         events.append(
             {
@@ -1196,9 +1928,25 @@ def main() -> int:
                 hot_notes.append(f"- Verification after idle failed for task result {note_name}: {detail}")
     if runtime_overrides.get("tailScopeApplied") is True:
         objective_count = runtime_overrides.get("objectiveCount")
+        plan_timeout = runtime_overrides.get("planTimeoutSeconds")
         prover_timeout = runtime_overrides.get("proverTimeoutSeconds")
+        timeout_parts: list[str] = []
+        if isinstance(plan_timeout, int):
+            timeout_parts.append(f"plan timeout to {plan_timeout}s")
+        if isinstance(prover_timeout, int):
+            timeout_parts.append(f"prover timeout to {prover_timeout}s")
+        if timeout_parts:
+            hot_notes.append(
+                f"- Tail-scope runtime override: raised {' and '.join(timeout_parts)} for {objective_count} current objectives"
+            )
+    if runtime_overrides.get("skipInitialPlan") is True:
         hot_notes.append(
-            f"- Tail-scope runtime override: raised prover timeout to {prover_timeout}s for {objective_count} current objectives"
+            "- Plan fast-path: skipped the initial plan phase because every tail-scope objective already had a known route"
+        )
+    if stale_task_result_archives:
+        hot_notes.append(
+            "- Pre-cycle cleanup: archived stale accepted task results "
+            + ", ".join(item["noteName"] for item in stale_task_result_archives)
         )
     if planner_state_sync is not None:
         if planner_state_sync.get("status") == "terminal_complete":
@@ -1240,6 +1988,11 @@ def main() -> int:
         f"- Lesson artifact: `{lesson_file or '(none)'}`",
         f"- Idle timeout: `{idle_event['idle_seconds']}s`" if idle_event is not None else "- Idle timeout: `(none)`",
         f"- Idle recovery: `{recovered_after_stall['event']}`" if recovered_after_stall is not None else "- Idle recovery: `(none)`",
+        (
+            f"- Pre-cycle cleanup: `{', '.join(item['noteName'] for item in stale_task_result_archives)}`"
+            if stale_task_result_archives
+            else "- Pre-cycle cleanup: `(none)`"
+        ),
         f"- Planner state sync: `{planner_state_sync['status']}`" if planner_state_sync is not None else "- Planner state sync: `(none)`",
         f"- Recovery only: `{args.recovery_only}`",
         f"- New iteration created: `{created_new_iteration}`",
@@ -1265,6 +2018,29 @@ def main() -> int:
             "validationFiles": validation_files,
             "lessonFile": lesson_file,
         },
+    )
+    _write_run_progress_surface(
+        workspace,
+        runtime_config=runtime_config,
+        payload=_build_run_progress_payload(
+            workspace=workspace,
+            source=source,
+            runtime_config=runtime_config,
+            status=status,
+            started_at=started_at,
+            allowed_files=allowed_files,
+            runtime_overrides=runtime_overrides,
+            latest_iteration=latest_iter_name,
+            loop_exit_code=loop_result.returncode,
+            changed_files=changed_files,
+            new_changed_files=new_changed_files,
+            task_results=task_results,
+            new_task_results=new_task_results,
+            validation_files=validation_files,
+            lesson_file=lesson_file,
+            planner_state_sync=planner_state_sync,
+            recovery_event=recovered_after_stall.get("event") if isinstance(recovered_after_stall, dict) else None,
+        ),
     )
 
     print(f"status={status}")

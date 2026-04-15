@@ -170,6 +170,17 @@ def test_dry_run_exits_after_one_iteration(tmp_path: Path) -> None:
     assert "Iteration 2/" not in result.stdout
 
 
+def test_dry_run_prompt_prioritizes_local_state_before_role_contracts(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    fake_bin_dir = make_fake_codex(tmp_path)
+
+    result = run_archon(project, fake_bin_dir, "--dry-run", "--max-iterations", "1")
+
+    assert result.returncode == 0
+    assert f"Start with {project}/.archon/PROGRESS.md and {project}/.archon/RUN_SCOPE.md to recover the active scoped objectives." in result.stdout
+    assert "Only consult" in result.stdout
+
+
 def test_scope_change_during_plan_is_preserved_and_blocks_prover(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     fake_bin_dir = make_fake_codex(tmp_path)
@@ -222,6 +233,30 @@ def test_plan_failure_falls_back_to_existing_objectives_when_no_live_results(tmp
     assert "Continuing to prover with the current PROGRESS.md." in combined_output
     assert "Skipping prover phase because the plan phase did not complete successfully." not in combined_output
     assert calls_log.read_text(encoding="utf-8").splitlines() == ["other", "plan", "prover"]
+
+
+def test_skip_initial_plan_fast_path_goes_straight_to_prover(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    fake_bin_dir = make_fake_codex(tmp_path)
+    calls_log = tmp_path / "codex-calls.log"
+
+    result = run_archon(
+        project,
+        fake_bin_dir,
+        "--max-iterations",
+        "1",
+        env_extra={
+            "FAKE_CODEX_CALLS_LOG": str(calls_log),
+            "ARCHON_SKIP_INITIAL_PLAN": "1",
+            "ARCHON_SKIP_INITIAL_PLAN_REASON": "known_routes",
+        },
+    )
+
+    combined_output = f"{result.stdout}\n{result.stderr}"
+
+    assert result.returncode == 0
+    assert "Skipping initial plan phase (known_routes)" in combined_output
+    assert calls_log.read_text(encoding="utf-8").splitlines() == ["other", "prover"]
 
 
 def test_plan_failure_with_live_task_results_still_blocks_prover(tmp_path: Path) -> None:

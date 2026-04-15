@@ -14,6 +14,7 @@ def test_plan_prompt_keeps_informal_content_out_of_lean_files():
     assert "Write as comments in the corresponding `.lean` file" not in plan_prompt
     assert "block comment above the declaration" not in plan_prompt
     assert ".archon/informal/" in plan_prompt
+    assert ".archon/runtime-config.toml" in plan_prompt
 
 
 def test_plan_prompt_keeps_heavy_proof_search_out_of_default_path():
@@ -80,6 +81,7 @@ def test_prover_prompt_bounds_shell_verification_and_prefers_lsp():
     assert "Lean LSP diagnostics (`lean_diagnostic_messages`) as the primary compile check" in prover_prompt
     assert "timeout 30s lake env lean <file>" in prover_prompt
     assert "do not sit and wait indefinitely" in prover_prompt
+    assert ".archon/runtime-config.toml" in prover_prompt
 
 
 def test_prover_prompt_falls_back_after_lsp_timeout_or_start_failure():
@@ -88,6 +90,14 @@ def test_prover_prompt_falls_back_after_lsp_timeout_or_start_failure():
     assert "If the first Lean MCP call times out or the language server fails to start" in prover_prompt
     assert "treat that as an infrastructure failure, not a proof failure" in prover_prompt
     assert "Do not spend the rest of the session retrying LSP-dependent searches" in prover_prompt
+
+
+def test_prover_prompt_allows_skipping_initial_lsp_when_exact_route_is_already_known():
+    prover_prompt = read(".archon-src/prompts/prover-prover.md")
+
+    assert "bare theorem with one top-level `sorry`" in prover_prompt
+    assert "you may skip the initial Lean MCP diagnostics call" in prover_prompt
+    assert "edit the file immediately using that exact route" in prover_prompt
 
 
 def test_prover_prompt_forbids_fixing_false_theorems_by_mutating_statements():

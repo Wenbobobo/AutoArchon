@@ -48,13 +48,21 @@ Watch:
 
 - `workspace/.archon/supervisor/HOT_NOTES.md`
 - `workspace/.archon/supervisor/LEDGER.md`
+- `workspace/.archon/supervisor/progress-summary.md`
+- `workspace/.archon/supervisor/progress-summary.json`
 - `workspace/.archon/task_results/`
 - `workspace/.archon/logs/iter-*/`
 
 Per-run campaign timelines are exported under `reports/final/runs/<run>/timeline.json`.
+If `progress-summary.json` shows `planFastPathApplied = true` and `planFastPathReason = "known_routes"`, the supervisor intentionally skipped the initial planner pass and reused an already-recorded exact route or blocker route for the tail-scope objective set.
 
 ## Results
 
+- live theorem file under edit: `workspace/<rel-path>.lean`
 - live notes: `workspace/.archon/task_results/`
+- live validation: `workspace/.archon/validation/`
+- run progress snapshot: `workspace/.archon/supervisor/progress-summary.md`
 - exported bundle: `artifacts/`
 - accepted campaign proofs: `reports/final/proofs/<run>/`
+
+For final human review, prefer `artifacts/` plus `reports/final/validation/<run>/` over the mutable workspace alone.

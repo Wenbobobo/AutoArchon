@@ -30,7 +30,11 @@ VERBOSE_LOGS=false
 ENABLE_REVIEW=true
 LOG_BASE=""
 CODEX_MODEL="${ARCHON_CODEX_MODEL:-gpt-5.4}"
-CODEX_EXTRA_ARGS="${ARCHON_CODEX_EXEC_ARGS:--config model_reasoning_effort=xhigh}"
+if [[ -n "${ARCHON_CODEX_EXEC_ARGS:-}" ]]; then
+    CODEX_EXTRA_ARGS="${ARCHON_CODEX_EXEC_ARGS}"
+else
+    CODEX_EXTRA_ARGS="--config model_reasoning_effort=xhigh"
+fi
 CODEX_ENABLE_SEARCH="${ARCHON_CODEX_ENABLE_SEARCH:-0}"
 DEFAULT_CODEX_TIMEOUT_SECONDS="${ARCHON_CODEX_TIMEOUT_SECONDS:-}"
 PLAN_TIMEOUT_SECONDS="${ARCHON_PLAN_TIMEOUT_SECONDS:-${DEFAULT_CODEX_TIMEOUT_SECONDS}}"
@@ -38,6 +42,8 @@ PROVER_TIMEOUT_SECONDS="${ARCHON_PROVER_TIMEOUT_SECONDS:-${DEFAULT_CODEX_TIMEOUT
 REVIEW_TIMEOUT_SECONDS="${ARCHON_REVIEW_TIMEOUT_SECONDS:-${DEFAULT_CODEX_TIMEOUT_SECONDS}}"
 CODEX_READY_RETRIES="${ARCHON_CODEX_READY_RETRIES:-3}"
 CODEX_READY_RETRY_DELAY_SECONDS="${ARCHON_CODEX_READY_RETRY_DELAY_SECONDS:-5}"
+SKIP_INITIAL_PLAN="${ARCHON_SKIP_INITIAL_PLAN:-0}"
+SKIP_INITIAL_PLAN_REASON="${ARCHON_SKIP_INITIAL_PLAN_REASON:-existing_objectives}"
 
 # -- Color helpers with JSONL logging --
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -165,21 +171,31 @@ build_prompt() {
 You are the plan agent for project '${PROJECT_NAME}'. Current stage: ${stage}.
 Project directory: ${PROJECT_PATH}
 Project state directory: ${STATE_DIR}
-Read ${STATE_DIR}/AGENTS.md and ${STATE_DIR}/agents/plan-agent.json for your role, then read ${STATE_DIR}/prompts/plan.md, ${STATE_DIR}/PROGRESS.md, and ${STATE_DIR}/RUN_SCOPE.md.
+Start with ${STATE_DIR}/PROGRESS.md and ${STATE_DIR}/RUN_SCOPE.md to recover the active scoped objectives.
+Read ${STATE_DIR}/prompts/plan.md next.
+Only consult ${STATE_DIR}/AGENTS.md and ${STATE_DIR}/agents/plan-agent.json if you need to confirm permissions, outputs, or role details that are not already clear from the stage prompt and local state.
 Treat ${STATE_DIR}/RUN_SCOPE.md as a hard constraint: do not schedule files outside its allowed scope.
 Lean workflow references are vendored under ${STATE_DIR}/lean4/. Consult ${STATE_DIR}/lean4/skills/lean4/SKILL.md only if local project state and the stage prompt are insufficient; do not spend time reading the full Lean reference corpus up front.
 All state files (PROGRESS.md, task_pending.md, task_done.md, USER_HINTS.md, task_results/) are in ${STATE_DIR}/.
 The .lean files are in ${PROJECT_PATH}/.
+Optional helper tool: ${STATE_DIR}/tools/archon-helper-prover-agent.py
+Runtime config: ${STATE_DIR}/runtime-config.toml
+If helper is enabled in the runtime config, use the helper tool according to its plan policy; otherwise fall back to ${STATE_DIR}/tools/archon-informal-agent.py.
 EOF
     else
         cat <<EOF
 You are the prover agent for project '${PROJECT_NAME}'. Current stage: ${stage}.
 Project directory: ${PROJECT_PATH}
 Project state directory: ${STATE_DIR}
-Read ${STATE_DIR}/AGENTS.md and ${STATE_DIR}/agents/prover-agent.json for your role, then read ${STATE_DIR}/prompts/prover-${stage}.md, ${STATE_DIR}/PROGRESS.md, and ${STATE_DIR}/RUN_SCOPE.md.
+Start with ${STATE_DIR}/PROGRESS.md, ${STATE_DIR}/RUN_SCOPE.md, and your assigned file to recover the exact scoped objective.
+Read ${STATE_DIR}/prompts/prover-${stage}.md next.
+Only consult ${STATE_DIR}/AGENTS.md and ${STATE_DIR}/agents/prover-agent.json if you need to confirm permissions, outputs, or role details that are not already clear from the stage prompt and local state.
 Treat ${STATE_DIR}/RUN_SCOPE.md as a hard constraint: only edit files inside its allowed scope.
 Lean workflow references are vendored under ${STATE_DIR}/lean4/. Consult ${STATE_DIR}/lean4/skills/lean4/SKILL.md only when the stage prompt, local file, and task state do not already give a concrete next step.
 All state files are in ${STATE_DIR}/. The .lean files are in ${PROJECT_PATH}/.
+Optional helper tool: ${STATE_DIR}/tools/archon-helper-prover-agent.py
+Runtime config: ${STATE_DIR}/runtime-config.toml
+If helper is enabled in the runtime config, use the helper tool according to its prover policy; otherwise fall back to ${STATE_DIR}/tools/archon-informal-agent.py.
 EOF
     fi
 }
@@ -270,6 +286,9 @@ prepare_agent_env() {
     export LEAN4_SCRIPTS="${LEAN4_PLUGIN_ROOT}/lib/scripts"
     export LEAN4_REFS="${LEAN4_PLUGIN_ROOT}/skills/lean4/references"
     export LEAN4_PYTHON_BIN="${LEAN4_PYTHON_BIN:-$(command -v python3 || command -v python)}"
+    export ARCHON_RUNTIME_CONFIG="${STATE_DIR}/runtime-config.toml"
+    export ARCHON_HELPER_CONFIG="${STATE_DIR}/runtime-config.toml"
+    export ARCHON_HELPER_TOOL="${STATE_DIR}/tools/archon-helper-prover-agent.py"
     export ARCHON_INFORMAL_TOOL="${STATE_DIR}/tools/archon-informal-agent.py"
 }
 
@@ -791,6 +810,9 @@ for (( i=0; i<MAX_ITERATIONS; i++ )); do
 	    if [[ "$DRY_RUN" == true ]]; then
 	        echo "$PLAN_PROMPT"
 	        PLAN_STATUS="done"
+	    elif [[ "$SKIP_INITIAL_PLAN" == "1" && "$i" -eq 0 ]] && can_fallback_to_existing_objectives; then
+	        warn "Skipping initial plan phase (${SKIP_INITIAL_PLAN_REASON}) and reusing existing objectives."
+	        PLAN_STATUS="skipped_fast_path"
 	    else
 	        if CODEX_TIMEOUT_SECONDS="${PLAN_TIMEOUT_SECONDS}" run_codex "$PLAN_PROMPT"; then
             PLAN_STATUS="done"
@@ -813,7 +835,7 @@ for (( i=0; i<MAX_ITERATIONS; i++ )); do
 	    [[ "$DRY_RUN" != true ]] && write_meta "$ITER_META" "plan.status=${PLAN_STATUS}" "plan.durationSecs=${PLAN_SECS}"
 	    echo ""
 
-	    if [[ "$PLAN_STATUS" != "done" ]]; then
+	    if [[ "$PLAN_STATUS" != "done" && "$PLAN_STATUS" != "skipped_fast_path" ]]; then
 	        if [[ "$PLAN_STATUS" == "error" ]] && can_fallback_to_existing_objectives; then
 	            warn "Plan agent failed, but existing scoped objectives remain valid and there are no live task_results to merge."
 	            warn "Continuing to prover with the current PROGRESS.md."

@@ -16,6 +16,7 @@ from archonlib.supervisor import (
     latest_iteration_meta,
     parse_allowed_files,
 )
+from scripts.supervised_cycle import _archive_stale_accepted_task_results, _task_result_name
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,44 @@ INSTALL_REPO_SKILL = ROOT / "scripts" / "install_repo_skill.sh"
 def write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(textwrap.dedent(content).lstrip(), encoding="utf-8")
+
+
+def write_runtime_config(workspace: Path, *, helper_enabled: bool = False, write_progress_surface: bool = True) -> None:
+    helper_enabled_literal = "true" if helper_enabled else "false"
+    progress_literal = "true" if write_progress_surface else "false"
+    write(
+        workspace / ".archon" / "runtime-config.toml",
+        f"""
+        [helper]
+        enabled = {helper_enabled_literal}
+        provider = "openai"
+        model = "gpt-5.4"
+        api_key_env = "OPENAI_API_KEY"
+        base_url_env = "OPENAI_BASE_URL"
+        max_retries = 5
+        initial_backoff_seconds = 5
+        timeout_seconds = 300
+
+        [helper.plan]
+        enabled = true
+        max_calls_per_iteration = 1
+        trigger_on_missing_infrastructure = true
+        trigger_on_external_reference = true
+        trigger_on_repeated_failure = true
+        notes_dir = ".archon/informal/helper"
+
+        [helper.prover]
+        enabled = true
+        max_calls_per_session = 2
+        trigger_on_missing_infrastructure = true
+        trigger_on_lsp_timeout = true
+        trigger_on_first_stuck_attempt = true
+        notes_dir = ".archon/informal/helper"
+
+        [observability]
+        write_progress_surface = {progress_literal}
+        """,
+    )
 
 
 def write_stale_planner_state(workspace: Path, rel_path: str) -> None:
@@ -188,6 +227,54 @@ def test_collect_meta_prover_errors_returns_failing_files():
     assert failures == ["FATEM/2.lean"]
 
 
+def test_archive_stale_accepted_task_results_moves_only_accepted_non_objective_notes(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    validation_root = workspace / ".archon" / "validation"
+    task_results_root = workspace / ".archon" / "task_results"
+
+    accepted_rel = "FATEM/1.lean"
+    objective_rel = "FATEM/2.lean"
+
+    write(
+        validation_root / "FATEM_1.lean.json",
+        json.dumps(
+            {
+                "relPath": accepted_rel,
+                "acceptanceStatus": "accepted",
+                "validationStatus": "passed",
+            },
+            indent=2,
+        ),
+    )
+    write(
+        validation_root / "FATEM_2.lean.json",
+        json.dumps(
+            {
+                "relPath": objective_rel,
+                "acceptanceStatus": "accepted",
+                "validationStatus": "passed",
+            },
+            indent=2,
+        ),
+    )
+    write(task_results_root / _task_result_name(accepted_rel), "# accepted note\n")
+    write(task_results_root / _task_result_name(objective_rel), "# objective note\n")
+
+    archived = _archive_stale_accepted_task_results(workspace, objective_files=[objective_rel])
+
+    assert archived == [
+        {
+            "relPath": accepted_rel,
+            "noteName": _task_result_name(accepted_rel),
+            "archivePath": archived[0]["archivePath"],
+        }
+    ]
+    assert archived[0]["archivePath"].startswith(".archon/task_results_archived/accepted_stale/")
+    assert not (task_results_root / _task_result_name(accepted_rel)).exists()
+    assert (task_results_root / _task_result_name(objective_rel)).exists()
+    assert (workspace / archived[0]["archivePath"]).exists()
+
+
 def test_create_isolated_run_copies_source_and_workspace_without_archon(tmp_path: Path):
     source = make_source_project(tmp_path)
     cache_project = tmp_path / "cache-project"
@@ -301,6 +388,8 @@ def test_export_run_artifacts_writes_diff_proof_task_results_and_supervisor_snap
     write(workspace / ".archon" / "lessons" / "iter-001-clean.json", json.dumps({"status": "clean"}))
     write(workspace / ".archon" / "supervisor" / "HOT_NOTES.md", "# hot\n")
     write(workspace / ".archon" / "supervisor" / "LEDGER.md", "# ledger\n")
+    write(workspace / ".archon" / "supervisor" / "progress-summary.md", "# progress\n")
+    write(workspace / ".archon" / "supervisor" / "progress-summary.json", json.dumps({"status": "clean"}))
     write(run_root / "RUN_MANIFEST.json", json.dumps({"schemaVersion": 1}, indent=2))
     artifacts.mkdir(parents=True, exist_ok=True)
 
@@ -318,6 +407,8 @@ def test_export_run_artifacts_writes_diff_proof_task_results_and_supervisor_snap
     assert (artifacts / "validation" / "FATEM_39.lean.json").exists()
     assert (artifacts / "lessons" / "iter-001-clean.json").exists()
     assert (artifacts / "supervisor" / "HOT_NOTES.md").exists()
+    assert (artifacts / "supervisor" / "progress-summary.md").exists()
+    assert (artifacts / "supervisor" / "progress-summary.json").exists()
     assert (artifacts / "artifact-index.json").exists()
     assert not (artifacts / "proofs" / ".lake" / "packages" / "mathlib" / "Mathlib" / "Ignored.lean").exists()
 
@@ -371,6 +462,56 @@ def test_shell_runtime_defaults_use_codex_config_flag():
     assert "--config model_reasoning_effort=xhigh" in review_script
     assert "--c model_reasoning_effort=xhigh" not in loop_script
     assert "--c model_reasoning_effort=xhigh" not in review_script
+
+
+def test_shell_runtime_codex_extra_args_assignments_expand_correctly():
+    for script_path in (ROOT / "archon-loop.sh", ROOT / "review.sh"):
+        lines = script_path.read_text(encoding="utf-8").splitlines()
+        start = next(
+            index
+            for index, line in enumerate(lines)
+            if line.strip() == 'if [[ -n "${ARCHON_CODEX_EXEC_ARGS:-}" ]]; then'
+        )
+        end = next(index for index in range(start, len(lines)) if lines[index].strip() == "fi")
+        assignment_block = "\n".join(lines[start : end + 1])
+
+        default_result = subprocess.run(
+            [
+                "bash",
+                "-lc",
+                "\n".join(
+                    [
+                        "unset ARCHON_CODEX_EXEC_ARGS",
+                        assignment_block,
+                        'printf "%s" "$CODEX_EXTRA_ARGS"',
+                    ]
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert default_result.returncode == 0
+        assert default_result.stdout == "--config model_reasoning_effort=xhigh"
+
+        override_result = subprocess.run(
+            [
+                "bash",
+                "-lc",
+                "\n".join(
+                    [
+                        'export ARCHON_CODEX_EXEC_ARGS="--search --config model_reasoning_effort=medium"',
+                        assignment_block,
+                        'printf "%s" "$CODEX_EXTRA_ARGS"',
+                    ]
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert override_result.returncode == 0
+        assert override_result.stdout == "--search --config model_reasoning_effort=medium"
 
 
 def test_install_repo_skill_symlinks_into_codex_home(tmp_path: Path):
@@ -837,6 +978,8 @@ def test_supervised_cycle_raises_prover_timeout_for_tail_scope(tmp_path: Path):
             "240",
             "--tail-scope-objective-threshold",
             "2",
+            "--tail-scope-plan-timeout-seconds",
+            "300",
             "--tail-scope-prover-timeout-seconds",
             "360",
             "--skip-process-check",
@@ -850,12 +993,205 @@ def test_supervised_cycle_raises_prover_timeout_for_tail_scope(tmp_path: Path):
     assert result.returncode == 4
     payload = json.loads(env_dump.read_text(encoding="utf-8"))
     assert payload == {
-        "ARCHON_PLAN_TIMEOUT_SECONDS": "180",
+        "ARCHON_PLAN_TIMEOUT_SECONDS": "300",
         "ARCHON_PROVER_TIMEOUT_SECONDS": "360",
         "ARCHON_REVIEW_TIMEOUT_SECONDS": None,
     }
     hot_notes = (workspace / ".archon" / "supervisor" / "HOT_NOTES.md").read_text(encoding="utf-8")
-    assert "Tail-scope runtime override: raised prover timeout to 360s for 2 current objectives" in hot_notes
+    assert "Tail-scope runtime override: raised plan timeout to 300s and prover timeout to 360s for 2 current objectives" in hot_notes
+
+
+def test_supervised_cycle_enables_known_route_fast_path_for_tail_scope(tmp_path: Path):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    write(source / "FATEM" / "94.lean", "theorem foo : True := by\n  sorry\n")
+    write(workspace / "FATEM" / "94.lean", "theorem foo : True := by\n  sorry\n")
+    write(
+        workspace / ".archon" / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        ## Allowed Files
+
+        1. `FATEM/94.lean`
+        """,
+    )
+    write(
+        workspace / ".archon" / "PROGRESS.md",
+        """
+        # Project Progress
+
+        ## Current Stage
+        prover
+
+        ## Current Objectives
+
+        1. **FATEM/94.lean** — Apply the exact compile-checked route from `.archon/informal/FATEM_94.md`.
+        """,
+    )
+    write(
+        workspace / ".archon" / "informal" / "FATEM_94.md",
+        """
+        # FATEM/94
+
+        Exact compile-checked route:
+
+        ```lean
+        trivial
+        ```
+        """,
+    )
+    env_dump = tmp_path / "fast-path-env.json"
+    fake_loop = tmp_path / "fake-archon-loop.sh"
+    write(
+        fake_loop,
+        f"""
+        #!/usr/bin/env bash
+        python3 - <<'EOF'
+        import json
+        import os
+        from pathlib import Path
+
+        Path("{env_dump}").write_text(json.dumps({{
+            "ARCHON_SKIP_INITIAL_PLAN": os.environ.get("ARCHON_SKIP_INITIAL_PLAN"),
+            "ARCHON_SKIP_INITIAL_PLAN_REASON": os.environ.get("ARCHON_SKIP_INITIAL_PLAN_REASON"),
+        }}, sort_keys=True), encoding="utf-8")
+        EOF
+        exit 0
+        """,
+    )
+    fake_loop.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(SUPERVISED_CYCLE),
+            "--workspace",
+            str(workspace),
+            "--source",
+            str(source),
+            "--archon-loop",
+            str(fake_loop),
+            "--skip-process-check",
+            "--tail-scope-objective-threshold",
+            "1",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 4
+    payload = json.loads(env_dump.read_text(encoding="utf-8"))
+    assert payload == {
+        "ARCHON_SKIP_INITIAL_PLAN": "1",
+        "ARCHON_SKIP_INITIAL_PLAN_REASON": "known_routes",
+    }
+    hot_notes = (workspace / ".archon" / "supervisor" / "HOT_NOTES.md").read_text(encoding="utf-8")
+    assert "Plan fast-path: skipped the initial plan phase because every tail-scope objective already had a known route" in hot_notes
+
+
+def test_supervised_cycle_enables_known_route_fast_path_for_realistic_shortest_route_note(tmp_path: Path):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    write(source / "FATEM" / "94.lean", "theorem foo : True := by\n  sorry\n")
+    write(workspace / "FATEM" / "94.lean", "theorem foo : True := by\n  sorry\n")
+    write(
+        workspace / ".archon" / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        ## Allowed Files
+
+        1. `FATEM/94.lean`
+        """,
+    )
+    write(
+        workspace / ".archon" / "PROGRESS.md",
+        """
+        # Project Progress
+
+        ## Current Stage
+        prover
+
+        ## Current Objectives
+
+        1. **FATEM/94.lean** — Fill the remaining sorry in `foo`. This should be a short rewrite, not a search-heavy proof. Informal note: `.archon/informal/FATEM_94.md`.
+        """,
+    )
+    write(
+        workspace / ".archon" / "task_pending.md",
+        """
+        # Pending Tasks
+
+        - `FATEM/94.lean` — 1 sorry remains. Exact rewrite route in `.archon/informal/FATEM_94.md`.
+        """,
+    )
+    write(
+        workspace / ".archon" / "informal" / "FATEM_94.md",
+        """
+        # FATEM/94
+
+        Shortest route:
+
+        1. Rewrite the goal directly.
+        2. Use the existing theorem and simplify.
+
+        Expected proof shape is essentially:
+
+        ```lean
+        simpa using trivial
+        ```
+        """,
+    )
+    env_dump = tmp_path / "realistic-fast-path-env.json"
+    fake_loop = tmp_path / "fake-archon-loop.sh"
+    write(
+        fake_loop,
+        f"""
+        #!/usr/bin/env bash
+        python3 - <<'EOF'
+        import json
+        import os
+        from pathlib import Path
+
+        Path("{env_dump}").write_text(json.dumps({{
+            "ARCHON_SKIP_INITIAL_PLAN": os.environ.get("ARCHON_SKIP_INITIAL_PLAN"),
+            "ARCHON_SKIP_INITIAL_PLAN_REASON": os.environ.get("ARCHON_SKIP_INITIAL_PLAN_REASON"),
+        }}, sort_keys=True), encoding="utf-8")
+        EOF
+        exit 0
+        """,
+    )
+    fake_loop.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(SUPERVISED_CYCLE),
+            "--workspace",
+            str(workspace),
+            "--source",
+            str(source),
+            "--archon-loop",
+            str(fake_loop),
+            "--skip-process-check",
+            "--tail-scope-objective-threshold",
+            "1",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 4
+    payload = json.loads(env_dump.read_text(encoding="utf-8"))
+    assert payload == {
+        "ARCHON_SKIP_INITIAL_PLAN": "1",
+        "ARCHON_SKIP_INITIAL_PLAN_REASON": "known_routes",
+    }
 
 
 def test_supervised_cycle_refuses_to_start_when_run_local_lease_is_active(tmp_path: Path):
@@ -1174,6 +1510,209 @@ def test_supervised_cycle_focuses_remaining_scope_when_only_part_of_run_is_accep
 
     hot_notes = (workspace / ".archon" / "supervisor" / "HOT_NOTES.md").read_text(encoding="utf-8")
     assert "removed accepted targets from the next-cycle objective list" in hot_notes
+
+
+def test_supervised_cycle_writes_run_progress_summary_with_helper_note_observability(tmp_path: Path):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    write(source / "FATEM" / "2.lean", "theorem foo : True := by\n  sorry\n")
+    write(workspace / "FATEM" / "2.lean", "theorem foo : True := by\n  trivial\n")
+    write_runtime_config(workspace, helper_enabled=True, write_progress_surface=True)
+    write(workspace / ".archon" / "informal" / "helper" / "route.md", "# helper route\n")
+    write(
+        workspace / ".archon" / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        ## Allowed Files
+
+        1. `FATEM/2.lean`
+        """,
+    )
+    verify_script = tmp_path / "verify_changed.py"
+    write(
+        verify_script,
+        """
+        from pathlib import Path
+        import sys
+
+        text = Path(sys.argv[1]).read_text(encoding="utf-8")
+        if "sorry" in text:
+            raise SystemExit(1)
+        print("verified clean")
+        """,
+    )
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(SUPERVISED_CYCLE),
+            "--workspace",
+            str(workspace),
+            "--source",
+            str(source),
+            "--recovery-only",
+            "--skip-process-check",
+            "--changed-file-verify-template",
+            f"python3 {verify_script} {{file}}",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    markdown_path = workspace / ".archon" / "supervisor" / "progress-summary.md"
+    json_path = workspace / ".archon" / "supervisor" / "progress-summary.json"
+    assert markdown_path.exists()
+    assert json_path.exists()
+
+    markdown = markdown_path.read_text(encoding="utf-8")
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+
+    assert "# Run Progress" in markdown
+    assert "100% (1/1 closed targets)" in markdown
+    assert "Helper notes observed: `1`" in markdown
+    assert payload["status"] == "clean"
+    assert payload["helper"]["enabled"] is True
+    assert payload["helper"]["noteCount"] == 1
+    assert payload["progress"]["percent"] == 100
+
+
+def test_supervised_cycle_updates_run_progress_surface_during_live_loop(tmp_path: Path):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    write(source / "FATEM" / "2.lean", "theorem foo : True := by\n  sorry\n")
+    write(workspace / "FATEM" / "2.lean", "theorem foo : True := by\n  sorry\n")
+    write(
+        workspace / ".archon" / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        ## Allowed Files
+
+        1. `FATEM/2.lean`
+        """,
+    )
+    fake_loop = tmp_path / "fake-archon-loop.sh"
+    write(
+        fake_loop,
+        f"""
+        #!/usr/bin/env bash
+        mkdir -p "{workspace}/.archon/logs/iter-001/provers"
+        cat > "{workspace}/.archon/logs/iter-001/meta.json" <<'EOF'
+        {{
+          "iteration": 1,
+          "plan": {{"status": "done"}},
+          "prover": {{"status": "running"}},
+          "provers": {{
+            "FATEM_2": {{"file": "FATEM/2.lean", "status": "running"}}
+          }}
+        }}
+        EOF
+        cat > "{workspace}/.archon/logs/iter-001/provers/FATEM_2.jsonl" <<'EOF'
+        {{"ts":"2026-04-11T00:00:00Z","event":"text","content":"starting"}}
+        EOF
+        sleep 30
+        """,
+    )
+    fake_loop.chmod(0o755)
+
+    proc = subprocess.Popen(
+        [
+            "python3",
+            str(SUPERVISED_CYCLE),
+            "--workspace",
+            str(workspace),
+            "--source",
+            str(source),
+            "--archon-loop",
+            str(fake_loop),
+            "--skip-process-check",
+            "--prover-idle-seconds",
+            "3",
+            "--monitor-poll-seconds",
+            "0.1",
+        ],
+        cwd=str(ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        json_path = workspace / ".archon" / "supervisor" / "progress-summary.json"
+        deadline = time.time() + 4
+        live_payload = None
+        while time.time() < deadline:
+            if json_path.exists():
+                payload = json.loads(json_path.read_text(encoding="utf-8"))
+                live = payload.get("liveRuntime")
+                if payload.get("status") == "running" and isinstance(live, dict) and live.get("proverStatus") == "running":
+                    live_payload = payload
+                    break
+            time.sleep(0.1)
+        assert live_payload is not None
+        assert live_payload["liveRuntime"]["iteration"] == "iter-001"
+        assert live_payload["liveRuntime"]["activeProvers"][0]["file"] == "FATEM/2.lean"
+    finally:
+        stdout, stderr = proc.communicate(timeout=10)
+
+    assert proc.returncode == 5, (stdout, stderr)
+
+
+def test_supervised_cycle_can_disable_run_progress_surface_via_runtime_config(tmp_path: Path):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    write(source / "FATEM" / "2.lean", "theorem foo : True := by\n  sorry\n")
+    write(workspace / "FATEM" / "2.lean", "theorem foo : True := by\n  trivial\n")
+    write_runtime_config(workspace, write_progress_surface=False)
+    write(
+        workspace / ".archon" / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        ## Allowed Files
+
+        1. `FATEM/2.lean`
+        """,
+    )
+    verify_script = tmp_path / "verify_changed.py"
+    write(
+        verify_script,
+        """
+        from pathlib import Path
+        import sys
+
+        text = Path(sys.argv[1]).read_text(encoding="utf-8")
+        if "sorry" in text:
+            raise SystemExit(1)
+        print("verified clean")
+        """,
+    )
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(SUPERVISED_CYCLE),
+            "--workspace",
+            str(workspace),
+            "--source",
+            str(source),
+            "--recovery-only",
+            "--skip-process-check",
+            "--changed-file-verify-template",
+            f"python3 {verify_script} {{file}}",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert not (workspace / ".archon" / "supervisor" / "progress-summary.md").exists()
+    assert not (workspace / ".archon" / "supervisor" / "progress-summary.json").exists()
 
 
 def test_supervised_cycle_kills_idle_prover_and_records_hot_notes(tmp_path: Path):
