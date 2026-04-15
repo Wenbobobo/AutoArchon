@@ -39,6 +39,22 @@ from archonlib.runtime_config import (
 
 
 HELPER_PHASES = ("plan", "prover")
+HELPER_PROMPT_PACKS = (
+    "external_reference",
+    "first_stuck_attempt",
+    "generic",
+    "lsp_timeout",
+    "missing_infrastructure",
+    "repeated_failure",
+)
+AUTO_PROMPT_PACKS: dict[tuple[str, str], str] = {
+    ("plan", "external_reference"): "external_reference",
+    ("plan", "missing_infrastructure"): "missing_infrastructure",
+    ("plan", "repeated_failure"): "repeated_failure",
+    ("prover", "first_stuck_attempt"): "first_stuck_attempt",
+    ("prover", "lsp_timeout"): "lsp_timeout",
+    ("prover", "missing_infrastructure"): "missing_infrastructure",
+}
 
 
 def _load_informal_agent():
@@ -72,6 +88,10 @@ def _effective_config(
     initial_backoff_seconds: int | None,
     timeout_seconds: int | None,
     config_path: str | None,
+    phase: str | None,
+    reason: str | None,
+    requested_prompt_pack: str | None,
+    selected_prompt_pack: str | None,
 ) -> dict[str, Any]:
     config = runtime_config.helper
     api_key_env, base_url_env = _provider_env_names(
@@ -126,6 +146,11 @@ def _effective_config(
             "triggerOnFirstStuckAttempt": runtime_config.helper_prover.trigger_on_first_stuck_attempt,
             "notesDir": runtime_config.helper_prover.notes_dir,
         },
+        "promptPack": {
+            "available": list(HELPER_PROMPT_PACKS),
+            "requested": requested_prompt_pack,
+            "selected": selected_prompt_pack,
+        },
     }
 
 
@@ -158,6 +183,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rel-path", help="Optional target Lean file relative path such as FATEM/42.lean")
     parser.add_argument("--reason", help="Optional short trigger/reason label such as lsp_timeout or repeated_failure")
     parser.add_argument(
+        "--prompt-pack",
+        choices=("auto",) + HELPER_PROMPT_PACKS,
+        help="Optional structured helper prompt template to apply before transport",
+    )
+    parser.add_argument(
         "--write-note",
         help="Optional path to also write the helper response, or `auto` to route into the configured notes_dir with metadata",
     )
@@ -170,6 +200,27 @@ def parse_args() -> argparse.Namespace:
 
 def _slugify(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip()).strip("._-") or "note"
+
+
+def _normalize_reason(reason: str | None) -> str | None:
+    if reason is None:
+        return None
+    lowered = reason.strip().lower().replace("-", "_").replace(" ", "_")
+    lowered = re.sub(r"[^a-z0-9_]+", "_", lowered).strip("_")
+    return lowered or None
+
+
+def _selected_prompt_pack(*, phase: str | None, reason: str | None, requested: str | None) -> str | None:
+    if requested is None:
+        return None
+    if requested != "auto":
+        return requested
+    normalized_reason = _normalize_reason(reason)
+    if phase is not None and normalized_reason is not None:
+        chosen = AUTO_PROMPT_PACKS.get((phase, normalized_reason))
+        if chosen is not None:
+            return chosen
+    return "generic"
 
 
 def _note_dir_for_phase(runtime_config: RuntimeConfig, phase: str) -> str:
@@ -201,6 +252,7 @@ def _render_auto_note(
     rel_path: str | None,
     reason: str | None,
     config_path: str | None,
+    prompt_pack: str | None,
 ) -> str:
     lines = [
         "# Helper Note",
@@ -215,7 +267,107 @@ def _render_auto_note(
         lines.append(f"- Target: `{rel_path}`")
     if reason:
         lines.append(f"- Reason: `{reason}`")
+    if prompt_pack:
+        lines.append(f"- Prompt pack: `{prompt_pack}`")
     lines.extend(["", "## Helper Output", "", response.rstrip(), ""])
+    return "\n".join(lines)
+
+
+def _render_prompt_with_pack(
+    *,
+    prompt: str,
+    phase: str | None,
+    rel_path: str | None,
+    reason: str | None,
+    prompt_pack: str,
+) -> str:
+    phase_value = phase or "unknown"
+    reason_value = _normalize_reason(reason) or prompt_pack
+    target_value = rel_path or "(unspecified)"
+
+    constraints: list[str]
+    response_format: list[str]
+    if prompt_pack == "lsp_timeout":
+        constraints = [
+            "- Assume Lean LSP is unavailable or timing out; prefer routes that can be executed from local file context and bounded shell verification.",
+            "- Keep the original benchmark theorem statement unchanged.",
+            "- Return a concise, actionable route rather than a long essay.",
+        ]
+        response_format = [
+            "1. Immediate next proving route using Lean-available ingredients.",
+            "2. One to three likely lemmas, theorem-search queries, or file-local pivots.",
+            "3. A blocker test describing when to stop and write a durable blocker artifact instead of looping.",
+        ]
+    elif prompt_pack == "missing_infrastructure":
+        constraints = [
+            "- Route around the missing infrastructure; do not assume unavailable Mathlib APIs can be added on the fly.",
+            "- Keep the original benchmark theorem statement unchanged.",
+            "- Prefer proof decompositions that the prover can implement locally in Lean 4 Mathlib.",
+        ]
+        response_format = [
+            "1. Alternative proof route that avoids the missing infrastructure.",
+            "2. Helper lemmas or subgoals that make the detour implementable.",
+            "3. A quick obstruction test for when the route should be escalated as a blocker instead.",
+        ]
+    elif prompt_pack == "external_reference":
+        constraints = [
+            "- Translate the external reference into a short local proof plan rather than a literature survey.",
+            "- Keep the original benchmark theorem statement unchanged.",
+            "- Prefer steps that a Lean prover can execute without additional browsing after this handoff.",
+        ]
+        response_format = [
+            "1. The essential argument distilled into local steps.",
+            "2. Terms, lemmas, or search queries the prover should try first.",
+            "3. Any reference-sensitive caveat that would change acceptance or blocker handling.",
+        ]
+    elif prompt_pack == "repeated_failure":
+        constraints = [
+            "- Assume the previous route has already failed more than once.",
+            "- Do not repeat the same dead end in different words.",
+            "- Keep the route short enough for the next planner/prover cycle to execute immediately.",
+        ]
+        response_format = [
+            "1. A materially different route from the prior failed attempts.",
+            "2. The first concrete edit or search pivot to try next.",
+            "3. A warning about what not to retry.",
+        ]
+    elif prompt_pack == "first_stuck_attempt":
+        constraints = [
+            "- Assume the prover already made one serious formal attempt and got stuck.",
+            "- Reuse any local partial progress instead of restarting from scratch.",
+            "- Keep the original benchmark theorem statement unchanged.",
+        ]
+        response_format = [
+            "1. Best next formalization route from the current partial state.",
+            "2. One to three specific local pivots or helper lemmas to try.",
+            "3. A blocker threshold for abandoning this route if it still does not move.",
+        ]
+    else:
+        constraints = [
+            "- Keep the original benchmark theorem statement unchanged.",
+            "- Return a concise, execution-ready route.",
+            "- Prefer Lean 4 Mathlib-friendly ingredients over abstract advice.",
+        ]
+        response_format = [
+            "1. Immediate next route.",
+            "2. Likely lemmas or searches to try.",
+            "3. A blocker test or escalation condition.",
+        ]
+
+    lines = [
+        f"You are a bounded AutoArchon helper supporting the `{phase_value}` phase.",
+        f"Task class: `{reason_value}`.",
+        f"Target file: `{target_value}`.",
+        "",
+        "Constraints:",
+        *constraints,
+        "",
+        "Response format:",
+        *response_format,
+        "",
+        "User request:",
+        prompt,
+    ]
     return "\n".join(lines)
 
 
@@ -349,6 +501,14 @@ def main() -> int:
         initial_backoff_seconds=args.initial_backoff_seconds,
         timeout_seconds=args.timeout_seconds,
         config_path=config_path,
+        phase=args.phase,
+        reason=_normalize_reason(args.reason),
+        requested_prompt_pack=args.prompt_pack,
+        selected_prompt_pack=_selected_prompt_pack(
+            phase=args.phase,
+            reason=args.reason,
+            requested=args.prompt_pack,
+        ),
     )
     if args.print_effective_config:
         sys.stdout.write(json.dumps(effective, indent=2, sort_keys=True) + "\n")
@@ -358,6 +518,22 @@ def main() -> int:
         raise SystemExit("Error: prompt is required unless --print-effective-config is used.")
     if args.write_note == "auto" and args.phase is None:
         raise SystemExit("Error: --phase is required when --write-note auto is used.")
+    selected_prompt_pack = _selected_prompt_pack(
+        phase=args.phase,
+        reason=args.reason,
+        requested=args.prompt_pack,
+    )
+    provider_prompt = (
+        _render_prompt_with_pack(
+            prompt=args.prompt,
+            phase=args.phase,
+            rel_path=args.rel_path,
+            reason=args.reason,
+            prompt_pack=selected_prompt_pack,
+        )
+        if selected_prompt_pack is not None
+        else args.prompt
+    )
     attempts = _attempt_chain(
         informal_agent,
         provider=provider,
@@ -375,7 +551,7 @@ def main() -> int:
         try:
             response = _call_provider(
                 informal_agent,
-                prompt=args.prompt,
+                prompt=provider_prompt,
                 think=args.think,
                 config=attempt,
             )
@@ -412,6 +588,7 @@ def main() -> int:
                 rel_path=args.rel_path,
                 reason=args.reason,
                 config_path=config_path,
+                prompt_pack=selected_prompt_pack,
             )
         else:
             note_path = Path(args.write_note).resolve()

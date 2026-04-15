@@ -2091,6 +2091,11 @@ def build_campaign_overview(
                         "scopeHint": run.get("scopeHint"),
                         "latestIteration": run.get("latestIteration"),
                         "latestActivityAt": run.get("latestActivityAt"),
+                        "livePhase": run.get("livePhase"),
+                        "activeProverCount": run.get("activeProverCount"),
+                        "helperNoteCount": run.get("helperNoteCount"),
+                        "helperReasonCounts": run.get("helperReasonCounts"),
+                        "taskResultBlockerCount": run.get("taskResultBlockerCount"),
                         "acceptedProofCount": len(run.get("acceptedProofs", [])) if isinstance(run.get("acceptedProofs"), list) else 0,
                         "acceptedBlockerCount": len(run.get("acceptedBlockers", [])) if isinstance(run.get("acceptedBlockers"), list) else 0,
                         "pendingTargetCount": len(run.get("pendingTargets", [])) if isinstance(run.get("pendingTargets"), list) else 0,
@@ -2276,8 +2281,10 @@ def render_campaign_overview_markdown(overview: Mapping[str, Any]) -> str:
         for row in running_runs:
             lines.append(
                 f"- `{row.get('runId')}` iter={row.get('latestIteration')} pending={row.get('pendingTargetCount')} "
+                f"phase={row.get('livePhase') or 'unknown'} active_provers={row.get('activeProverCount')} "
                 f"remaining={row.get('remainingTargetCount')} accepted_proofs={row.get('acceptedProofCount')} "
-                f"accepted_blockers={row.get('acceptedBlockerCount')}"
+                f"accepted_blockers={row.get('acceptedBlockerCount')} helper_notes={row.get('helperNoteCount')} "
+                f"blocker_notes={row.get('taskResultBlockerCount')}"
             )
     else:
         lines.append("- none")
@@ -2342,8 +2349,9 @@ def render_campaign_progress_markdown(overview: Mapping[str, Any]) -> str:
         for row in running_runs[:8]:
             lines.append(
                 f"- `{row.get('runId')}` scope={row.get('scopeHint') or 'unknown'} iter={row.get('latestIteration')} "
-                f"remaining={row.get('remainingTargetCount')} accepted_proofs={row.get('acceptedProofCount')} "
-                f"accepted_blockers={row.get('acceptedBlockerCount')}"
+                f"phase={row.get('livePhase') or 'unknown'} remaining={row.get('remainingTargetCount')} "
+                f"accepted_proofs={row.get('acceptedProofCount')} accepted_blockers={row.get('acceptedBlockerCount')} "
+                f"helper_notes={row.get('helperNoteCount')} blocker_notes={row.get('taskResultBlockerCount')}"
             )
     else:
         lines.append("- none")
@@ -3047,6 +3055,7 @@ def collect_campaign_status(campaign_root: Path, *, heartbeat_seconds: int = DEF
         artifact_validation_root = artifacts_root / "validation"
         task_results_root = workspace_root / ".archon" / "task_results"
         supervisor_root = workspace_root / ".archon" / "supervisor"
+        supervisor_progress = _read_json(supervisor_root / "progress-summary.json")
         control_root = run_root / "control"
         launch_script = control_root / "launch-teacher.sh"
         lease_payload = _read_json(supervisor_root / "run-lease.json")
@@ -3127,6 +3136,13 @@ def collect_campaign_status(campaign_root: Path, *, heartbeat_seconds: int = DEF
             has_launch_state=has_launch_state,
         )
         latest_iter_name, _ = latest_iteration_meta(workspace_root)
+        if (
+            latest_iter_name is None
+            and isinstance(supervisor_progress, Mapping)
+            and isinstance(supervisor_progress.get("liveRuntime"), Mapping)
+            and isinstance(supervisor_progress["liveRuntime"].get("iteration"), str)
+        ):
+            latest_iter_name = str(supervisor_progress["liveRuntime"]["iteration"])
         artifact_index = _read_json(artifacts_root / "artifact-index.json")
         launch_failure = _launch_failure_summary(control_root, launch_state)
         accepted_proofs = validation_summary["acceptedProofs"]
@@ -3195,6 +3211,54 @@ def collect_campaign_status(campaign_root: Path, *, heartbeat_seconds: int = DEF
                 run_manifest.get("lakeBuildReusePath")
                 if isinstance(run_manifest, Mapping) and isinstance(run_manifest.get("lakeBuildReusePath"), str)
                 else None
+            ),
+            "livePhase": (
+                supervisor_progress.get("liveRuntime", {}).get("phase")
+                if isinstance(supervisor_progress, Mapping)
+                and isinstance(supervisor_progress.get("liveRuntime"), Mapping)
+                and isinstance(supervisor_progress.get("liveRuntime", {}).get("phase"), str)
+                else None
+            ),
+            "livePlanStatus": (
+                supervisor_progress.get("liveRuntime", {}).get("planStatus")
+                if isinstance(supervisor_progress, Mapping)
+                and isinstance(supervisor_progress.get("liveRuntime"), Mapping)
+                and isinstance(supervisor_progress.get("liveRuntime", {}).get("planStatus"), str)
+                else None
+            ),
+            "liveProverStatus": (
+                supervisor_progress.get("liveRuntime", {}).get("proverStatus")
+                if isinstance(supervisor_progress, Mapping)
+                and isinstance(supervisor_progress.get("liveRuntime"), Mapping)
+                and isinstance(supervisor_progress.get("liveRuntime", {}).get("proverStatus"), str)
+                else None
+            ),
+            "activeProverCount": (
+                len(supervisor_progress.get("liveRuntime", {}).get("activeProvers", []))
+                if isinstance(supervisor_progress, Mapping)
+                and isinstance(supervisor_progress.get("liveRuntime"), Mapping)
+                and isinstance(supervisor_progress.get("liveRuntime", {}).get("activeProvers"), list)
+                else 0
+            ),
+            "helperNoteCount": (
+                int(supervisor_progress.get("helper", {}).get("noteCount", 0))
+                if isinstance(supervisor_progress, Mapping)
+                and isinstance(supervisor_progress.get("helper"), Mapping)
+                else 0
+            ),
+            "helperReasonCounts": (
+                dict(supervisor_progress.get("helper", {}).get("countsByReason", {}))
+                if isinstance(supervisor_progress, Mapping)
+                and isinstance(supervisor_progress.get("helper"), Mapping)
+                and isinstance(supervisor_progress.get("helper", {}).get("countsByReason"), Mapping)
+                else {}
+            ),
+            "taskResultBlockerCount": (
+                int(supervisor_progress.get("taskResultsSummary", {}).get("counts", {}).get("blocker", 0))
+                if isinstance(supervisor_progress, Mapping)
+                and isinstance(supervisor_progress.get("taskResultsSummary"), Mapping)
+                and isinstance(supervisor_progress.get("taskResultsSummary", {}).get("counts"), Mapping)
+                else 0
             ),
         }
         run_summary["recommendedRecovery"] = _recommended_recovery(

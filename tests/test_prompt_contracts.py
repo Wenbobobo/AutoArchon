@@ -23,6 +23,7 @@ def test_plan_prompt_specifies_phase_aware_helper_note_routing():
     assert "--phase plan" in plan_prompt
     assert "--rel-path <file>" in plan_prompt
     assert "--reason <trigger>" in plan_prompt
+    assert "--prompt-pack auto" in plan_prompt
     assert "--write-note auto" in plan_prompt
 
 
@@ -101,6 +102,7 @@ def test_prover_prompt_specifies_phase_aware_helper_note_routing():
     assert "--phase prover" in prover_prompt
     assert "--rel-path <file>" in prover_prompt
     assert "--reason <trigger>" in prover_prompt
+    assert "--prompt-pack auto" in prover_prompt
     assert "--write-note auto" in prover_prompt
 
 

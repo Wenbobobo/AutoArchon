@@ -142,6 +142,8 @@ That command also refreshes these lightweight observability surfaces by default:
 - `control/progress-summary.md`
 - `control/progress-summary.json`
 
+The campaign summary is the fastest file-backed dashboard: it now shows ETA, restart count, active runs, and recent finalized targets. Each run also keeps `workspace/.archon/supervisor/progress-summary.{md,json}` with live phase, active prover rows, helper-note breakdowns, and task-result kind counts.
+
 The optional web UI is still useful for deep inspection of one run:
 
 ```bash
@@ -266,11 +268,12 @@ When the helper is enabled, use phase-aware auto note routing rather than ad hoc
   --phase prover \
   --rel-path FATEM/42.lean \
   --reason lsp_timeout \
+  --prompt-pack auto \
   --write-note auto \
   "Prove the goal without residue calculus; stay within Lean 4 Mathlib."
 ```
 
-Use `--phase plan` for planner-side calls. In `auto` mode the wrapper writes a metadata-backed Markdown note into the configured `notes_dir` for that phase. Passing an explicit `--write-note /path/to/file.md` still works and keeps the old bare-text compatibility path.
+Use `--phase plan` for planner-side calls. `--prompt-pack auto` selects a task-class template from the phase and reason, so repeated failures, external-reference gaps, missing infrastructure, and LSP timeouts do not all hit the side model with the same generic wording. In `auto` note mode the wrapper writes a metadata-backed Markdown note into the configured `notes_dir` for that phase. Passing an explicit `--write-note /path/to/file.md` still works and keeps the old bare-text compatibility path.
 
 ## Where Proofs and Lessons End Up
 

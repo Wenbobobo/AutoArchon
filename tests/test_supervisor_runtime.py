@@ -1875,6 +1875,120 @@ def test_supervised_cycle_writes_run_progress_summary_with_helper_note_observabi
     assert payload["progress"]["percent"] == 100
 
 
+def test_supervised_cycle_progress_summary_breaks_down_helper_notes_and_task_results(tmp_path: Path):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    write(source / "FATEM" / "2.lean", "theorem foo : True := by\n  sorry\n")
+    write(workspace / "FATEM" / "2.lean", "theorem foo : True := by\n  trivial\n")
+    write_runtime_config(workspace, helper_enabled=True, write_progress_surface=True)
+    write(
+        workspace / ".archon" / "informal" / "helper" / "route.md",
+        """
+        # Helper Note
+
+        - Generated at: `2026-04-15T03:04:05+00:00`
+        - Phase: `prover`
+        - Provider: `openai`
+        - Model: `gpt-5.4-mini`
+        - Config path: `/tmp/runtime-config.toml`
+        - Target: `FATEM/2.lean`
+        - Reason: `lsp_timeout`
+        - Prompt pack: `lsp_timeout`
+
+        ## Helper Output
+
+        Try the exact route from the local theorem statement first.
+        """,
+    )
+    write(
+        workspace / ".archon" / "task_results" / "FATEM_2.lean.md",
+        """
+        # FATEM/2.lean
+
+        ## foo
+        ### Attempt 1
+        - **Approach:** trivial
+        - **Result:** RESOLVED
+        """,
+    )
+    write(
+        workspace / ".archon" / "task_results" / "FATEM_3.lean.md",
+        """
+        # FATEM/3.lean
+
+        ## bar
+        ### Attempt 1
+        - **Result:** FAILED
+        - **Concrete blocker:** theorem is false as written
+        """,
+    )
+    write(
+        workspace / ".archon" / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        ## Allowed Files
+
+        1. `FATEM/2.lean`
+        """,
+    )
+    verify_script = tmp_path / "verify_changed.py"
+    write(
+        verify_script,
+        """
+        from pathlib import Path
+        import sys
+
+        text = Path(sys.argv[1]).read_text(encoding="utf-8")
+        if "sorry" in text:
+            raise SystemExit(1)
+        print("verified clean")
+        """,
+    )
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(SUPERVISED_CYCLE),
+            "--workspace",
+            str(workspace),
+            "--source",
+            str(source),
+            "--recovery-only",
+            "--skip-process-check",
+            "--changed-file-verify-template",
+            f"python3 {verify_script} {{file}}",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    markdown_path = workspace / ".archon" / "supervisor" / "progress-summary.md"
+    json_path = workspace / ".archon" / "supervisor" / "progress-summary.json"
+    markdown = markdown_path.read_text(encoding="utf-8")
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+
+    assert payload["helper"]["countsByPhase"] == {"prover": 1}
+    assert payload["helper"]["countsByReason"] == {"lsp_timeout": 1}
+    assert payload["helper"]["countsByPromptPack"] == {"lsp_timeout": 1}
+    assert payload["taskResultsSummary"]["counts"] == {
+        "blocker": 1,
+        "other": 0,
+        "resolved": 1,
+    }
+    assert payload["taskResultsSummary"]["recentResults"] == [
+        {"kind": "blocker", "path": "FATEM_3.lean.md"},
+        {"kind": "resolved", "path": "FATEM_2.lean.md"},
+    ]
+    assert "Helper note phases:" in markdown
+    assert "Helper note reasons:" in markdown
+    assert "Task result kinds:" in markdown
+    assert "`FATEM_3.lean.md` — `blocker`" in markdown
+
+
 def test_supervised_cycle_updates_run_progress_surface_during_live_loop(tmp_path: Path):
     source = tmp_path / "source"
     workspace = tmp_path / "workspace"

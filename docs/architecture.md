@@ -111,7 +111,7 @@ The current answers live in:
 - `reports/postmortem/postmortem-summary.json`
 - `control/orchestrator-watchdog.log`
 
-`control/progress-summary.md` is the lightweight campaign surface: a one-screen progress bar, active runs, restart count, ETA, recent finalized targets, and direct paths to final reports and exports. `workspace/.archon/supervisor/progress-summary.md` is the matching single-run surface with scope completion, new task results, and helper-note visibility. The dashboard is still useful for one run, but the summary surfaces are intentionally file-backed and cheap to refresh.
+`control/progress-summary.md` is the lightweight campaign surface: a one-screen progress bar, active runs, restart count, ETA, recent finalized targets, and direct paths to final reports and exports. `workspace/.archon/supervisor/progress-summary.md` is the matching single-run surface with scope completion, new task results, helper-note visibility, helper note phase/reason breakdowns, and task-result kind counts. The dashboard is still useful for one run, but the summary surfaces are intentionally file-backed and cheap to refresh.
 
 ## Extension Points
 

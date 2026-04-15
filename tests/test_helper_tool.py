@@ -270,6 +270,123 @@ notes_dir = ".archon/helper/prover"
     )
 
 
+def test_helper_tool_auto_prompt_pack_wraps_request_and_exposes_selection(monkeypatch, tmp_path: Path, capsys):
+    config_path = tmp_path / "runtime-config.toml"
+    config_path.write_text(
+        """
+[helper]
+enabled = true
+provider = "openai"
+model = "gpt-5.4-mini"
+api_key_env = "ALT_OPENAI_KEY"
+base_url_env = "ALT_OPENAI_BASE_URL"
+
+[helper.plan]
+notes_dir = ".archon/helper/plan"
+
+[helper.prover]
+notes_dir = ".archon/helper/prover"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_call(prompt: str, model: str, think: bool, *, max_retries: int, initial_backoff_seconds: int, timeout_seconds: int) -> str:
+        captured["prompt"] = prompt
+        return "helper result"
+
+    fake_agent = SimpleNamespace(
+        API_KEY_ENVS={"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "openrouter": "OPENROUTER_API_KEY"},
+        BASE_URL_ENVS={"openai": "OPENAI_BASE_URL", "gemini": "GEMINI_BASE_URL", "openrouter": "OPENROUTER_BASE_URL"},
+        DEFAULTS={"openai": "gpt-5.4", "gemini": "gemini-3.1-pro-preview", "openrouter": "google/gemini-3.1-pro-preview"},
+        MAX_RETRIES=5,
+        INITIAL_BACKOFF_SECONDS=5,
+        TIMEOUT=300,
+        call_openai=fake_call,
+        call_gemini=fake_call,
+        call_openrouter=fake_call,
+    )
+
+    module = load_helper_tool()
+    monkeypatch.setattr(module, "_load_informal_agent", lambda: fake_agent)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "archon-helper",
+            "--config",
+            str(config_path),
+            "--print-effective-config",
+            "--phase",
+            "prover",
+            "--reason",
+            "lsp_timeout",
+            "--prompt-pack",
+            "auto",
+        ],
+    )
+
+    assert module.main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["promptPack"] == {
+        "available": [
+            "external_reference",
+            "first_stuck_attempt",
+            "generic",
+            "lsp_timeout",
+            "missing_infrastructure",
+            "repeated_failure",
+        ],
+        "requested": "auto",
+        "selected": "lsp_timeout",
+    }
+
+    module = load_helper_tool()
+    monkeypatch.setattr(module, "_load_informal_agent", lambda: fake_agent)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "archon-helper",
+            "--config",
+            str(config_path),
+            "--phase",
+            "prover",
+            "--rel-path",
+            "FATEM/42.lean",
+            "--reason",
+            "lsp_timeout",
+            "--prompt-pack",
+            "auto",
+            "Need a route that survives missing Lean LSP.",
+        ],
+    )
+
+    assert module.main() == 0
+    assert captured["prompt"] == "\n".join(
+        [
+            "You are a bounded AutoArchon helper supporting the `prover` phase.",
+            "Task class: `lsp_timeout`.",
+            "Target file: `FATEM/42.lean`.",
+            "",
+            "Constraints:",
+            "- Assume Lean LSP is unavailable or timing out; prefer routes that can be executed from local file context and bounded shell verification.",
+            "- Keep the original benchmark theorem statement unchanged.",
+            "- Return a concise, actionable route rather than a long essay.",
+            "",
+            "Response format:",
+            "1. Immediate next proving route using Lean-available ingredients.",
+            "2. One to three likely lemmas, theorem-search queries, or file-local pivots.",
+            "3. A blocker test describing when to stop and write a durable blocker artifact instead of looping.",
+            "",
+            "User request:",
+            "Need a route that survives missing Lean LSP.",
+        ]
+    )
+
+
 def test_helper_tool_requires_phase_before_auto_note_transport(monkeypatch, tmp_path: Path):
     config_path = tmp_path / "runtime-config.toml"
     config_path.write_text(

@@ -100,7 +100,7 @@ tail -f /path/to/run-root/workspace/.archon/supervisor/violations.jsonl
 watch -n10 'ls -lt /path/to/run-root/workspace/.archon/task_results/'
 ```
 
-`workspace/.archon/supervisor/progress-summary.md` and `progress-summary.json` are the lightweight single-run observability surfaces. They summarize scope completion, new task results, latest iteration, and observed helper notes without opening the full campaign layer.
+`workspace/.archon/supervisor/progress-summary.md` and `progress-summary.json` are the lightweight single-run observability surfaces. They summarize scope completion, new task results, latest iteration, observed helper notes, helper-note phase/reason breakdowns, and task-result kind counts without opening the full campaign layer.
 During a live long-running cycle, the same files now refresh with `liveRuntime` fields such as current phase, prover status, and active prover files, so you do not need to wait for the cycle to finish before seeing whether planning or proving is still moving.
 If the supervisor detects that every remaining tail-scope objective already has a recorded exact route or prevalidated blocker route, the same surface will show:
 
@@ -109,7 +109,7 @@ If the supervisor detects that every remaining tail-scope objective already has 
 
 That means the initial planner pass was skipped on purpose and the cycle moved straight into prover work.
 
-At the campaign layer, `control/progress-summary.md` now includes the current ETA, restart count, most recent finalized targets, and direct paths to `compare-report.json`, `final-summary.json`, exported proofs, and exported blockers. This is the fastest file-backed surface for checking whether a night run is converging without opening the full dashboard.
+At the campaign layer, `control/progress-summary.md` now includes the current ETA, restart count, most recent finalized targets, and direct paths to `compare-report.json`, `final-summary.json`, exported proofs, and exported blockers. Running rows also surface the live phase plus compact helper/blocker note counts when the run-level summary exists. This is the fastest file-backed surface for checking whether a night run is converging without opening the full dashboard.
 
 For one accepted run, the main evidence paths are:
 

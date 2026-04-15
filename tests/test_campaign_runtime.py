@@ -2595,6 +2595,84 @@ def test_owner_lease_operations_preserve_owner_mode_metadata(tmp_path: Path):
     assert owner_mode["ownerEntrypoint"] == "autoarchon-orchestrator-watchdog"
 
 
+def test_build_campaign_overview_surfaces_run_progress_summary_signals(tmp_path: Path):
+    source = make_source_project(tmp_path, file_count=1)
+    campaign_root = tmp_path / "campaign"
+    create_campaign(
+        archon_root=ROOT,
+        source_root=source,
+        campaign_root=campaign_root,
+        run_specs=[
+            {"id": "teacher-001", "objective_regex": "^FATEM/1\\.lean$", "objective_limit": 1, "scope_hint": "FATEM/1.lean"},
+        ],
+    )
+
+    run_root = campaign_root / "runs" / "teacher-001"
+    now = datetime.now(timezone.utc).isoformat()
+    write(
+        run_root / "workspace" / ".archon" / "supervisor" / "run-lease.json",
+        json.dumps({"active": True, "lastHeartbeatAt": now, "status": "running"}, sort_keys=True),
+    )
+    write(
+        run_root / "workspace" / ".archon" / "supervisor" / "progress-summary.json",
+        json.dumps(
+            {
+                "status": "running",
+                "liveRuntime": {
+                    "phase": "proving",
+                    "iteration": "iter-003",
+                    "planStatus": "done",
+                    "proverStatus": "running",
+                    "reviewStatus": None,
+                    "activeProvers": [{"file": "FATEM/1.lean", "id": "FATEM_1", "status": "running"}],
+                },
+                "helper": {
+                    "noteCount": 2,
+                    "countsByReason": {"lsp_timeout": 1, "missing_infrastructure": 1},
+                    "countsByPhase": {"prover": 2},
+                },
+                "taskResultsSummary": {
+                    "counts": {"resolved": 0, "blocker": 1, "other": 0},
+                },
+            },
+            sort_keys=True,
+        ),
+    )
+
+    overview = build_campaign_overview(campaign_root, heartbeat_seconds=60)
+
+    assert len(overview["runningRuns"]) == 1
+    running = overview["runningRuns"][0]
+    assert running["runId"] == "teacher-001"
+    assert running["scopeHint"] == "FATEM/1.lean"
+    assert running["latestIteration"] == "iter-003"
+    assert running["livePhase"] == "proving"
+    assert running["activeProverCount"] == 1
+    assert running["helperNoteCount"] == 2
+    assert running["helperReasonCounts"] == {"lsp_timeout": 1, "missing_infrastructure": 1}
+    assert running["taskResultBlockerCount"] == 1
+
+    overview_result = subprocess.run(
+        [
+            "python3",
+            str(CAMPAIGN_OVERVIEW),
+            "--campaign-root",
+            str(campaign_root),
+            "--heartbeat-seconds",
+            "60",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert overview_result.returncode == 0, overview_result.stderr
+    progress_markdown = (campaign_root / "control" / "progress-summary.md").read_text(encoding="utf-8")
+    assert "phase=proving" in progress_markdown
+    assert "helper_notes=2" in progress_markdown
+    assert "blocker_notes=1" in progress_markdown
+
+
 def test_create_campaign_scaffolds_operator_surfaces(tmp_path: Path):
     source = make_source_project(tmp_path, file_count=1)
     campaign_root = tmp_path / "campaign"

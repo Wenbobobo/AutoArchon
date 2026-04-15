@@ -38,7 +38,7 @@ Read `.archon/runtime-config.toml` before deciding whether to call helper tools.
 - If `[helper].enabled = true` and `[helper.prover].enabled = true`, prefer `.archon/tools/archon-helper-prover-agent.py`.
 - Respect `[helper.prover].max_calls_per_session`.
 - Use the helper after a real obstruction, not immediately: missing infrastructure, first stuck formal route, or LSP timeout are the default trigger points.
-- When using the helper wrapper, prefer `.archon/tools/archon-helper-prover-agent.py --phase prover --rel-path <file> --reason <trigger> --write-note auto "<prompt>"` so the note lands in `[helper.prover].notes_dir` with metadata.
+- When using the helper wrapper, prefer `.archon/tools/archon-helper-prover-agent.py --phase prover --rel-path <file> --reason <trigger> --prompt-pack auto --write-note auto "<prompt>"` so the note lands in `[helper.prover].notes_dir` with metadata and the helper gets the right task-class template.
 - Write helper output to the notes directory from `[helper.prover].notes_dir` and mention that path in `task_results/<file>.md`.
 - If helper is disabled or the runtime config is missing, fall back to `.archon/tools/archon-informal-agent.py`.
 

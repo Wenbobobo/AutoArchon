@@ -58,8 +58,14 @@ This roadmap records the remaining high-ROI work after the control-plane hardeni
   - auto-routed notes carry stable metadata headers plus target/reason context
   - `--print-effective-config` now exposes both phase policy blocks for launch-time inspection
   - plan/prover prompts and contract tests now teach the same phase-aware helper call shape
+- added task-class helper prompt packs on top of the routed helper surface:
+  - helper calls can now use `--prompt-pack auto` to select a reason-aware template from the current phase and trigger
+  - the helper note metadata now records the selected prompt pack for later observability and debugging
 - upgraded the campaign summary surface:
   - `control/progress-summary.*` now carries restart count, ETA, recent finalized targets, and direct final-report/export paths instead of only the coarse progress bar
+- upgraded file-backed observability beyond coarse counts:
+  - run-level `progress-summary.*` now shows helper-note phase/reason/prompt-pack breakdowns plus task-result kind counts
+  - campaign-level running rows now surface live phase, helper note counts, and blocker-note counts from the run summaries
 - collected fresh multi-run rerun evidence on the hardened path:
   - `20260415-rerun12-fatem-42-45-94` reached a real terminal closeout with `accepted = 2`, `blocked = 1`
   - `teacher-45` and `teacher-94` exported accepted proofs, `teacher-42` exported an accepted blocker note, and `reports/final/final-summary.json` was written cleanly
@@ -72,9 +78,9 @@ This roadmap records the remaining high-ROI work after the control-plane hardeni
 ## Current Remaining Gaps
 
 - run-level observability still lags during long inner loops
-  - the new live surface is enough for phase/prover visibility, but a richer operator-facing dashboard can still layer on top later
+  - the file-backed summaries now expose live phase, helper-note breakdowns, and blocker-note counts, but a richer browser UI can still layer on top later
 - helper-prover policy is still intentionally minimal above the transport layer
-  - phase-aware note-routing is now in place, but task-class prompt packs and stronger trigger heuristics are still open
+  - phase-aware note-routing and task-class prompt packs are now in place, but stronger trigger heuristics are still open
 - historical blocker/proof route reuse is still reactive rather than proactive
   - `autoarchon-supervised-cycle --preload-historical-routes` now gives an opt-in proactive preload path for experience-reuse runs
   - campaign creation, launch specs, generated teacher prompts, and launch assets can now carry the same `preloadHistoricalRoutes` setting
@@ -90,8 +96,8 @@ This roadmap records the remaining high-ROI work after the control-plane hardeni
    - `20260415-prewarm-validate-fatem5` proved the wide-run planning surface selects `scoped_verify_sample`, and the sampled prewarm finished successfully on a real workspace without falling back to full-project `lake build`
 3. Helper-prover deepening without changing acceptance ownership: completed for the current phase
    - fallback transports now live in `.archon/runtime-config.toml`, helper failures can roll to the next provider, and the prover prompt now prioritizes durable `task_results` over optional cleanup
-   - phase-aware helper note routing, metadata-backed notes, and effective-config policy visibility are now covered too
-   - richer task-class helper prompting and stronger trigger heuristics remain next-phase quality tasks, not phase-5 blockers
+   - phase-aware helper note routing, metadata-backed notes, effective-config policy visibility, and task-class prompt packs are now covered too
+   - stronger trigger heuristics remain next-phase quality tasks, not phase-5 blockers
 4. Shared-build substrate decision: completed for the current phase
    - keep one warmed benchmark clone under `benchmarks/` and reuse it via `--reuse-lake-from`
    - do not deduplicate clone `.lake` directories until a documented rehydrate workflow exists
@@ -101,9 +107,9 @@ This roadmap records the remaining high-ROI work after the control-plane hardeni
 1. preload historical accepted blocker/proof routes into fresh relaunches before the next planner pass
    - the opt-in supervisor and campaign/spec surfaces now exist; the next step is deciding whether any non-benchmark templates should adopt it by default
 2. deepen helper-prover prompt policy above the now-stable transport layer
-   - focus on bounded invocation heuristics, task-class prompt packs, and optional external provider mixes such as Gemini or DeepSeek through the existing OpenAI-compatible surface
+   - focus on bounded invocation heuristics and optional external provider mixes such as Gemini or DeepSeek through the existing OpenAI-compatible surface
 3. add a richer operator-facing dashboard without weakening the file-backed source of truth
-   - campaign and supervisor `progress-summary.*` should remain canonical even if a later web surface is added
+   - campaign and supervisor `progress-summary.*` should remain canonical even if a later web surface or TUI is added
 
 ## Non-Goals For This Phase
 

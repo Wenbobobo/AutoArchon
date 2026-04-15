@@ -101,11 +101,12 @@ The preferred helper call shape is phase-aware and note-routed:
   --phase plan|prover \
   --rel-path <file> \
   --reason <trigger> \
+  --prompt-pack auto \
   --write-note auto \
   "<prompt>"
 ```
 
-`--write-note auto` writes a metadata-backed Markdown note into the phase-specific `notes_dir` (`[helper.plan].notes_dir` or `[helper.prover].notes_dir`). An explicit path still keeps the older bare-text compatibility behavior. `--print-effective-config` now exposes both policy blocks so operators can inspect the resolved helper limits before launch.
+`--prompt-pack auto` selects a task-class helper template from the phase and reason, while `--write-note auto` writes a metadata-backed Markdown note into the phase-specific `notes_dir` (`[helper.plan].notes_dir` or `[helper.prover].notes_dir`). An explicit path still keeps the older bare-text compatibility behavior. `--print-effective-config` now exposes both policy blocks plus prompt-pack selection so operators can inspect the resolved helper limits before launch.
 
 ## Boundary With Vendored Lean4 Material
 

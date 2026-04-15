@@ -471,6 +471,70 @@ def _helper_note_files(workspace: Path, runtime_config: RuntimeConfig) -> list[P
     )
 
 
+def _parse_helper_note_metadata(path: Path, workspace: Path) -> dict[str, str]:
+    metadata = {"path": _relative_to_workspace(path, workspace)}
+    text = path.read_text(encoding="utf-8", errors="replace")
+    for line in text.splitlines()[:16]:
+        if not line.startswith("- "):
+            continue
+        body = line[2:]
+        if ": `" not in body or not body.endswith("`"):
+            continue
+        raw_key, raw_value = body.split(": `", 1)
+        key = raw_key.strip().lower().replace(" ", "")
+        metadata[key] = raw_value[:-1]
+    return metadata
+
+
+def _helper_note_summary(workspace: Path, runtime_config: RuntimeConfig) -> dict[str, object]:
+    note_files = _helper_note_files(workspace, runtime_config)
+    recent_metadata = [_parse_helper_note_metadata(path, workspace) for path in note_files[:8]]
+    counts_by_phase: dict[str, int] = {}
+    counts_by_reason: dict[str, int] = {}
+    counts_by_prompt_pack: dict[str, int] = {}
+
+    for path in note_files:
+        metadata = _parse_helper_note_metadata(path, workspace)
+        phase = metadata.get("phase")
+        reason = metadata.get("reason")
+        prompt_pack = metadata.get("promptpack")
+        if phase:
+            counts_by_phase[phase] = counts_by_phase.get(phase, 0) + 1
+        if reason:
+            counts_by_reason[reason] = counts_by_reason.get(reason, 0) + 1
+        if prompt_pack:
+            counts_by_prompt_pack[prompt_pack] = counts_by_prompt_pack.get(prompt_pack, 0) + 1
+
+    return {
+        "noteCount": len(note_files),
+        "recentNotes": [_relative_to_workspace(path, workspace) for path in note_files[:8]],
+        "recentMetadata": recent_metadata,
+        "countsByPhase": dict(sorted(counts_by_phase.items())),
+        "countsByReason": dict(sorted(counts_by_reason.items())),
+        "countsByPromptPack": dict(sorted(counts_by_prompt_pack.items())),
+    }
+
+
+def _task_result_summary(workspace: Path) -> dict[str, object]:
+    task_results_root = workspace / ".archon" / "task_results"
+    note_files = sorted(
+        task_results_root.glob("*.md"),
+        key=lambda path: path.stat().st_mtime if path.exists() else 0.0,
+        reverse=True,
+    )
+    counts = {"resolved": 0, "blocker": 0, "other": 0}
+    recent_results: list[dict[str, str]] = []
+    for path in note_files:
+        kind, _ = _classify_task_result_note(path)
+        counts[kind] = counts.get(kind, 0) + 1
+        if len(recent_results) < 8:
+            recent_results.append({"path": path.name, "kind": kind})
+    return {
+        "counts": counts,
+        "recentResults": recent_results,
+    }
+
+
 def _progress_bar(completed: int, total: int, *, width: int = 20) -> tuple[str, int]:
     if total <= 0:
         return "[" + "-" * width + "]", 0
@@ -741,7 +805,8 @@ def _build_run_progress_payload(
         + target_counts["rejectedTargets"]
     )
     progress_bar, progress_percent = _progress_bar(closed_targets, len(scope_targets))
-    helper_note_files = _helper_note_files(workspace, runtime_config)
+    helper_summary = _helper_note_summary(workspace, runtime_config)
+    task_results_summary = _task_result_summary(workspace)
     helper_model = runtime_config.helper.model if runtime_config.helper is not None else None
     helper_provider = runtime_config.helper.provider if runtime_config.helper is not None else None
     historical_routes_seeded = runtime_overrides.get("historicalRoutesSeeded")
@@ -796,9 +861,9 @@ def _build_run_progress_payload(
             "provider": helper_provider,
             "model": helper_model,
             "noteDirs": [_relative_to_workspace(path, workspace) for path in _helper_note_dirs(workspace, runtime_config)],
-            "noteCount": len(helper_note_files),
-            "recentNotes": [_relative_to_workspace(path, workspace) for path in helper_note_files[:8]],
+            **helper_summary,
         },
+        "taskResultsSummary": task_results_summary,
         "historicalRoutes": {
             "enabled": runtime_overrides.get("preloadHistoricalRoutes") is True,
             "count": len(historical_routes_seeded),
@@ -812,10 +877,12 @@ def _render_run_progress_markdown(payload: dict[str, Any]) -> str:
     progress = payload.get("progress") if isinstance(payload.get("progress"), dict) else {}
     scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
     helper = payload.get("helper") if isinstance(payload.get("helper"), dict) else {}
+    task_results_summary = payload.get("taskResultsSummary") if isinstance(payload.get("taskResultsSummary"), dict) else {}
     historical_routes = payload.get("historicalRoutes") if isinstance(payload.get("historicalRoutes"), dict) else {}
     target_counts = payload.get("targetCounts") if isinstance(payload.get("targetCounts"), dict) else {}
     tail_scope_timeouts = payload.get("tailScopeTimeouts") if isinstance(payload.get("tailScopeTimeouts"), dict) else {}
     live_runtime = payload.get("liveRuntime") if isinstance(payload.get("liveRuntime"), dict) else {}
+    task_result_counts = task_results_summary.get("counts") if isinstance(task_results_summary.get("counts"), dict) else {}
     tail_scope_parts: list[str] = []
     if isinstance(tail_scope_timeouts.get("plan"), int):
         tail_scope_parts.append(f"plan={tail_scope_timeouts['plan']}s")
@@ -835,6 +902,8 @@ def _render_run_progress_markdown(payload: dict[str, Any]) -> str:
         f"- Live plan status: `{live_runtime.get('planStatus') or '(none)'}`",
         f"- Live prover status: `{live_runtime.get('proverStatus') or '(none)'}`",
         f"- Live review status: `{live_runtime.get('reviewStatus') or '(none)'}`",
+        f"- Active prover count: `{len(live_runtime.get('activeProvers', [])) if isinstance(live_runtime.get('activeProvers'), list) else 0}`",
+        f"- Live activity age: `{live_runtime.get('lastActivityAgeSeconds') if live_runtime.get('lastActivityAgeSeconds') is not None else '(none)'}`",
         f"- Accepted proofs: `{target_counts.get('acceptedProofs', 0)}`",
         f"- Accepted blockers: `{target_counts.get('acceptedBlockers', 0)}`",
         f"- Rejected targets: `{target_counts.get('rejectedTargets', 0)}`",
@@ -842,8 +911,12 @@ def _render_run_progress_markdown(payload: dict[str, Any]) -> str:
         f"- Attention targets: `{target_counts.get('attentionTargets', 0)}`",
         f"- Changed files: `{len(payload.get('changedFiles', [])) if isinstance(payload.get('changedFiles'), list) else 0}`",
         f"- Task results: `{len(payload.get('taskResults', [])) if isinstance(payload.get('taskResults'), list) else 0}`",
+        f"- Task result kinds: `resolved={task_result_counts.get('resolved', 0)}, blocker={task_result_counts.get('blocker', 0)}, other={task_result_counts.get('other', 0)}`",
         f"- Helper enabled: `{helper.get('enabled')}`",
         f"- Helper notes observed: `{helper.get('noteCount', 0)}`",
+        f"- Helper note phases: `{json.dumps(helper.get('countsByPhase', {}), sort_keys=True)}`",
+        f"- Helper note reasons: `{json.dumps(helper.get('countsByReason', {}), sort_keys=True)}`",
+        f"- Helper prompt packs: `{json.dumps(helper.get('countsByPromptPack', {}), sort_keys=True)}`",
         f"- Historical routes enabled: `{historical_routes.get('enabled')}`",
         f"- Historical routes seeded: `{historical_routes.get('count', 0)}`",
         f"- Historical route manifest: `{historical_routes.get('manifest') or '(none)'}`",
@@ -894,10 +967,31 @@ def _render_run_progress_markdown(payload: dict[str, Any]) -> str:
         lines.append("- New task results: `(none)`")
 
     lines.extend(["", "## Helper Notes", ""])
-    recent_notes = helper.get("recentNotes")
-    if isinstance(recent_notes, list) and recent_notes:
-        for note in recent_notes:
-            lines.append(f"- `{note}`")
+    recent_note_metadata = helper.get("recentMetadata")
+    if isinstance(recent_note_metadata, list) and recent_note_metadata:
+        for note in recent_note_metadata:
+            if not isinstance(note, dict):
+                continue
+            descriptor = [
+                f"`{note.get('path', 'unknown')}`",
+            ]
+            if isinstance(note.get("phase"), str):
+                descriptor.append(f"phase=`{note['phase']}`")
+            if isinstance(note.get("reason"), str):
+                descriptor.append(f"reason=`{note['reason']}`")
+            if isinstance(note.get("promptpack"), str):
+                descriptor.append(f"pack=`{note['promptpack']}`")
+            lines.append("- " + " ".join(descriptor))
+    else:
+        lines.append("- none")
+
+    lines.extend(["", "## Task Results", ""])
+    recent_task_results = task_results_summary.get("recentResults")
+    if isinstance(recent_task_results, list) and recent_task_results:
+        for row in recent_task_results:
+            if not isinstance(row, dict):
+                continue
+            lines.append(f"- `{row.get('path', 'unknown')}` — `{row.get('kind', 'unknown')}`")
     else:
         lines.append("- none")
 
