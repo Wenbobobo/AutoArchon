@@ -93,6 +93,18 @@ def _effective_config(
             if timeout_seconds is not None
             else (config.timeout_seconds if config is not None else informal_agent.TIMEOUT)
         ),
+        "fallbacks": [
+            {
+                "provider": fallback.provider,
+                "model": fallback.model,
+                "apiKeyEnv": fallback.api_key_env,
+                "baseUrlEnv": fallback.base_url_env,
+                "maxRetries": fallback.max_retries,
+                "initialBackoffSeconds": fallback.initial_backoff_seconds,
+                "timeoutSeconds": fallback.timeout_seconds,
+            }
+            for fallback in (config.fallbacks if config is not None else ())
+        ],
     }
 
 
@@ -123,6 +135,111 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--initial-backoff-seconds", type=int, help="Override retry backoff base")
     parser.add_argument("--timeout-seconds", type=int, help="Override request timeout")
     return parser.parse_args()
+
+
+def _call_provider(
+    informal_agent: Any,
+    *,
+    prompt: str,
+    think: bool,
+    config: HelperProviderConfig,
+) -> str:
+    fn = {
+        "gemini": informal_agent.call_gemini,
+        "openai": informal_agent.call_openai,
+        "openrouter": informal_agent.call_openrouter,
+    }[config.provider]
+    api_key_env, base_url_env = _provider_env_names(
+        informal_agent,
+        provider=config.provider,
+        config=config,
+    )
+    with _patched_transport(
+        informal_agent,
+        provider=config.provider,
+        api_key_env=api_key_env,
+        base_url_env=base_url_env,
+    ):
+        return fn(
+            prompt,
+            config.model,
+            think,
+            max_retries=config.max_retries,
+            initial_backoff_seconds=config.initial_backoff_seconds,
+            timeout_seconds=config.timeout_seconds,
+        )
+
+
+def _primary_attempt_config(
+    informal_agent: Any,
+    *,
+    provider: str,
+    model: str | None,
+    runtime_config: RuntimeConfig,
+    max_retries: int | None,
+    initial_backoff_seconds: int | None,
+    timeout_seconds: int | None,
+) -> HelperProviderConfig:
+    config = runtime_config.helper
+    api_key_env, base_url_env = _provider_env_names(
+        informal_agent,
+        provider=provider,
+        config=config,
+    )
+    return HelperProviderConfig(
+        provider=provider,
+        model=model or (config.model if config is not None and config.provider == provider else informal_agent.DEFAULTS[provider]),
+        api_key_env=api_key_env,
+        base_url_env=base_url_env,
+        max_retries=max_retries if max_retries is not None else (config.max_retries if config is not None and config.provider == provider else informal_agent.MAX_RETRIES),
+        initial_backoff_seconds=(
+            initial_backoff_seconds
+            if initial_backoff_seconds is not None
+            else (config.initial_backoff_seconds if config is not None and config.provider == provider else informal_agent.INITIAL_BACKOFF_SECONDS)
+        ),
+        timeout_seconds=(
+            timeout_seconds
+            if timeout_seconds is not None
+            else (config.timeout_seconds if config is not None and config.provider == provider else informal_agent.TIMEOUT)
+        ),
+        fallbacks=config.fallbacks if config is not None and config.provider == provider else (),
+    )
+
+
+def _attempt_chain(
+    informal_agent: Any,
+    *,
+    provider: str,
+    model: str | None,
+    runtime_config: RuntimeConfig,
+    max_retries: int | None,
+    initial_backoff_seconds: int | None,
+    timeout_seconds: int | None,
+    explicit_provider: bool,
+) -> tuple[HelperProviderConfig, ...]:
+    primary = _primary_attempt_config(
+        informal_agent,
+        provider=provider,
+        model=model,
+        runtime_config=runtime_config,
+        max_retries=max_retries,
+        initial_backoff_seconds=initial_backoff_seconds,
+        timeout_seconds=timeout_seconds,
+    )
+    if explicit_provider:
+        return (primary,)
+
+    ordered: list[HelperProviderConfig] = [primary]
+    seen: set[tuple[str, str, str, str | None]] = {
+        (primary.provider, primary.model, primary.api_key_env, primary.base_url_env)
+    }
+    for fallback in primary.fallbacks:
+        key = (fallback.provider, fallback.model, fallback.api_key_env, fallback.base_url_env)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(fallback)
+    return tuple(ordered)
 
 
 def main() -> int:
@@ -157,31 +274,41 @@ def main() -> int:
 
     if not args.prompt:
         raise SystemExit("Error: prompt is required unless --print-effective-config is used.")
-
-    fn = {
-        "gemini": informal_agent.call_gemini,
-        "openai": informal_agent.call_openai,
-        "openrouter": informal_agent.call_openrouter,
-    }[provider]
-    api_key_env, base_url_env = _provider_env_names(
+    attempts = _attempt_chain(
         informal_agent,
         provider=provider,
-        config=config,
+        model=args.model,
+        runtime_config=runtime_config,
+        max_retries=args.max_retries,
+        initial_backoff_seconds=args.initial_backoff_seconds,
+        timeout_seconds=args.timeout_seconds,
+        explicit_provider=args.provider is not None,
     )
-    with _patched_transport(
-        informal_agent,
-        provider=provider,
-        api_key_env=api_key_env,
-        base_url_env=base_url_env,
-    ):
-        response = fn(
-            args.prompt,
-            str(effective["model"]),
-            args.think,
-            max_retries=int(effective["maxRetries"]),
-            initial_backoff_seconds=int(effective["initialBackoffSeconds"]),
-            timeout_seconds=int(effective["timeoutSeconds"]),
-        )
+    failures: list[str] = []
+    response: str | None = None
+    for index, attempt in enumerate(attempts):
+        try:
+            response = _call_provider(
+                informal_agent,
+                prompt=args.prompt,
+                think=args.think,
+                config=attempt,
+            )
+            if index > 0:
+                sys.stderr.write(
+                    f"[archon-helper] primary provider failed; used fallback {attempt.provider}:{attempt.model}\n"
+                )
+            break
+        except SystemExit as exc:
+            failures.append(f"{attempt.provider}:{attempt.model}: {exc}")
+            if index + 1 < len(attempts):
+                sys.stderr.write(
+                    f"[archon-helper] helper attempt failed on {attempt.provider}:{attempt.model}; trying next fallback\n"
+                )
+                continue
+            joined = "\n".join(f"- {message}" for message in failures)
+            raise SystemExit(f"Error: helper transport failed across configured providers.\n{joined}") from exc
+    assert response is not None
     if args.write_note:
         note_path = Path(args.write_note).resolve()
         note_path.parent.mkdir(parents=True, exist_ok=True)

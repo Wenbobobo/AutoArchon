@@ -22,6 +22,10 @@ max_retries = 8
 initial_backoff_seconds = 9
 timeout_seconds = 321
 
+[[helper.fallbacks]]
+provider = "gemini"
+model = "gemini-3.1-pro-preview"
+
 [helper.plan]
 enabled = true
 max_calls_per_iteration = 2
@@ -50,6 +54,8 @@ write_progress_surface = false
     assert config.helper is not None
     assert config.helper.provider == "openai"
     assert config.helper.max_retries == 8
+    assert len(config.helper.fallbacks) == 1
+    assert config.helper.fallbacks[0].provider == "gemini"
     assert config.helper_plan.max_calls_per_iteration == 2
     assert config.helper_plan.trigger_on_external_reference is False
     assert config.helper_prover.max_calls_per_session == 3

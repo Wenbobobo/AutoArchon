@@ -232,6 +232,23 @@ The generated file includes helper policy for both the `plan` and `prover` phase
 
 OpenAI-compatible providers such as DeepSeek should still use `provider = "openai"` in `.archon/runtime-config.toml`, then point `api_key_env` and `base_url_env` at the compatible endpoint. Legacy `.archon/helper-provider.json` is still accepted as a fallback, but new workspaces should use the TOML file.
 
+If you want bounded helper failover, add fallback transports explicitly:
+
+```toml
+[helper]
+enabled = true
+provider = "openai"
+model = "deepseek-reasoner"
+api_key_env = "DEEPSEEK_API_KEY"
+base_url_env = "DEEPSEEK_BASE_URL"
+
+[[helper.fallbacks]]
+provider = "gemini"
+model = "gemini-3.1-pro-preview"
+```
+
+The helper wrapper will keep the primary transport first and only try the next configured provider when that call fails. Acceptance ownership still stays with the normal proof loop; helper output remains advisory only.
+
 ## Where Proofs and Lessons End Up
 
 - Mutable proof search happens only under `runs/<id>/workspace/`.
@@ -291,6 +308,7 @@ uv run --directory /path/to/AutoArchon autoarchon-storage-report \
 ```
 
 By default, the retention report treats canonical benchmark clones under `benchmarks/` as shared Lean projects to keep, not disposable run roots.
+That is also the current shared-build strategy: campaigns should reuse a warmed benchmark clone via `--reuse-lake-from`, while clone-level `.lake` deduplication stays out of scope until there is a documented rehydrate path.
 
 Dry-run a safe reclaim plan:
 

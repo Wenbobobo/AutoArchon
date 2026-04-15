@@ -50,6 +50,11 @@ This roadmap records the remaining high-ROI work after the control-plane hardeni
 - reduced prover cold-start stalls on exact-route tail shards:
   - the prover prompt now explicitly allows skipping the first Lean MCP diagnostics call when the file is still a bare one-sorry theorem and an exact route is already recorded
   - a fresh manual rerun then validated the full path: `plan.status = skipped_fast_path` and the same run finished `clean` in one iteration
+- strengthened the helper-prover transport surface:
+  - `.archon/runtime-config.toml` now supports ordered `[[helper.fallbacks]]` entries
+  - the helper wrapper can fail over to the next configured provider without changing proof acceptance ownership
+- upgraded the campaign summary surface:
+  - `control/progress-summary.*` now carries restart count, ETA, recent finalized targets, and direct final-report/export paths instead of only the coarse progress bar
 
 ## Current Remaining Gaps
 
@@ -57,8 +62,8 @@ This roadmap records the remaining high-ROI work after the control-plane hardeni
   - deterministic pytest coverage is strong now, and single-run real reruns are now validated, but a wider unattended benchmark slice still matters for transport flake, owner-restart behavior, and final acceptance quality
 - run-level observability still lags during long inner loops
   - the new live surface is enough for phase/prover visibility, but a richer operator-facing dashboard can still layer on top later
-- helper-prover policy is still intentionally minimal
-  - provider fallback, prompt quality, and bounded-use heuristics can go further
+- helper-prover policy is still intentionally minimal above the transport layer
+  - prompt quality, trigger heuristics, and note-routing policy can go further even though provider fallback is now present
 - benchmark clone retention is now observable, but not deduplicated
   - we still do not have a canonical shared-build strategy across multiple benchmark clones that use the same toolchain/mathlib graph
 
@@ -71,7 +76,7 @@ This roadmap records the remaining high-ROI work after the control-plane hardeni
    - confirm that `scoped_verify_sample` materially lowers cold-start time without increasing broken-run recovery
    - keep warmed-build compatibility checks strict and visible
 3. deepen the helper-prover path without changing acceptance ownership
-   - improve external-provider fallback and bounded invocation policy
+   - improve prompt quality and bounded invocation policy on top of the new fallback chain
    - keep helper outputs strictly advisory
 4. decide whether benchmark clones should share a single warmed build substrate
    - keep the current clone-aware retention policy until there is a safe deduplication or rehydrate workflow

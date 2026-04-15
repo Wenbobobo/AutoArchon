@@ -72,6 +72,33 @@ def test_resolve_helper_provider_config_accepts_snake_case_fields_for_toml():
     assert config.timeout_seconds == 333
 
 
+def test_resolve_helper_provider_config_parses_fallbacks():
+    config = resolve_helper_provider_config(
+        {
+            "enabled": True,
+            "provider": "openai",
+            "model": "deepseek-reasoner",
+            "api_key_env": "DEEPSEEK_API_KEY",
+            "base_url_env": "DEEPSEEK_BASE_URL",
+            "fallbacks": [
+                {
+                    "provider": "gemini",
+                    "model": "gemini-3.1-pro-preview",
+                },
+                {
+                    "provider": "openrouter",
+                    "model": "google/gemini-3.1-pro-preview",
+                },
+            ],
+        }
+    )
+
+    assert config is not None
+    assert [fallback.provider for fallback in config.fallbacks] == ["gemini", "openrouter"]
+    assert config.fallbacks[0].api_key_env == "GEMINI_API_KEY"
+    assert config.fallbacks[1].base_url_env == "OPENROUTER_BASE_URL"
+
+
 def test_resolve_helper_provider_config_rejects_unknown_provider():
     with pytest.raises(ValueError, match="unsupported helper provider"):
         resolve_helper_provider_config(

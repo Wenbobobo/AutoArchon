@@ -2491,6 +2491,9 @@ def test_campaign_overview_and_archive_capture_owner_lease_and_status(tmp_path: 
     progress_summary = (campaign_root / "control" / "progress-summary.md").read_text(encoding="utf-8")
     assert "# Campaign Progress:" in progress_summary
     assert "100% (1/1 finalized targets)" in progress_summary
+    assert "## Recent Finalized" in progress_summary
+    assert "proof accepted-run:FATEM/1.lean" in progress_summary
+    assert "Final summary:" in progress_summary
 
     archive_result = subprocess.run(
         [

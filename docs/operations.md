@@ -93,6 +93,8 @@ If the supervisor detects that every remaining tail-scope objective already has 
 
 That means the initial planner pass was skipped on purpose and the cycle moved straight into prover work.
 
+At the campaign layer, `control/progress-summary.md` now includes the current ETA, restart count, most recent finalized targets, and direct paths to `compare-report.json`, `final-summary.json`, exported proofs, and exported blockers. This is the fastest file-backed surface for checking whether a night run is converging without opening the full dashboard.
+
 For one accepted run, the main evidence paths are:
 
 - live edited theorem: `workspace/<rel-path>.lean`
@@ -117,6 +119,8 @@ uv run --directory /path/to/AutoArchon autoarchon-campaign-archive \
 ```
 
 Before starting another teacher on an existing run, inspect `workspace/.archon/supervisor/run-lease.json`.
+
+Today the low-risk shared-build policy is still: keep one warmed benchmark clone under `benchmarks/` and point campaigns at it with `--reuse-lake-from`. Do not manually deduplicate clone `.lake` directories unless you also own the rehydrate workflow.
 
 ## Storage Hygiene
 

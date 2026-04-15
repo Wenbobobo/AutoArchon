@@ -2070,6 +2070,7 @@ def build_campaign_overview(
                 running_rows.append(
                     {
                         "runId": run.get("runId"),
+                        "scopeHint": run.get("scopeHint"),
                         "latestIteration": run.get("latestIteration"),
                         "latestActivityAt": run.get("latestActivityAt"),
                         "acceptedProofCount": len(run.get("acceptedProofs", [])) if isinstance(run.get("acceptedProofs"), list) else 0,
@@ -2083,6 +2084,7 @@ def build_campaign_overview(
                 recoverable_rows.append(
                     {
                         "runId": run.get("runId"),
+                        "scopeHint": run.get("scopeHint"),
                         "status": run.get("status"),
                         "recoveryClass": run.get("recoveryClass"),
                         "action": recovery.get("action"),
@@ -2107,6 +2109,16 @@ def build_campaign_overview(
         target_counts=target_counts,
         run_counts=status_payload.get("counts", {}) if isinstance(status_payload.get("counts"), Mapping) else {},
     )
+    accepted_targets: list[dict[str, Any]] = []
+    if isinstance(runs, list):
+        for run in runs:
+            if not isinstance(run, dict):
+                continue
+            run_id = run.get("runId")
+            for rel_path in run.get("acceptedProofs", []) if isinstance(run.get("acceptedProofs"), list) else []:
+                accepted_targets.append({"kind": "proof", "runId": run_id, "relPath": rel_path})
+            for rel_path in run.get("acceptedBlockers", []) if isinstance(run.get("acceptedBlockers"), list) else []:
+                accepted_targets.append({"kind": "blocker", "runId": run_id, "relPath": rel_path})
 
     return {
         "schemaVersion": SCHEMA_VERSION,
@@ -2147,12 +2159,16 @@ def build_campaign_overview(
         },
         "progress": progress,
         "eta": eta,
+        "recentFinalizedTargets": accepted_targets[:12],
         "ownerMode": owner_mode,
         "ownerLease": lease,
         "paths": {
             "campaignRoot": str(campaign_root),
             "statusPath": str(campaign_root / "campaign-status.json"),
             "compareReportPath": str(campaign_root / "reports" / "final" / "compare-report.json"),
+            "finalSummaryPath": str(campaign_root / "reports" / "final" / "final-summary.json"),
+            "finalProofsRoot": str(campaign_root / "reports" / "final" / "proofs"),
+            "finalBlockersRoot": str(campaign_root / "reports" / "final" / "blockers"),
             "watchdogStatePath": str(campaign_root / "control" / "orchestrator-watchdog.json"),
             "progressSummaryPath": str(campaign_root / "control" / "progress-summary.md"),
             "progressSummaryJsonPath": str(campaign_root / "control" / "progress-summary.json"),
@@ -2281,6 +2297,9 @@ def render_campaign_progress_markdown(overview: Mapping[str, Any]) -> str:
     running_runs = overview.get("runningRuns") if isinstance(overview.get("runningRuns"), list) else []
     recoverable_runs = overview.get("recoverableRuns") if isinstance(overview.get("recoverableRuns"), list) else []
     watchdog_runtime = overview.get("watchdogRuntime") if isinstance(overview.get("watchdogRuntime"), Mapping) else {}
+    eta = overview.get("eta") if isinstance(overview.get("eta"), Mapping) else {}
+    paths = overview.get("paths") if isinstance(overview.get("paths"), Mapping) else {}
+    recent_finalized = overview.get("recentFinalizedTargets") if isinstance(overview.get("recentFinalizedTargets"), list) else []
 
     lines = [
         f"# Campaign Progress: {campaign_id}",
@@ -2293,6 +2312,10 @@ def render_campaign_progress_markdown(overview: Mapping[str, Any]) -> str:
         f"- Accepted blockers: `{target_counts.get('acceptedBlockers', 0)}`",
         f"- Watchdog status: `{overview.get('watchdogStatus') or 'unknown'}`",
         f"- Likely cause: `{watchdog_runtime.get('likelyCause') or 'unknown'}`",
+        f"- Restart count: `{overview.get('restartCount') if overview.get('restartCount') is not None else 'unknown'}`",
+        f"- ETA: `{eta.get('etaText', 'unknown')}`",
+        f"- Last progress at: `{overview.get('lastProgressAt') or 'unknown'}`",
+        f"- Last recovery at: `{overview.get('lastRecoveryAt') or 'none'}`",
         "",
         "## Running",
         "",
@@ -2300,9 +2323,17 @@ def render_campaign_progress_markdown(overview: Mapping[str, Any]) -> str:
     if running_runs:
         for row in running_runs[:8]:
             lines.append(
-                f"- `{row.get('runId')}` iter={row.get('latestIteration')} remaining={row.get('remainingTargetCount')} "
-                f"accepted_proofs={row.get('acceptedProofCount')} accepted_blockers={row.get('acceptedBlockerCount')}"
+                f"- `{row.get('runId')}` scope={row.get('scopeHint') or 'unknown'} iter={row.get('latestIteration')} "
+                f"remaining={row.get('remainingTargetCount')} accepted_proofs={row.get('acceptedProofCount')} "
+                f"accepted_blockers={row.get('acceptedBlockerCount')}"
             )
+    else:
+        lines.append("- none")
+
+    lines.extend(["", "## Recent Finalized", ""])
+    if recent_finalized:
+        for row in recent_finalized[:8]:
+            lines.append(f"- `{row.get('kind')} {row.get('runId')}:{row.get('relPath')}`")
     else:
         lines.append("- none")
 
@@ -2310,10 +2341,22 @@ def render_campaign_progress_markdown(overview: Mapping[str, Any]) -> str:
     if recoverable_runs:
         for row in recoverable_runs[:8]:
             lines.append(
-                f"- `{row.get('runId')}` status={row.get('status')} action={row.get('action')} class={row.get('recoveryClass')}"
+                f"- `{row.get('runId')}` scope={row.get('scopeHint') or 'unknown'} status={row.get('status')} "
+                f"action={row.get('action')} class={row.get('recoveryClass')}"
             )
     else:
         lines.append("- none")
+    lines.extend(
+        [
+            "",
+            "## Paths",
+            "",
+            f"- Compare report: `{paths.get('compareReportPath', 'unknown')}`",
+            f"- Final summary: `{paths.get('finalSummaryPath', 'unknown')}`",
+            f"- Proof exports: `{paths.get('finalProofsRoot', 'unknown')}`",
+            f"- Blocker exports: `{paths.get('finalBlockersRoot', 'unknown')}`",
+        ]
+    )
     return "\n".join(lines) + "\n"
 
 

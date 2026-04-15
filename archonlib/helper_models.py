@@ -16,6 +16,7 @@ class HelperProviderConfig:
     max_retries: int
     initial_backoff_seconds: int
     timeout_seconds: int
+    fallbacks: tuple["HelperProviderConfig", ...] = ()
 
 
 _PROVIDER_DEFAULTS: dict[str, dict[str, str | None]] = {
@@ -86,6 +87,20 @@ def resolve_helper_provider_config(payload: Mapping[str, Any] | bool | None) -> 
         field="helper initialBackoffSeconds",
     )
     timeout_seconds = _as_int(_mapping_get(payload, "timeout_seconds", "timeoutSeconds") or 300, field="helper timeoutSeconds")
+    fallback_payload = _mapping_get(payload, "fallbacks", "fallbacks")
+    if fallback_payload is None:
+        fallback_configs: list[HelperProviderConfig] = []
+    else:
+        if not isinstance(fallback_payload, list):
+            raise ValueError("helper fallbacks must be a list")
+        fallback_configs = []
+        for index, entry in enumerate(fallback_payload):
+            resolved = resolve_helper_provider_config(entry if isinstance(entry, Mapping) else None)
+            if resolved is None:
+                if entry in (None, False):
+                    continue
+                raise ValueError(f"helper fallback #{index + 1} must be a mapping")
+            fallback_configs.append(resolved)
 
     return HelperProviderConfig(
         provider=provider,
@@ -95,4 +110,5 @@ def resolve_helper_provider_config(payload: Mapping[str, Any] | bool | None) -> 
         max_retries=max_retries,
         initial_backoff_seconds=initial_backoff_seconds,
         timeout_seconds=timeout_seconds,
+        fallbacks=tuple(fallback_configs),
     )

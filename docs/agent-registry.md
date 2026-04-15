@@ -58,6 +58,10 @@ max_retries = 5
 initial_backoff_seconds = 5
 timeout_seconds = 300
 
+[[helper.fallbacks]]
+provider = "gemini"
+model = "gemini-3.1-pro-preview"
+
 [helper.plan]
 enabled = true
 max_calls_per_iteration = 1
@@ -78,7 +82,7 @@ notes_dir = ".archon/informal/helper"
 write_progress_surface = true
 ```
 
-`provider` resolves through the existing informal-agent transport and is validated against `openai`, `gemini`, and `openrouter`. OpenAI-compatible providers such as DeepSeek should be wired through `api_key_env` and `base_url_env` rather than a separate runtime role.
+`provider` resolves through the existing informal-agent transport and is validated against `openai`, `gemini`, and `openrouter`. OpenAI-compatible providers such as DeepSeek should be wired through `api_key_env` and `base_url_env` rather than a separate runtime role. Optional `[[helper.fallbacks]]` entries give the helper one bounded failover chain when the primary provider transport fails.
 
 Each initialized workspace gets:
 
@@ -86,7 +90,7 @@ Each initialized workspace gets:
 - `.archon/tools/archon-helper-prover-agent.py`
 - `.archon/tools/archon-informal-agent.py`
 
-The helper wrapper prefers the config-backed transport when `enabled` is true and otherwise leaves the older informal tool available as a fallback. Legacy `.archon/helper-provider.json` is still accepted for compatibility, but new workspaces should use the TOML file.
+The helper wrapper prefers the config-backed transport when `enabled` is true and otherwise leaves the older informal tool available as a compatibility fallback. Legacy `.archon/helper-provider.json` is still accepted for compatibility, but new workspaces should use the TOML file.
 
 By default, helper output should be written under `.archon/informal/helper/` and then referenced from `PROGRESS.md` or `task_results/<file>.md`, rather than mixed directly into the durable task-result note namespace.
 

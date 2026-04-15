@@ -35,6 +35,10 @@ max_retries = 7
 initial_backoff_seconds = 11
 timeout_seconds = 222
 
+[[helper.fallbacks]]
+provider = "gemini"
+model = "gemini-3.1-pro-preview"
+
 [helper.plan]
 enabled = true
 max_calls_per_iteration = 3
@@ -60,6 +64,17 @@ max_calls_per_session = 4
     assert payload["maxRetries"] == 7
     assert payload["initialBackoffSeconds"] == 11
     assert payload["timeoutSeconds"] == 222
+    assert payload["fallbacks"] == [
+        {
+            "apiKeyEnv": "GEMINI_API_KEY",
+            "baseUrlEnv": "GEMINI_BASE_URL",
+            "initialBackoffSeconds": 5,
+            "maxRetries": 5,
+            "model": "gemini-3.1-pro-preview",
+            "provider": "gemini",
+            "timeoutSeconds": 300,
+        }
+    ]
     assert payload["legacyHelperJsonUsed"] is False
 
 
@@ -166,3 +181,65 @@ def test_helper_tool_accepts_legacy_helper_json_override(monkeypatch, tmp_path: 
     payload = json.loads(capsys.readouterr().out)
     assert payload["legacyHelperJsonUsed"] is True
     assert payload["provider"] == "openai"
+
+
+def test_helper_tool_uses_fallback_provider_when_primary_fails(monkeypatch, tmp_path: Path, capsys):
+    config_path = tmp_path / "runtime-config.toml"
+    config_path.write_text(
+        """
+[helper]
+enabled = true
+provider = "openai"
+model = "deepseek-reasoner"
+api_key_env = "DEEPSEEK_API_KEY"
+base_url_env = "DEEPSEEK_BASE_URL"
+
+[[helper.fallbacks]]
+provider = "gemini"
+model = "gemini-3.1-pro-preview"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    attempts: list[tuple[str, str]] = []
+
+    def fail_openai(prompt: str, model: str, think: bool, *, max_retries: int, initial_backoff_seconds: int, timeout_seconds: int) -> str:
+        attempts.append(("openai", model))
+        raise SystemExit("Transport error: primary unavailable")
+
+    def pass_gemini(prompt: str, model: str, think: bool, *, max_retries: int, initial_backoff_seconds: int, timeout_seconds: int) -> str:
+        attempts.append(("gemini", model))
+        return "fallback result"
+
+    fake_agent = SimpleNamespace(
+        API_KEY_ENVS={"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "openrouter": "OPENROUTER_API_KEY"},
+        BASE_URL_ENVS={"openai": "OPENAI_BASE_URL", "gemini": "GEMINI_BASE_URL", "openrouter": "OPENROUTER_BASE_URL"},
+        DEFAULTS={"openai": "gpt-5.4", "gemini": "gemini-3.1-pro-preview", "openrouter": "google/gemini-3.1-pro-preview"},
+        MAX_RETRIES=5,
+        INITIAL_BACKOFF_SECONDS=5,
+        TIMEOUT=300,
+        call_openai=fail_openai,
+        call_gemini=pass_gemini,
+        call_openrouter=pass_gemini,
+    )
+
+    module = load_helper_tool()
+    monkeypatch.setattr(module, "_load_informal_agent", lambda: fake_agent)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "archon-helper",
+            "--config",
+            str(config_path),
+            "suggest a route",
+        ],
+    )
+
+    assert module.main() == 0
+    captured = capsys.readouterr()
+    assert captured.out == "fallback result\n"
+    assert "trying next fallback" in captured.err
+    assert "used fallback gemini:gemini-3.1-pro-preview" in captured.err
+    assert attempts == [("openai", "deepseek-reasoner"), ("gemini", "gemini-3.1-pro-preview")]
