@@ -91,6 +91,10 @@ def write_stale_planner_state(workspace: Path, rel_path: str) -> None:
     write(workspace / ".archon" / "task_done.md", "# Completed Tasks\n\n- None.\n")
 
 
+def write_campaign_manifest(campaign_root: Path) -> None:
+    write(campaign_root / "CAMPAIGN_MANIFEST.json", json.dumps({"runs": []}, sort_keys=True))
+
+
 def make_source_project(tmp_path: Path) -> Path:
     source = tmp_path / "source-project"
     write(source / "lakefile.lean", "import Lake\n")
@@ -1192,6 +1196,297 @@ def test_supervised_cycle_enables_known_route_fast_path_for_realistic_shortest_r
         "ARCHON_SKIP_INITIAL_PLAN": "1",
         "ARCHON_SKIP_INITIAL_PLAN_REASON": "known_routes",
     }
+
+
+def test_supervised_cycle_can_preload_historical_exact_routes_opt_in(tmp_path: Path):
+    campaigns_root = tmp_path / "campaigns"
+    current_campaign = campaigns_root / "20260415-current"
+    historical_campaign = campaigns_root / "20260414-history"
+    source = current_campaign / "runs" / "teacher-94" / "source"
+    workspace = current_campaign / "runs" / "teacher-94" / "workspace"
+    write_campaign_manifest(current_campaign)
+
+    write(source / "FATEM" / "94.lean", "theorem foo : True := by\n  sorry\n")
+    write(workspace / "FATEM" / "94.lean", "theorem foo : True := by\n  sorry\n")
+    write(
+        workspace / ".archon" / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        ## Allowed Files
+
+        1. `FATEM/94.lean`
+        """,
+    )
+    write(
+        historical_campaign / "reports" / "final" / "proofs" / "teacher-old" / "FATEM" / "94.lean",
+        """
+        theorem foo : True := by
+          trivial
+        """,
+    )
+
+    env_dump = tmp_path / "historical-proof-env.json"
+    fake_loop = tmp_path / "fake-archon-loop.sh"
+    write(
+        fake_loop,
+        f"""
+        #!/usr/bin/env bash
+        python3 - <<'EOF'
+        import json
+        import os
+        from pathlib import Path
+
+        Path("{env_dump}").write_text(json.dumps({{
+            "ARCHON_SKIP_INITIAL_PLAN": os.environ.get("ARCHON_SKIP_INITIAL_PLAN"),
+            "ARCHON_SKIP_INITIAL_PLAN_REASON": os.environ.get("ARCHON_SKIP_INITIAL_PLAN_REASON"),
+        }}, sort_keys=True), encoding="utf-8")
+        EOF
+        exit 0
+        """,
+    )
+    fake_loop.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(SUPERVISED_CYCLE),
+            "--workspace",
+            str(workspace),
+            "--source",
+            str(source),
+            "--archon-loop",
+            str(fake_loop),
+            "--skip-process-check",
+            "--tail-scope-objective-threshold",
+            "1",
+            "--preload-historical-routes",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 4
+    payload = json.loads(env_dump.read_text(encoding="utf-8"))
+    assert payload == {
+        "ARCHON_SKIP_INITIAL_PLAN": "1",
+        "ARCHON_SKIP_INITIAL_PLAN_REASON": "known_routes",
+    }
+
+    historical_routes = (workspace / ".archon" / "HISTORICAL_ROUTES.md").read_text(encoding="utf-8")
+    assert "Historical accepted proof route preloaded" in historical_routes
+    assert "Exact compile-checked route" in historical_routes
+    assert "teacher-old" in historical_routes
+
+    note_path = workspace / ".archon" / "informal" / "historical_routes" / "fatem_94_accepted_proof.md"
+    assert note_path.exists()
+    assert "trivial" in note_path.read_text(encoding="utf-8")
+
+    manifest_payload = json.loads(
+        (workspace / ".archon" / "supervisor" / "historical-routes.json").read_text(encoding="utf-8")
+    )
+    assert manifest_payload["records"][0]["kind"] == "proof"
+
+    progress_payload = json.loads(
+        (workspace / ".archon" / "supervisor" / "progress-summary.json").read_text(encoding="utf-8")
+    )
+    assert progress_payload["historicalRoutes"]["enabled"] is True
+    assert progress_payload["historicalRoutes"]["count"] == 1
+    assert progress_payload["planFastPathApplied"] is True
+
+    hot_notes = (workspace / ".archon" / "supervisor" / "HOT_NOTES.md").read_text(encoding="utf-8")
+    assert "Historical routes preloaded: 1" in hot_notes
+    assert "FATEM/94.lean [proof]" in hot_notes
+
+
+def test_supervised_cycle_can_preload_historical_blocker_routes_opt_in(tmp_path: Path):
+    campaigns_root = tmp_path / "campaigns"
+    current_campaign = campaigns_root / "20260415-current"
+    historical_campaign = campaigns_root / "20260414-history"
+    source = current_campaign / "runs" / "teacher-42" / "source"
+    workspace = current_campaign / "runs" / "teacher-42" / "workspace"
+    write_campaign_manifest(current_campaign)
+
+    write(source / "FATEM" / "42.lean", "theorem foo : True := by\n  sorry\n")
+    write(workspace / "FATEM" / "42.lean", "theorem foo : True := by\n  sorry\n")
+    write(
+        workspace / ".archon" / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        ## Allowed Files
+
+        1. `FATEM/42.lean`
+        """,
+    )
+    write(
+        historical_campaign / "reports" / "final" / "blockers" / "teacher-old" / "FATEM_42.lean.md",
+        """
+        # FATEM/42.lean
+
+        - **Concrete blocker:** The theorem is false as written.
+        - Lean-validated evidence: the obstruction is real.
+        """,
+    )
+
+    env_dump = tmp_path / "historical-blocker-env.json"
+    fake_loop = tmp_path / "fake-archon-loop.sh"
+    write(
+        fake_loop,
+        f"""
+        #!/usr/bin/env bash
+        python3 - <<'EOF'
+        import json
+        import os
+        from pathlib import Path
+
+        Path("{env_dump}").write_text(json.dumps({{
+            "ARCHON_SKIP_INITIAL_PLAN": os.environ.get("ARCHON_SKIP_INITIAL_PLAN"),
+            "ARCHON_SKIP_INITIAL_PLAN_REASON": os.environ.get("ARCHON_SKIP_INITIAL_PLAN_REASON"),
+        }}, sort_keys=True), encoding="utf-8")
+        EOF
+        exit 0
+        """,
+    )
+    fake_loop.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(SUPERVISED_CYCLE),
+            "--workspace",
+            str(workspace),
+            "--source",
+            str(source),
+            "--archon-loop",
+            str(fake_loop),
+            "--skip-process-check",
+            "--tail-scope-objective-threshold",
+            "1",
+            "--preload-historical-routes",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 4
+    payload = json.loads(env_dump.read_text(encoding="utf-8"))
+    assert payload == {
+        "ARCHON_SKIP_INITIAL_PLAN": "1",
+        "ARCHON_SKIP_INITIAL_PLAN_REASON": "known_routes",
+    }
+
+    historical_routes = (workspace / ".archon" / "HISTORICAL_ROUTES.md").read_text(encoding="utf-8")
+    assert "Historical accepted blocker route preloaded" in historical_routes
+    assert "Lean-validated blocker route: false as written." in historical_routes
+
+    note_path = workspace / ".archon" / "informal" / "historical_routes" / "fatem_42_accepted_blocker.md"
+    note_text = note_path.read_text(encoding="utf-8")
+    assert "Lean-validated blocker route" in note_text
+    assert "false as written" in note_text
+
+    progress_payload = json.loads(
+        (workspace / ".archon" / "supervisor" / "progress-summary.json").read_text(encoding="utf-8")
+    )
+    assert progress_payload["historicalRoutes"]["enabled"] is True
+    assert progress_payload["historicalRoutes"]["count"] == 1
+    assert progress_payload["planFastPathApplied"] is True
+
+
+def test_supervised_cycle_clears_stale_historical_routes_when_opt_in_is_off(tmp_path: Path):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    write(source / "FATEM" / "94.lean", "theorem foo : True := by\n  sorry\n")
+    write(workspace / "FATEM" / "94.lean", "theorem foo : True := by\n  sorry\n")
+    write(
+        workspace / ".archon" / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        ## Allowed Files
+
+        1. `FATEM/94.lean`
+        """,
+    )
+    write(
+        workspace / ".archon" / "HISTORICAL_ROUTES.md",
+        """
+        # Historical Routes
+
+        - `FATEM/94.lean` — Exact compile-checked route in `.archon/informal/historical_routes/fatem_94_accepted_proof.md`.
+        """,
+    )
+    write(
+        workspace / ".archon" / "informal" / "historical_routes" / "fatem_94_accepted_proof.md",
+        """
+        # stale
+
+        Exact compile-checked route:
+
+        ```lean
+        trivial
+        ```
+        """,
+    )
+    write(
+        workspace / ".archon" / "supervisor" / "historical-routes.json",
+        json.dumps({"schemaVersion": 1, "records": [{"relPath": "FATEM/94.lean"}]}, sort_keys=True),
+    )
+
+    env_dump = tmp_path / "historical-cleared-env.json"
+    fake_loop = tmp_path / "fake-archon-loop.sh"
+    write(
+        fake_loop,
+        f"""
+        #!/usr/bin/env bash
+        python3 - <<'EOF'
+        import json
+        import os
+        from pathlib import Path
+
+        Path("{env_dump}").write_text(json.dumps({{
+            "ARCHON_SKIP_INITIAL_PLAN": os.environ.get("ARCHON_SKIP_INITIAL_PLAN"),
+            "ARCHON_SKIP_INITIAL_PLAN_REASON": os.environ.get("ARCHON_SKIP_INITIAL_PLAN_REASON"),
+        }}, sort_keys=True), encoding="utf-8")
+        EOF
+        exit 0
+        """,
+    )
+    fake_loop.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(SUPERVISED_CYCLE),
+            "--workspace",
+            str(workspace),
+            "--source",
+            str(source),
+            "--archon-loop",
+            str(fake_loop),
+            "--skip-process-check",
+            "--tail-scope-objective-threshold",
+            "1",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 4
+    payload = json.loads(env_dump.read_text(encoding="utf-8"))
+    assert payload == {
+        "ARCHON_SKIP_INITIAL_PLAN": None,
+        "ARCHON_SKIP_INITIAL_PLAN_REASON": None,
+    }
+    assert not (workspace / ".archon" / "HISTORICAL_ROUTES.md").exists()
+    assert not (workspace / ".archon" / "informal" / "historical_routes").exists()
+    assert not (workspace / ".archon" / "supervisor" / "historical-routes.json").exists()
 
 
 def test_supervised_cycle_refuses_to_start_when_run_local_lease_is_active(tmp_path: Path):

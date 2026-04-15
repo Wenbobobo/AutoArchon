@@ -74,6 +74,22 @@ uv run --directory /path/to/AutoArchon autoarchon-export-run-artifacts \
 
 The tail-scope override is deliberate: once a run has been narrowed to the last 1-4 files, the supervisor gives both the planner and each prover more wall-clock time instead of clipping those final attempts at the bulk-run timeout.
 
+For experience-reuse campaigns, you can opt in to historical route preloading:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-supervised-cycle \
+  --workspace /path/to/run-root/workspace \
+  --source /path/to/run-root/source \
+  --preload-historical-routes
+```
+
+That mode scans finalized sibling campaigns, copies matching accepted proof/blocker routes into the current workspace, and writes:
+
+- `workspace/.archon/HISTORICAL_ROUTES.md`
+- `workspace/.archon/supervisor/historical-routes.json`
+
+This is useful for faster reruns and experience accumulation. It is not benchmark-faithful, because it reuses prior accepted `.archon` knowledge.
+
 ## Monitor
 
 ```bash

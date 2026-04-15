@@ -8,6 +8,7 @@ import os
 import re
 import shlex
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -58,6 +59,8 @@ BLOCKER_ROUTE_MARKERS = (
 )
 LEAN_CODE_BLOCK_PATTERN = re.compile(r"```(?:lean)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 LEAN_PROOF_KEYWORDS = ("simpa", "rw", "exact", "refine", "apply", "convert", "aesop", "trivial")
+HISTORICAL_ROUTES_FILE = ".archon/HISTORICAL_ROUTES.md"
+HISTORICAL_ROUTES_MANIFEST_FILE = ".archon/supervisor/historical-routes.json"
 
 
 def _env_float(name: str, default: float | None = None) -> float | None:
@@ -72,6 +75,13 @@ def _env_int(name: str, default: int | None = None) -> int | None:
     if raw is None or not raw.strip():
         return default
     return int(raw)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -130,6 +140,16 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=_env_int("ARCHON_SUPERVISOR_TAIL_SCOPE_PLAN_TIMEOUT_SECONDS"),
         help="Optional plan timeout override used when the current objective count is within the tail-scope threshold",
+    )
+    parser.add_argument(
+        "--preload-historical-routes",
+        action="store_true",
+        default=_env_flag("ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES", False),
+        help=(
+            "Preload accepted proof/blocker routes from finalized sibling campaigns into "
+            ".archon/HISTORICAL_ROUTES.md before the cycle starts. This is useful for experience-reuse "
+            "campaigns, but it is not benchmark-faithful."
+        ),
     )
     return parser.parse_args()
 
@@ -229,6 +249,200 @@ def _relative_to_workspace(path: Path, workspace: Path) -> str:
         return path.resolve().relative_to(workspace.resolve()).as_posix()
     except ValueError:
         return str(path)
+
+
+def _current_campaign_root(workspace: Path) -> Path | None:
+    for candidate in workspace.parents:
+        if (candidate / "CAMPAIGN_MANIFEST.json").exists() and (candidate / "runs").is_dir():
+            return candidate
+    return None
+
+
+def _historical_route_note_path(workspace: Path, rel_path: str, kind: str) -> Path:
+    slug = rel_path.replace("/", "_").removesuffix(".lean").lower()
+    suffix = "accepted_proof" if kind == "proof" else "accepted_blocker"
+    return workspace / ".archon" / "informal" / "historical_routes" / f"{slug}_{suffix}.md"
+
+
+def _historical_route_candidates(workspace: Path, rel_path: str) -> list[dict[str, object]]:
+    campaign_root = _current_campaign_root(workspace)
+    if campaign_root is None:
+        return []
+    campaigns_root = campaign_root.parent
+    note_name = _task_result_name(rel_path)
+    candidates: list[dict[str, object]] = []
+
+    for other_campaign in sorted(campaigns_root.iterdir()):
+        if not other_campaign.is_dir() or other_campaign == campaign_root:
+            continue
+        final_root = other_campaign / "reports" / "final"
+        if not final_root.exists():
+            continue
+
+        proofs_root = final_root / "proofs"
+        if proofs_root.exists():
+            for artifact_path in proofs_root.rglob(rel_path):
+                if not artifact_path.is_file():
+                    continue
+                rel_parts = artifact_path.relative_to(proofs_root).parts
+                run_id = rel_parts[0] if rel_parts else "(unknown)"
+                candidates.append(
+                    {
+                        "kind": "proof",
+                        "artifactPath": artifact_path,
+                        "campaignId": other_campaign.name,
+                        "runId": run_id,
+                        "mtime": artifact_path.stat().st_mtime,
+                    }
+                )
+
+        blockers_root = final_root / "blockers"
+        if blockers_root.exists():
+            for artifact_path in blockers_root.rglob(note_name):
+                if not artifact_path.is_file():
+                    continue
+                rel_parts = artifact_path.relative_to(blockers_root).parts
+                run_id = rel_parts[0] if rel_parts else "(unknown)"
+                candidates.append(
+                    {
+                        "kind": "blocker",
+                        "artifactPath": artifact_path,
+                        "campaignId": other_campaign.name,
+                        "runId": run_id,
+                        "mtime": artifact_path.stat().st_mtime,
+                    }
+                )
+
+    candidates.sort(key=lambda item: (float(item["mtime"]), str(item["kind"])))
+    return candidates
+
+
+def _render_historical_route_note(
+    *,
+    rel_path: str,
+    kind: str,
+    campaign_id: str,
+    run_id: str,
+    artifact_path: Path,
+    artifact_text: str,
+) -> str:
+    lines = [
+        f"# Historical Accepted {'Proof' if kind == 'proof' else 'Blocker'} Route: {rel_path}",
+        "",
+        f"- Source campaign: `{campaign_id}`",
+        f"- Source run: `{run_id}`",
+        f"- Source artifact: `{artifact_path}`",
+        "",
+    ]
+    if kind == "proof":
+        lines.extend(
+            [
+                "Exact compile-checked route:",
+                "",
+                "```lean",
+                artifact_text.rstrip(),
+                "```",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "Lean-validated blocker route: false as written.",
+                "",
+                artifact_text.rstrip(),
+            ]
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _write_historical_routes_summary(workspace: Path, records: list[dict[str, str]]) -> None:
+    summary_path = workspace / HISTORICAL_ROUTES_FILE
+    manifest_path = workspace / HISTORICAL_ROUTES_MANIFEST_FILE
+    if not records:
+        if summary_path.exists():
+            summary_path.unlink()
+        if manifest_path.exists():
+            manifest_path.unlink()
+        return
+
+    lines = [
+        "# Historical Routes",
+        "",
+        "This file is machine-generated by `autoarchon-supervised-cycle --preload-historical-routes`.",
+        "It is intended for experience-reuse campaigns and is not benchmark-faithful evidence on its own.",
+        "",
+    ]
+    for record in records:
+        lines.append(f"## {record['relPath']}")
+        if record["kind"] == "proof":
+            lines.append(
+                f"- Historical accepted proof route preloaded from `{record['sourceArtifact']}`."
+            )
+            lines.append(f"- Exact compile-checked route in `{record['noteRelPath']}`.")
+        else:
+            lines.append(
+                f"- Historical accepted blocker route preloaded from `{record['sourceArtifact']}`."
+            )
+            lines.append(
+                f"- Lean-validated blocker route: false as written. Notes in `{record['noteRelPath']}`."
+            )
+        lines.append("")
+    _write_text(summary_path, "\n".join(lines))
+    _write_text(
+        manifest_path,
+        json.dumps({"schemaVersion": 1, "records": records}, indent=2, sort_keys=True) + "\n",
+    )
+
+
+def _clear_historical_routes(workspace: Path) -> None:
+    _write_historical_routes_summary(workspace, [])
+    notes_root = workspace / ".archon" / "informal" / "historical_routes"
+    if notes_root.exists():
+        shutil.rmtree(notes_root)
+
+
+def _seed_historical_routes(workspace: Path, *, allowed_files: list[str]) -> list[dict[str, str]]:
+    _clear_historical_routes(workspace)
+    if not allowed_files:
+        return []
+
+    records: list[dict[str, str]] = []
+    for rel_path in allowed_files:
+        candidates = _historical_route_candidates(workspace, rel_path)
+        if not candidates:
+            continue
+        chosen = candidates[-1]
+        artifact_path = Path(str(chosen["artifactPath"])).resolve()
+        kind = str(chosen["kind"])
+        campaign_id = str(chosen["campaignId"])
+        run_id = str(chosen["runId"])
+        artifact_text = artifact_path.read_text(encoding="utf-8", errors="replace")
+        note_path = _historical_route_note_path(workspace, rel_path, kind)
+        _write_text(
+            note_path,
+            _render_historical_route_note(
+                rel_path=rel_path,
+                kind=kind,
+                campaign_id=campaign_id,
+                run_id=run_id,
+                artifact_path=artifact_path,
+                artifact_text=artifact_text,
+            ),
+        )
+        records.append(
+            {
+                "campaignId": campaign_id,
+                "kind": kind,
+                "noteRelPath": _relative_to_workspace(note_path, workspace),
+                "relPath": rel_path,
+                "runId": run_id,
+                "sourceArtifact": str(artifact_path),
+            }
+        )
+
+    _write_historical_routes_summary(workspace, records)
+    return records
 
 
 def _helper_note_dirs(workspace: Path, runtime_config: RuntimeConfig) -> list[Path]:
@@ -442,7 +656,7 @@ def _matching_informal_note_paths(workspace: Path, rel_path: str) -> list[Path]:
 def _exact_route_sources(workspace: Path, rel_path: str) -> list[str]:
     sources: list[str] = []
     rel_path_lower = rel_path.lower()
-    for rel_name in (".archon/PROGRESS.md", ".archon/task_pending.md", ".archon/USER_HINTS.md"):
+    for rel_name in (".archon/PROGRESS.md", ".archon/task_pending.md", ".archon/USER_HINTS.md", HISTORICAL_ROUTES_FILE):
         path = workspace / rel_name
         if not path.exists():
             continue
@@ -530,6 +744,14 @@ def _build_run_progress_payload(
     helper_note_files = _helper_note_files(workspace, runtime_config)
     helper_model = runtime_config.helper.model if runtime_config.helper is not None else None
     helper_provider = runtime_config.helper.provider if runtime_config.helper is not None else None
+    historical_routes_seeded = runtime_overrides.get("historicalRoutesSeeded")
+    if not isinstance(historical_routes_seeded, list):
+        historical_routes_seeded = []
+    historical_note_files = [
+        str(item.get("noteRelPath"))
+        for item in historical_routes_seeded
+        if isinstance(item, dict) and isinstance(item.get("noteRelPath"), str)
+    ]
 
     return {
         "updatedAt": _now_iso(),
@@ -577,6 +799,12 @@ def _build_run_progress_payload(
             "noteCount": len(helper_note_files),
             "recentNotes": [_relative_to_workspace(path, workspace) for path in helper_note_files[:8]],
         },
+        "historicalRoutes": {
+            "enabled": runtime_overrides.get("preloadHistoricalRoutes") is True,
+            "count": len(historical_routes_seeded),
+            "manifest": runtime_overrides.get("historicalRoutesManifest"),
+            "recentNotes": historical_note_files[:8],
+        },
     }
 
 
@@ -584,6 +812,7 @@ def _render_run_progress_markdown(payload: dict[str, Any]) -> str:
     progress = payload.get("progress") if isinstance(payload.get("progress"), dict) else {}
     scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
     helper = payload.get("helper") if isinstance(payload.get("helper"), dict) else {}
+    historical_routes = payload.get("historicalRoutes") if isinstance(payload.get("historicalRoutes"), dict) else {}
     target_counts = payload.get("targetCounts") if isinstance(payload.get("targetCounts"), dict) else {}
     tail_scope_timeouts = payload.get("tailScopeTimeouts") if isinstance(payload.get("tailScopeTimeouts"), dict) else {}
     live_runtime = payload.get("liveRuntime") if isinstance(payload.get("liveRuntime"), dict) else {}
@@ -615,6 +844,9 @@ def _render_run_progress_markdown(payload: dict[str, Any]) -> str:
         f"- Task results: `{len(payload.get('taskResults', [])) if isinstance(payload.get('taskResults'), list) else 0}`",
         f"- Helper enabled: `{helper.get('enabled')}`",
         f"- Helper notes observed: `{helper.get('noteCount', 0)}`",
+        f"- Historical routes enabled: `{historical_routes.get('enabled')}`",
+        f"- Historical routes seeded: `{historical_routes.get('count', 0)}`",
+        f"- Historical route manifest: `{historical_routes.get('manifest') or '(none)'}`",
         f"- Planner state sync: `{payload.get('plannerStateSync') or '(none)'}`",
         f"- Recovery event: `{payload.get('recoveryEvent') or '(none)'}`",
         f"- Tail-scope applied: `{payload.get('tailScopeApplied')}`",
@@ -638,6 +870,14 @@ def _render_run_progress_markdown(payload: dict[str, Any]) -> str:
             if not isinstance(row, dict):
                 continue
             lines.append(f"- `{row.get('file', row.get('id', 'unknown'))}` — `{row.get('status', 'unknown')}`")
+    else:
+        lines.append("- none")
+
+    lines.extend(["", "## Historical Routes", ""])
+    historical_recent = historical_routes.get("recentNotes")
+    if isinstance(historical_recent, list) and historical_recent:
+        for note in historical_recent:
+            lines.append(f"- `{note}`")
     else:
         lines.append("- none")
 
@@ -796,6 +1036,8 @@ def _resolve_runtime_overrides(
 ) -> dict[str, object]:
     overrides: dict[str, object] = {}
     objective_rel_paths = _current_objective_rel_paths(workspace, allowed_files=allowed_files)
+    if not objective_rel_paths and allowed_files:
+        objective_rel_paths = list(allowed_files)
     objective_count = len(objective_rel_paths)
     overrides["objectiveCount"] = objective_count
     overrides["objectiveFiles"] = objective_rel_paths
@@ -1225,9 +1467,11 @@ def _extract_informal_note_paths(text: str) -> list[str]:
 def _prevalidated_blocker_evidence(workspace: Path, rel_path: str) -> tuple[list[str], str] | None:
     progress_path = workspace / ".archon" / "PROGRESS.md"
     pending_path = workspace / ".archon" / "task_pending.md"
+    historical_routes_path = workspace / HISTORICAL_ROUTES_FILE
     progress_text = progress_path.read_text(encoding="utf-8") if progress_path.exists() else ""
     pending_text = pending_path.read_text(encoding="utf-8") if pending_path.exists() else ""
-    combined = "\n".join(part for part in (progress_text, pending_text) if part)
+    historical_routes_text = historical_routes_path.read_text(encoding="utf-8") if historical_routes_path.exists() else ""
+    combined = "\n".join(part for part in (progress_text, pending_text, historical_routes_text) if part)
     lowered = combined.lower()
 
     if rel_path not in combined:
@@ -1239,8 +1483,16 @@ def _prevalidated_blocker_evidence(workspace: Path, rel_path: str) -> tuple[list
     if "false as written" not in lowered and "validated obstruction" not in lowered:
         return None
 
-    provenance = [".archon/PROGRESS.md", ".archon/task_pending.md"]
-    evidence = pending_text.strip() or progress_text.strip()
+    provenance = [
+        rel_name
+        for rel_name, text in (
+            (".archon/PROGRESS.md", progress_text),
+            (".archon/task_pending.md", pending_text),
+            (HISTORICAL_ROUTES_FILE, historical_routes_text),
+        )
+        if text.strip()
+    ]
+    evidence = historical_routes_text.strip() or pending_text.strip() or progress_text.strip()
     for note_rel in _extract_informal_note_paths(combined):
         note_path = workspace / note_rel
         if not note_path.exists():
@@ -1553,6 +1805,13 @@ def main() -> int:
 
     started_at = _now_iso()
     allowed_files = read_allowed_files(workspace)
+    historical_routes_seeded = (
+        _seed_historical_routes(workspace, allowed_files=allowed_files)
+        if args.preload_historical_routes and not args.recovery_only
+        else []
+    )
+    if not args.preload_historical_routes or args.recovery_only:
+        _clear_historical_routes(workspace)
     baseline_changed_files = collect_changed_files(source, workspace, allowed_files=allowed_files or None)
     baseline_changed_mtimes = _path_mtimes([workspace / rel_path for rel_path in baseline_changed_files])
     baseline_task_result_paths = sorted((workspace / ".archon" / "task_results").glob("*.md"))
@@ -1561,6 +1820,11 @@ def main() -> int:
     lease_conflicts = _lease_conflicts(args.skip_process_check, lease_path, current_pid=os.getpid())
     runtime_config = load_runtime_config(workspace)
     runtime_overrides = _resolve_runtime_overrides(args, workspace, allowed_files=allowed_files)
+    if args.preload_historical_routes:
+        runtime_overrides["preloadHistoricalRoutes"] = True
+        runtime_overrides["historicalRoutesSeeded"] = historical_routes_seeded
+        if historical_routes_seeded:
+            runtime_overrides["historicalRoutesManifest"] = HISTORICAL_ROUTES_MANIFEST_FILE
     if lease_conflicts:
         _append_text(
             violations_path,
@@ -1943,6 +2207,18 @@ def main() -> int:
         hot_notes.append(
             "- Plan fast-path: skipped the initial plan phase because every tail-scope objective already had a known route"
         )
+    historical_routes_seeded = runtime_overrides.get("historicalRoutesSeeded")
+    if isinstance(historical_routes_seeded, list) and historical_routes_seeded:
+        hot_notes.append(f"- Historical routes preloaded: {len(historical_routes_seeded)}")
+        for record in historical_routes_seeded[:8]:
+            if not isinstance(record, dict):
+                continue
+            hot_notes.append(
+                "- Historical route: "
+                f"{record.get('relPath', '(unknown)')} [{record.get('kind', 'unknown')}] "
+                f"from {record.get('campaignId', '(unknown)')}/{record.get('runId', '(unknown)')} "
+                f"-> {record.get('noteRelPath', '(unknown)')}"
+            )
     if stale_task_result_archives:
         hot_notes.append(
             "- Pre-cycle cleanup: archived stale accepted task results "

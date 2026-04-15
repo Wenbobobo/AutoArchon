@@ -51,6 +51,8 @@ def test_operations_doc_covers_single_run_prewarm_supervisor_and_export_flow():
     assert "codex exec" in operations
     assert "$archon-supervisor" in operations
     assert "autoarchon-supervised-cycle" in operations
+    assert "--preload-historical-routes" in operations
+    assert "HISTORICAL_ROUTES.md" in operations
     assert "autoarchon-export-run-artifacts" in operations
     assert "autoarchon-storage-report" in operations
     assert "workspace/.archon/supervisor/progress-summary.md" in operations
@@ -129,6 +131,7 @@ def test_benchmarking_doc_still_explains_contamination_and_faithful_runs():
     assert "benchmark-faithful" in benchmarking
     assert "contaminated" in benchmarking
     assert "do not reuse another run's `.archon/` state" in benchmarking
+    assert "--preload-historical-routes" in benchmarking
     assert "FATEM/42.lean" in benchmarking
 
 

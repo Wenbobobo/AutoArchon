@@ -11,8 +11,9 @@ Use this workflow for any benchmark result you plan to cite:
 3. Use `run-root/source/` as the immutable baseline and `run-root/workspace/` as the mutable project.
 4. You may reuse a warmed `.lake/` cache or copied package directory.
 5. do not reuse another run's `.archon/` state.
-6. Re-run `./init.sh` on `run-root/workspace/` with the intended objective regex and limit.
-7. Count a file as solved only after direct Lean verification against the actual run workspace.
+6. do not enable `autoarchon-supervised-cycle --preload-historical-routes` for benchmark-faithful runs.
+7. Re-run `./init.sh` on `run-root/workspace/` with the intended objective regex and limit.
+8. Count a file as solved only after direct Lean verification against the actual run workspace.
 
 The key rule is simple: cache reuse is fine, state reuse is not.
 
@@ -84,6 +85,7 @@ Before you publish or compare a rerun:
 - blocker files must stay on the original statement and emit a blocker report instead of a repaired theorem
 - the reported metrics must come from that fresh run's `.archon/logs/`
 - copied `.archon/` history from another run invalidates the result
+- `--preload-historical-routes` invalidates benchmark-faithful reporting for that run
 
 ## Upstream Comparison Boundary
 
