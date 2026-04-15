@@ -15,7 +15,10 @@ def test_readme_centers_interactive_campaign_operator_and_result_paths():
     assert "# AutoArchon" in readme
     assert "campaign-operator" in readme
     assert "Fastest Campaign Start" in readme
+    assert "codex -C /path/to/AutoArchon" in readme
+    assert "docs/templates/campaign-operator-prompt-template.md" in readme
     assert "scripts/start_campaign_operator.sh" in readme
+    assert "Optional Wrapper" in readme
     assert "$archon-orchestrator" in readme
     assert "autoarchon-render-operator-prompt" in readme
     assert "Advanced: Rendered Prompt Path" in readme
@@ -94,6 +97,8 @@ def test_campaign_operator_doc_covers_default_and_interactive_owner_paths():
     operator_doc = read("docs/campaign-operator.md")
 
     assert "campaign-operator" in operator_doc
+    assert "codex -C /path/to/AutoArchon" in operator_doc
+    assert "docs/templates/campaign-operator-prompt-template.md" in operator_doc
     assert "control/mission-brief.md" in operator_doc
     assert "control/operator-journal.md" in operator_doc
     assert "Detailed TODO" in operator_doc
@@ -107,6 +112,7 @@ def test_campaign_operator_doc_covers_default_and_interactive_owner_paths():
     assert "bash scripts/start_fate_overnight_watchdogs.sh" in operator_doc
     assert "bash scripts/watch_campaign.sh" in operator_doc
     assert "scripts/start_campaign_operator.sh" in operator_doc
+    assert "Optional Wrapper" in operator_doc
     assert "$archon-orchestrator" in operator_doc
     assert "autoarchon-render-operator-prompt" in operator_doc
     assert "examples/helper.env" in operator_doc
@@ -145,6 +151,17 @@ def test_architecture_doc_contains_global_mermaid_and_future_extension_points():
     assert "reportFreshness" in architecture
     assert "input_tokens" in architecture
     assert "output_tokens" in architecture
+
+
+def test_campaign_operator_prompt_template_exists_and_matches_direct_codex_flow():
+    template = read("docs/templates/campaign-operator-prompt-template.md")
+
+    assert "$archon-orchestrator" in template
+    assert "Repository root:" in template
+    assert "Source root:" in template
+    assert "Campaign root:" in template
+    assert "Real user objective" in template
+    assert "ask intake questions" in template
 
 
 def test_benchmarking_doc_still_explains_contamination_and_faithful_runs():

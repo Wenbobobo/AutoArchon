@@ -45,13 +45,12 @@ $EDITOR /path/to/AutoArchon/examples/helper.env
 Start Codex:
 
 ```bash
-ARCHON_ROOT=/path/to/AutoArchon \
-MODEL=gpt-5.4 \
-REASONING_EFFORT=xhigh \
-bash /path/to/AutoArchon/scripts/start_campaign_operator.sh
+cd /path/to/AutoArchon
+source examples/helper.env
+codex -C /path/to/AutoArchon --model gpt-5.4 --config "model_reasoning_effort=xhigh"
 ```
 
-Then start with a natural-language intake message such as:
+Then fill [docs/templates/campaign-operator-prompt-template.md](templates/campaign-operator-prompt-template.md) and paste it into Codex, or start with a natural-language intake message such as:
 
 ```text
 Use $archon-orchestrator to own this AutoArchon campaign.
@@ -89,6 +88,19 @@ uv run --directory /path/to/AutoArchon autoarchon-init-operator-intake \
 ```
 
 That command writes the three operator-owned control files immediately, but the interactive operator should still review and refine them before unattended launch.
+
+## Optional Wrapper
+
+If you prefer a thin wrapper that auto-loads `examples/helper.env` and pins the repo defaults, you can still use:
+
+```bash
+ARCHON_ROOT=/path/to/AutoArchon \
+MODEL=gpt-5.4 \
+REASONING_EFFORT=xhigh \
+bash /path/to/AutoArchon/scripts/start_campaign_operator.sh
+```
+
+`scripts/start_campaign_operator.sh` is now a convenience wrapper, not the primary user-facing path.
 
 ## Advanced: Rendered Prompt Path
 

@@ -64,6 +64,7 @@ $EDITOR /path/to/AutoArchon/examples/helper.env
 ```
 
 `scripts/start_campaign_operator.sh` and `scripts/start_fate_overnight_watchdogs.sh` will auto-load `examples/helper.env` when it exists, so later launches inherit helper and progress-surface defaults without extra shell setup.
+For the direct interactive Codex path below, load it yourself with `source examples/helper.env`.
 
 2. Prepare benchmark clones under one root, for example:
 
@@ -73,16 +74,17 @@ $EDITOR /path/to/AutoArchon/examples/helper.env
 /path/to/benchmarks/FATE-X-upstream
 ```
 
-3. Start an interactive operator session:
+3. Load helper env and start an interactive Codex session directly:
 
 ```bash
-ARCHON_ROOT=/path/to/AutoArchon \
-MODEL=gpt-5.4 \
-REASONING_EFFORT=xhigh \
-bash /path/to/AutoArchon/scripts/start_campaign_operator.sh
+cd /path/to/AutoArchon
+source examples/helper.env
+codex -C /path/to/AutoArchon --model gpt-5.4 --config "model_reasoning_effort=xhigh"
 ```
 
-4. In that interactive session, describe the mission in natural language and let `campaign-operator` do the intake work. A good first message is:
+4. Fill the prompt template in [docs/templates/campaign-operator-prompt-template.md](docs/templates/campaign-operator-prompt-template.md), then paste it into the interactive Codex session.
+
+5. Let `campaign-operator` do the intake work. A good first message is:
 
 ```text
 Use $archon-orchestrator to own this AutoArchon campaign.
@@ -107,7 +109,7 @@ The operator should then:
 - validate the contract before launch with `autoarchon-validate-launch-contract`
 - only then launch or resume the watchdog
 
-5. If you want a deterministic intake scaffold before the operator reviews it, write the three control files in one shot:
+6. If you want a deterministic intake scaffold before the operator reviews it, write the three control files in one shot:
 
 ```bash
 uv run --directory /path/to/AutoArchon autoarchon-init-operator-intake \
@@ -129,18 +131,31 @@ This writes:
 
 The interactive operator should still review and refine that intake bundle before unattended launch.
 
-6. Validate the launch contract explicitly when you want a deterministic preflight:
+7. Validate the launch contract explicitly when you want a deterministic preflight:
 
 ```bash
 uv run --directory /path/to/AutoArchon autoarchon-validate-launch-contract \
   --campaign-root /path/to/runs/campaigns/20260414-fate-m-full
 ```
 
-7. The operator should leave behind these three files before the watchdog starts:
+8. The operator should leave behind these three files before the watchdog starts:
 
 - `control/mission-brief.md`
 - `control/launch-spec.resolved.json`
 - `control/operator-journal.md`
+
+## Optional Wrapper
+
+If you prefer a thin shell wrapper that auto-loads `examples/helper.env` and pins the default model/reasoning settings, keep using:
+
+```bash
+ARCHON_ROOT=/path/to/AutoArchon \
+MODEL=gpt-5.4 \
+REASONING_EFFORT=xhigh \
+bash /path/to/AutoArchon/scripts/start_campaign_operator.sh
+```
+
+`scripts/start_campaign_operator.sh` is only a convenience wrapper now. The primary path is direct interactive `codex`.
 
 ## Advanced: Rendered Prompt Path
 
@@ -522,6 +537,7 @@ AutoArchon/
 ## Docs
 
 - [docs/campaign-operator.md](docs/campaign-operator.md): recommended interactive operator workflow, control files, recovery, and closeout.
+- [docs/templates/campaign-operator-prompt-template.md](docs/templates/campaign-operator-prompt-template.md): fill-in prompt template for the direct interactive Codex path.
 - [docs/architecture.md](docs/architecture.md): global workflow, state surfaces, artifact boundaries, and extension points.
 - [docs/operations.md](docs/operations.md): single-run operational baseline, prewarm, soak-test commands.
 - [docs/teacher-agents.md](docs/teacher-agents.md): one-run-per-teacher launch and monitoring.
