@@ -259,6 +259,19 @@ model = "gemini-3.1-pro-preview"
 
 The helper wrapper will keep the primary transport first and only try the next configured provider when that call fails. Acceptance ownership still stays with the normal proof loop; helper output remains advisory only.
 
+When the helper is enabled, use phase-aware auto note routing rather than ad hoc files:
+
+```bash
+.archon/tools/archon-helper-prover-agent.py \
+  --phase prover \
+  --rel-path FATEM/42.lean \
+  --reason lsp_timeout \
+  --write-note auto \
+  "Prove the goal without residue calculus; stay within Lean 4 Mathlib."
+```
+
+Use `--phase plan` for planner-side calls. In `auto` mode the wrapper writes a metadata-backed Markdown note into the configured `notes_dir` for that phase. Passing an explicit `--write-note /path/to/file.md` still works and keeps the old bare-text compatibility path.
+
 ## Where Proofs and Lessons End Up
 
 - Mutable proof search happens only under `runs/<id>/workspace/`.

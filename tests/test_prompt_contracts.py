@@ -17,6 +17,15 @@ def test_plan_prompt_keeps_informal_content_out_of_lean_files():
     assert ".archon/runtime-config.toml" in plan_prompt
 
 
+def test_plan_prompt_specifies_phase_aware_helper_note_routing():
+    plan_prompt = read(".archon-src/prompts/plan.md")
+
+    assert "--phase plan" in plan_prompt
+    assert "--rel-path <file>" in plan_prompt
+    assert "--reason <trigger>" in plan_prompt
+    assert "--write-note auto" in plan_prompt
+
+
 def test_plan_prompt_keeps_heavy_proof_search_out_of_default_path():
     plan_prompt = read(".archon-src/prompts/plan.md")
 
@@ -84,6 +93,15 @@ def test_prover_prompt_bounds_shell_verification_and_prefers_lsp():
     assert ".archon/runtime-config.toml" in prover_prompt
     assert "Durable notes outrank cosmetic cleanup" in prover_prompt
     assert "remaining `simp`/`simpa` suggestion is not a reason to delay the note" in prover_prompt
+
+
+def test_prover_prompt_specifies_phase_aware_helper_note_routing():
+    prover_prompt = read(".archon-src/prompts/prover-prover.md")
+
+    assert "--phase prover" in prover_prompt
+    assert "--rel-path <file>" in prover_prompt
+    assert "--reason <trigger>" in prover_prompt
+    assert "--write-note auto" in prover_prompt
 
 
 def test_prover_prompt_falls_back_after_lsp_timeout_or_start_failure():

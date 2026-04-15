@@ -17,8 +17,10 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import sys
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -34,6 +36,9 @@ from archonlib.runtime_config import (
     load_runtime_config_from_path,
     runtime_config_path,
 )
+
+
+HELPER_PHASES = ("plan", "prover")
 
 
 def _load_informal_agent():
@@ -105,6 +110,22 @@ def _effective_config(
             }
             for fallback in (config.fallbacks if config is not None else ())
         ],
+        "planPolicy": {
+            "enabled": runtime_config.helper_plan.enabled,
+            "maxCallsPerIteration": runtime_config.helper_plan.max_calls_per_iteration,
+            "triggerOnMissingInfrastructure": runtime_config.helper_plan.trigger_on_missing_infrastructure,
+            "triggerOnExternalReference": runtime_config.helper_plan.trigger_on_external_reference,
+            "triggerOnRepeatedFailure": runtime_config.helper_plan.trigger_on_repeated_failure,
+            "notesDir": runtime_config.helper_plan.notes_dir,
+        },
+        "proverPolicy": {
+            "enabled": runtime_config.helper_prover.enabled,
+            "maxCallsPerSession": runtime_config.helper_prover.max_calls_per_session,
+            "triggerOnMissingInfrastructure": runtime_config.helper_prover.trigger_on_missing_infrastructure,
+            "triggerOnLspTimeout": runtime_config.helper_prover.trigger_on_lsp_timeout,
+            "triggerOnFirstStuckAttempt": runtime_config.helper_prover.trigger_on_first_stuck_attempt,
+            "notesDir": runtime_config.helper_prover.notes_dir,
+        },
     }
 
 
@@ -129,12 +150,73 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--provider", choices=["openai", "gemini", "openrouter"], help="Override provider")
     parser.add_argument("--model", help="Override model")
     parser.add_argument("--think", action="store_true", help="Request higher reasoning where supported")
-    parser.add_argument("--write-note", help="Optional path to also write the helper response")
+    parser.add_argument(
+        "--phase",
+        choices=HELPER_PHASES,
+        help="Optional helper phase used for auto note routing (`plan` or `prover`)",
+    )
+    parser.add_argument("--rel-path", help="Optional target Lean file relative path such as FATEM/42.lean")
+    parser.add_argument("--reason", help="Optional short trigger/reason label such as lsp_timeout or repeated_failure")
+    parser.add_argument(
+        "--write-note",
+        help="Optional path to also write the helper response, or `auto` to route into the configured notes_dir with metadata",
+    )
     parser.add_argument("--print-effective-config", action="store_true", help="Print resolved helper config as JSON and exit")
     parser.add_argument("--max-retries", type=int, help="Override retry budget")
     parser.add_argument("--initial-backoff-seconds", type=int, help="Override retry backoff base")
     parser.add_argument("--timeout-seconds", type=int, help="Override request timeout")
     return parser.parse_args()
+
+
+def _slugify(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip()).strip("._-") or "note"
+
+
+def _note_dir_for_phase(runtime_config: RuntimeConfig, phase: str) -> str:
+    if phase == "plan":
+        return runtime_config.helper_plan.notes_dir
+    return runtime_config.helper_prover.notes_dir
+
+
+def _auto_note_path(*, workspace: Path, runtime_config: RuntimeConfig, phase: str, rel_path: str | None, reason: str | None) -> Path:
+    notes_dir = _note_dir_for_phase(runtime_config, phase)
+    stem_parts: list[str] = []
+    if rel_path:
+        stem_parts.append(_slugify(rel_path.replace("/", "_")))
+    else:
+        stem_parts.append("general")
+    stem_parts.append(phase)
+    if reason:
+        stem_parts.append(_slugify(reason))
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    filename = "__".join(stem_parts + [timestamp]) + ".md"
+    return (workspace / notes_dir / filename).resolve()
+
+
+def _render_auto_note(
+    *,
+    response: str,
+    used_config: HelperProviderConfig,
+    phase: str,
+    rel_path: str | None,
+    reason: str | None,
+    config_path: str | None,
+) -> str:
+    lines = [
+        "# Helper Note",
+        "",
+        f"- Generated at: `{datetime.now(timezone.utc).isoformat()}`",
+        f"- Phase: `{phase}`",
+        f"- Provider: `{used_config.provider}`",
+        f"- Model: `{used_config.model}`",
+        f"- Config path: `{config_path}`",
+    ]
+    if rel_path:
+        lines.append(f"- Target: `{rel_path}`")
+    if reason:
+        lines.append(f"- Reason: `{reason}`")
+    lines.extend(["", "## Helper Output", "", response.rstrip(), ""])
+    return "\n".join(lines)
 
 
 def _call_provider(
@@ -274,6 +356,8 @@ def main() -> int:
 
     if not args.prompt:
         raise SystemExit("Error: prompt is required unless --print-effective-config is used.")
+    if args.write_note == "auto" and args.phase is None:
+        raise SystemExit("Error: --phase is required when --write-note auto is used.")
     attempts = _attempt_chain(
         informal_agent,
         provider=provider,
@@ -286,6 +370,7 @@ def main() -> int:
     )
     failures: list[str] = []
     response: str | None = None
+    used_config: HelperProviderConfig | None = None
     for index, attempt in enumerate(attempts):
         try:
             response = _call_provider(
@@ -294,6 +379,7 @@ def main() -> int:
                 think=args.think,
                 config=attempt,
             )
+            used_config = attempt
             if index > 0:
                 sys.stderr.write(
                     f"[archon-helper] primary provider failed; used fallback {attempt.provider}:{attempt.model}\n"
@@ -309,10 +395,31 @@ def main() -> int:
             joined = "\n".join(f"- {message}" for message in failures)
             raise SystemExit(f"Error: helper transport failed across configured providers.\n{joined}") from exc
     assert response is not None
+    assert used_config is not None
     if args.write_note:
-        note_path = Path(args.write_note).resolve()
+        if args.write_note == "auto":
+            note_path = _auto_note_path(
+                workspace=workspace,
+                runtime_config=runtime_config,
+                phase=args.phase,
+                rel_path=args.rel_path,
+                reason=args.reason,
+            )
+            note_text = _render_auto_note(
+                response=response,
+                used_config=used_config,
+                phase=args.phase,
+                rel_path=args.rel_path,
+                reason=args.reason,
+                config_path=config_path,
+            )
+        else:
+            note_path = Path(args.write_note).resolve()
+            note_text = response + ("\n" if not response.endswith("\n") else "")
         note_path.parent.mkdir(parents=True, exist_ok=True)
-        note_path.write_text(response + ("\n" if not response.endswith("\n") else ""), encoding="utf-8")
+        note_path.write_text(note_text, encoding="utf-8")
+        if args.write_note == "auto":
+            sys.stderr.write(f"[archon-helper] wrote note {note_path}\n")
     sys.stdout.write(response)
     if response and not response.endswith("\n"):
         sys.stdout.write("\n")

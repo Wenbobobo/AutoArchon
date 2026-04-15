@@ -94,6 +94,19 @@ The helper wrapper prefers the config-backed transport when `enabled` is true an
 
 By default, helper output should be written under `.archon/informal/helper/` and then referenced from `PROGRESS.md` or `task_results/<file>.md`, rather than mixed directly into the durable task-result note namespace.
 
+The preferred helper call shape is phase-aware and note-routed:
+
+```bash
+.archon/tools/archon-helper-prover-agent.py \
+  --phase plan|prover \
+  --rel-path <file> \
+  --reason <trigger> \
+  --write-note auto \
+  "<prompt>"
+```
+
+`--write-note auto` writes a metadata-backed Markdown note into the phase-specific `notes_dir` (`[helper.plan].notes_dir` or `[helper.prover].notes_dir`). An explicit path still keeps the older bare-text compatibility behavior. `--print-effective-config` now exposes both policy blocks so operators can inspect the resolved helper limits before launch.
+
 ## Boundary With Vendored Lean4 Material
 
 The files under `.archon-src/skills/lean4/agents/` are reference material inherited from vendored Lean4 support. They are useful examples, but they are **not the canonical runtime registry**.

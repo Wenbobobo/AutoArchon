@@ -53,7 +53,7 @@ flowchart TD
 - `orchestrator-agent` owns one campaign root at a time. It plans shards, creates runs, launches teachers, applies bounded deterministic recovery, and finalizes accepted results. It does not directly edit benchmark `.lean` files.
 - `supervisor-agent` owns one run root at a time, guards theorem fidelity, leaves restart-safe notes, and drives repeated monitored cycles.
 - `plan-agent`, `prover-agent`, `review-agent`, and `statement-validator` remain the inner proof loop.
-- `helper-prover-agent` is now a minimal runtime surface: `.archon/runtime-config.toml` plus `.archon/tools/archon-helper-prover-agent.py` give runs one bounded side-model wrapper without changing acceptance ownership. The legacy `.archon/helper-provider.json` path remains a compatibility fallback only, and the TOML path now supports ordered `[[helper.fallbacks]]` providers for bounded transport failover.
+- `helper-prover-agent` is now a minimal runtime surface: `.archon/runtime-config.toml` plus `.archon/tools/archon-helper-prover-agent.py` give runs one bounded side-model wrapper without changing acceptance ownership. The legacy `.archon/helper-provider.json` path remains a compatibility fallback only, the TOML path supports ordered `[[helper.fallbacks]]` providers for bounded transport failover, and phase-aware `--write-note auto` routing keeps helper notes in the configured planner/prover note lanes.
 - `mathlib-agent` remains a future retrieval role, now fed by `lesson-records.jsonl` plus derived `lesson-clusters.json` / `lesson-clusters.md`.
 
 ## Artifact Boundaries
@@ -117,7 +117,7 @@ The current answers live in:
 
 The next profitable extensions are around verification and knowledge accumulation rather than many loosely coupled proof agents at once.
 
-- deepen the `helper-prover-agent` prompting and note-routing policy beyond the current transport fallback wrapper
+- add task-class-specific helper prompt packs and reuse policy on top of the now phase-aware note-routing surface
 - cluster repeated failures from `lesson-records.jsonl`
 - build retrieval packs for a future `mathlib-agent` on top of the clustered lesson artifacts
 - improve acceptance and audit downstream of `statement-validator`

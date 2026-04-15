@@ -44,6 +44,7 @@ Read `.archon/runtime-config.toml` before deciding whether to call helper tools.
 - If `[helper].enabled = true` and `[helper.plan].enabled = true`, prefer `.archon/tools/archon-helper-prover-agent.py`.
 - Respect `[helper.plan].max_calls_per_iteration`.
 - Use the helper only when at least one configured trigger applies: repeated failure, missing infrastructure, or an external reference gap.
+- When using the helper wrapper, prefer `.archon/tools/archon-helper-prover-agent.py --phase plan --rel-path <file> --reason <trigger> --write-note auto "<prompt>"` so the note lands in `[helper.plan].notes_dir` with metadata.
 - Write helper output to the notes directory from `[helper.plan].notes_dir` and point to that file in `PROGRESS.md`.
 - If helper is disabled or the runtime config is missing, fall back to `.archon/tools/archon-informal-agent.py`.
 
