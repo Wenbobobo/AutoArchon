@@ -18,3 +18,4 @@ ui/.archon-ui.pid
 
 # Test files
 sample-log.jsonl
+helper.env
