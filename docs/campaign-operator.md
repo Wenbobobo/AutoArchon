@@ -33,6 +33,15 @@ Before a long unattended run, the operator should replace scaffolded placeholder
 
 ## Recommended Interactive Start
 
+Create the local helper env once:
+
+```bash
+cp /path/to/AutoArchon/examples/helper.env.example /path/to/AutoArchon/examples/helper.env
+$EDITOR /path/to/AutoArchon/examples/helper.env
+```
+
+`scripts/start_campaign_operator.sh` auto-loads `examples/helper.env` when present, so the operator session inherits helper and observability defaults before it launches any campaign.
+
 Start Codex:
 
 ```bash
@@ -66,6 +75,7 @@ Repository root: /path/to/AutoArchon
 Source root: /path/to/benchmarks/FATE-M-upstream
 Campaign root: /path/to/runs/campaigns/20260414-fate-m-full
 Reuse lake from: /path/to/benchmarks/FATE-M-upstream
+Helper env file: /path/to/AutoArchon/examples/helper.env
 Match regex: '^FATEM/.*\\.lean$'
 Shard size: 8
 Run id mode: index
@@ -74,6 +84,7 @@ Before launching anything:
 - create or refresh `control/mission-brief.md`
 - create or refresh `control/launch-spec.resolved.json`
 - append the initial decision to `control/operator-journal.md`
+- keep helper enabled by default unless the run contract explicitly forbids it
 
 Then:
 - launch or resume the watchdog
@@ -115,6 +126,8 @@ For the fastest newcomer-facing snapshot, open either of these files after `auto
 
 - `control/progress-summary.md`
 - `control/progress-summary.json`
+
+Treat those file-backed summaries as the canonical observability surface. The browser UI is optional supplementary inspection for one run when you need deeper browsing.
 
 Trust these campaign-level files before reacting to terminal noise:
 

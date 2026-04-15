@@ -42,5 +42,8 @@ def test_render_operator_prompt_contains_operator_file_contract(tmp_path: Path):
     assert "control/mission-brief.md" in prompt
     assert "control/launch-spec.resolved.json" in prompt
     assert "control/operator-journal.md" in prompt
+    assert "Helper env file:" in prompt
+    assert "examples/helper.env" in prompt
+    assert "keep helper enabled by default" in prompt
     assert "Match regex: ^FATEM/.*\\.lean$" in prompt
     assert "Run id prefix: teacher-m" in prompt

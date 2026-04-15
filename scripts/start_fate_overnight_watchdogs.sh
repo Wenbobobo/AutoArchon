@@ -6,6 +6,7 @@ WORK_ROOT="${WORK_ROOT:-/home/daism/Wenbo/math}"
 BENCHMARK_ROOT="${BENCHMARK_ROOT:-${WORK_ROOT}/benchmarks}"
 CAMPAIGNS_ROOT="${CAMPAIGNS_ROOT:-${WORK_ROOT}/runs/campaigns}"
 RUN_SPECS_ROOT="${RUN_SPECS_ROOT:-${CAMPAIGNS_ROOT}/_run_specs}"
+HELPER_ENV_FILE="${HELPER_ENV_FILE:-${ARCHON_ROOT}/examples/helper.env}"
 
 DATE_TAG="${FATE_DATE_TAG:-$(date +%Y%m%d-nightly)}"
 MODEL="${MODEL:-gpt-5.4}"
@@ -27,6 +28,13 @@ ARCHON_CODEX_READY_RETRY_DELAY_SECONDS="${ARCHON_CODEX_READY_RETRY_DELAY_SECONDS
 FATE_M_SHARD_SIZE="${FATE_M_SHARD_SIZE:-8}"
 FATE_H_SHARD_SIZE="${FATE_H_SHARD_SIZE:-8}"
 FATE_X_SHARD_SIZE="${FATE_X_SHARD_SIZE:-8}"
+
+if [[ -n "${HELPER_ENV_FILE}" && -f "${HELPER_ENV_FILE}" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${HELPER_ENV_FILE}"
+  set +a
+fi
 
 mkdir -p "${CAMPAIGNS_ROOT}" "${RUN_SPECS_ROOT}"
 

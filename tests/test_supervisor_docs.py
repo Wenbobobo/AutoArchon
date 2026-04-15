@@ -95,4 +95,13 @@ def test_start_campaign_operator_script_uses_repo_defaults():
 
     assert 'MODEL="${MODEL:-gpt-5.4}"' in script
     assert 'REASONING_EFFORT="${REASONING_EFFORT:-xhigh}"' in script
+    assert 'HELPER_ENV_FILE="${HELPER_ENV_FILE:-${ARCHON_ROOT}/examples/helper.env}"' in script
+    assert 'source "${HELPER_ENV_FILE}"' in script
     assert '--config "model_reasoning_effort=${REASONING_EFFORT}"' in script
+
+
+def test_start_fate_overnight_watchdogs_script_uses_helper_env_defaults():
+    script = read("scripts/start_fate_overnight_watchdogs.sh")
+
+    assert 'HELPER_ENV_FILE="${HELPER_ENV_FILE:-${ARCHON_ROOT}/examples/helper.env}"' in script
+    assert 'source "${HELPER_ENV_FILE}"' in script

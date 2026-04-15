@@ -34,7 +34,10 @@ def test_readme_centers_interactive_campaign_operator_and_result_paths():
     assert "control/progress-summary.json" in readme
     assert "workspace/.archon/supervisor/progress-summary.md" in readme
     assert "runtime-config.toml" in readme
+    assert "examples/helper.env" in readme
     assert "examples/helper.env.example" in readme
+    assert "canonical observability surface" in readme
+    assert "supplementary inspection" in readme
     assert "Where Proofs and Lessons End Up" in readme
     assert "reports/final/lessons/lesson-records.jsonl" in readme
     assert "reports/postmortem/lessons/lesson-records.jsonl" in readme
@@ -95,6 +98,7 @@ def test_campaign_operator_doc_covers_default_and_interactive_owner_paths():
     assert "scripts/start_campaign_operator.sh" in operator_doc
     assert "$archon-orchestrator" in operator_doc
     assert "autoarchon-render-operator-prompt" in operator_doc
+    assert "examples/helper.env" in operator_doc
     assert "autoarchon-campaign-overview" in operator_doc
     assert "autoarchon-campaign-recover" in operator_doc
     assert "autoarchon-finalize-campaign" in operator_doc

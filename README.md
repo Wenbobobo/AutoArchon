@@ -56,7 +56,16 @@ bash scripts/install_repo_skill.sh
 
 This is the main user path.
 
-1. Prepare benchmark clones under one root, for example:
+1. Create the local helper env once:
+
+```bash
+cp /path/to/AutoArchon/examples/helper.env.example /path/to/AutoArchon/examples/helper.env
+$EDITOR /path/to/AutoArchon/examples/helper.env
+```
+
+`scripts/start_campaign_operator.sh` and `scripts/start_fate_overnight_watchdogs.sh` will auto-load `examples/helper.env` when it exists, so later launches inherit helper and progress-surface defaults without extra shell setup.
+
+2. Prepare benchmark clones under one root, for example:
 
 ```text
 /path/to/benchmarks/FATE-M-upstream
@@ -64,7 +73,7 @@ This is the main user path.
 /path/to/benchmarks/FATE-X-upstream
 ```
 
-2. Start an interactive operator session:
+3. Start an interactive operator session:
 
 ```bash
 ARCHON_ROOT=/path/to/AutoArchon \
@@ -73,7 +82,7 @@ REASONING_EFFORT=xhigh \
 bash /path/to/AutoArchon/scripts/start_campaign_operator.sh
 ```
 
-3. Generate a paste-ready operator prompt:
+4. Generate a paste-ready operator prompt:
 
 ```bash
 uv run --directory /path/to/AutoArchon autoarchon-render-operator-prompt \
@@ -88,7 +97,7 @@ uv run --directory /path/to/AutoArchon autoarchon-render-operator-prompt \
   --run-id-prefix teacher-m
 ```
 
-4. Paste the rendered prompt into the interactive Codex session. It will look like:
+5. Paste the rendered prompt into the interactive Codex session. It will look like:
 
 ```text
 Use $archon-orchestrator to own this AutoArchon campaign.
@@ -97,6 +106,7 @@ Repository root: /path/to/AutoArchon
 Source root: /path/to/benchmarks/FATE-M-upstream
 Campaign root: /path/to/runs/campaigns/20260414-fate-m-full
 Reuse lake from: /path/to/benchmarks/FATE-M-upstream
+Helper env file: /path/to/AutoArchon/examples/helper.env
 Match regex: '^FATEM/.*\\.lean$'
 Shard size: 8
 Run id mode: index
@@ -105,6 +115,7 @@ Before launching anything:
 - create or refresh `control/mission-brief.md`
 - create or refresh `control/launch-spec.resolved.json`
 - append the initial decision to `control/operator-journal.md`
+- keep helper enabled by default unless the run contract explicitly forbids it
 
 Then:
 - launch or resume the watchdog
@@ -113,7 +124,7 @@ Then:
 - finalize only validation-backed proofs and blockers
 ```
 
-5. The operator should leave behind these three files before the watchdog starts:
+6. The operator should leave behind these three files before the watchdog starts:
 
 - `control/mission-brief.md`
 - `control/launch-spec.resolved.json`
@@ -122,6 +133,7 @@ Then:
 ## Progress Watching
 
 Control-plane commands are terminal commands for machine-readable state. They are not the web UI.
+The file-backed summaries are the canonical observability surface for long campaigns; the browser UI is supplementary inspection only.
 
 For a quick loop:
 
@@ -142,9 +154,9 @@ That command also refreshes these lightweight observability surfaces by default:
 - `control/progress-summary.md`
 - `control/progress-summary.json`
 
-The campaign summary is the fastest file-backed dashboard: it now shows ETA, restart count, active runs, and recent finalized targets. Each run also keeps `workspace/.archon/supervisor/progress-summary.{md,json}` with live phase, active prover rows, helper-note breakdowns, and task-result kind counts.
+The campaign summary is the canonical observability surface: it shows ETA, restart count, active runs, and recent finalized targets. Each run also keeps `workspace/.archon/supervisor/progress-summary.{md,json}` with live phase, active prover rows, helper-note breakdowns, and task-result kind counts.
 
-The optional web UI is still useful for deep inspection of one run:
+The optional web UI remains useful for supplementary inspection of one run:
 
 ```bash
 bash ui/start.sh --project /path/to/run-root/workspace
@@ -256,11 +268,13 @@ Each initialized workspace now gets:
 `runtime-config.toml` is the canonical runtime policy file. The easiest path is to seed it from env before `init.sh`:
 
 ```bash
-cp /path/to/AutoArchon/examples/helper.env.example /tmp/autoarchon-helper.env
-$EDITOR /tmp/autoarchon-helper.env
-source /tmp/autoarchon-helper.env
+cp /path/to/AutoArchon/examples/helper.env.example /path/to/AutoArchon/examples/helper.env
+$EDITOR /path/to/AutoArchon/examples/helper.env
+source /path/to/AutoArchon/examples/helper.env
 ./init.sh /path/to/lean-project
 ```
+
+If you launch through `scripts/start_campaign_operator.sh` or `scripts/start_fate_overnight_watchdogs.sh`, that local `examples/helper.env` file is sourced automatically when present.
 
 The example env uses:
 

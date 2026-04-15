@@ -36,12 +36,14 @@ def render_prompt(args: argparse.Namespace) -> str:
     source_root = str(Path(args.source_root).resolve())
     campaign_root = str(Path(args.campaign_root).resolve())
     reuse_lake_from = str(Path(args.reuse_lake_from).resolve()) if args.reuse_lake_from else source_root
+    helper_env_file = str((Path(args.repo_root).resolve() / "examples" / "helper.env"))
 
     mission_lines = [
         "Mission:",
         "- interpret the actual user objective and write or refresh `control/mission-brief.md` before launching anything",
         "- write or refresh `control/launch-spec.resolved.json` so it matches the intended campaign root, scope, model, and watchdog policy",
         "- append the launch decision and expected next checks to `control/operator-journal.md`",
+        f"- keep helper enabled by default; confirm `{helper_env_file}` or equivalent exported helper env is loaded before bootstrap unless the run contract explicitly forbids it",
         "- if the campaign root does not exist yet, bootstrap it safely",
         "- if it already exists, treat it as exclusive scope and do not widen it without explicit instruction",
         "- launch or resume the watchdog only after the three control files are current",
@@ -66,6 +68,7 @@ def render_prompt(args: argparse.Namespace) -> str:
             _line("Source root", source_root),
             _line("Campaign root", campaign_root),
             _line("Reuse lake from", reuse_lake_from),
+            _line("Helper env file", helper_env_file),
             _line("Tracked template", str(Path(args.template).resolve()) if args.template else None),
             _line("Match regex", args.match_regex),
             _line("Shard size", str(args.shard_size)),
