@@ -41,6 +41,7 @@ def test_pyproject_declares_core_autoarchon_entrypoints():
         "autoarchon-refresh-launch-assets",
         "autoarchon-render-operator-prompt",
         "autoarchon-storage-report",
+        "autoarchon-validate-launch-contract",
     } <= set(scripts)
 
 
@@ -62,6 +63,7 @@ def test_uv_run_help_smokes_for_core_entrypoints():
         ("autoarchon-storage-report", "retention"),
         ("autoarchon-supervised-cycle", "workspace"),
         ("autoarchon-prewarm-project", "verify-file"),
+        ("autoarchon-validate-launch-contract", "campaign-root"),
     ]
 
     for command_name, expected_flag in commands:

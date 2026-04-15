@@ -83,9 +83,12 @@ def test_orchestrator_skill_requires_operator_surfaces_and_journal_updates():
     surfaces = read("skills/archon-orchestrator/references/operator-surfaces.md")
 
     assert "references/operator-surfaces.md" in skill
+    assert "intake" in skill.lower()
+    assert "benchmark-faithful" in skill
     assert "mission-brief.md" in skill
     assert "operator-journal.md" in skill
     assert "operator-journal.md" in startup
+    assert "real user objective" in startup.lower()
     assert "control/mission-brief.md" in surfaces
     assert "control/operator-journal.md" in surfaces
 

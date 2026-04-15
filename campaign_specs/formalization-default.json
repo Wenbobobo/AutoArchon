@@ -1,4 +1,5 @@
 {
+  "campaignMode": "formalization",
   "campaignRoot": "${CAMPAIGNS_ROOT}/${FATE_DATE_TAG}-formalization-default",
   "sourceRoot": "${SOURCE_ROOTS_ROOT}/formalization-upstream",
   "reuseLakeFrom": "${SOURCE_ROOTS_ROOT}/formalization-upstream",

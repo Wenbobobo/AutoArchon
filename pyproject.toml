@@ -31,6 +31,7 @@ autoarchon-run-orchestrator = "scripts.run_orchestrator:main"
 autoarchon-launch-from-spec = "scripts.launch_from_spec:main"
 autoarchon-storage-report = "scripts.storage_report:main"
 autoarchon-supervised-cycle = "scripts.supervised_cycle:main"
+autoarchon-validate-launch-contract = "scripts.validate_launch_contract:main"
 autoarchon-validate-review = "scripts.validate_review:main"
 
 [dependency-groups]

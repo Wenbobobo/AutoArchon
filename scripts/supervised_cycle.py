@@ -27,6 +27,7 @@ from archonlib.supervisor import (
     latest_iteration_meta,
     read_allowed_files,
 )
+from archonlib.helper_index import helper_index_entries, summarize_helper_index
 from archonlib.lessons import write_lesson_artifact
 from archonlib.project_state import build_task_pending_markdown, objective_for_file, stage_markdown
 from archonlib.runtime_config import RuntimeConfig, load_runtime_config
@@ -515,6 +516,18 @@ def _helper_note_summary(workspace: Path, runtime_config: RuntimeConfig) -> dict
     }
 
 
+def _helper_runtime_summary(workspace: Path, runtime_config: RuntimeConfig) -> dict[str, object]:
+    note_summary = _helper_note_summary(workspace, runtime_config)
+    index_summary = summarize_helper_index(helper_index_entries(workspace))
+    return {
+        **note_summary,
+        **index_summary,
+        "cooldownState": {
+            "activeReasons": index_summary.get("cooldownActiveReasons", []),
+        },
+    }
+
+
 def _task_result_summary(workspace: Path) -> dict[str, object]:
     task_results_root = workspace / ".archon" / "task_results"
     note_files = sorted(
@@ -805,7 +818,7 @@ def _build_run_progress_payload(
         + target_counts["rejectedTargets"]
     )
     progress_bar, progress_percent = _progress_bar(closed_targets, len(scope_targets))
-    helper_summary = _helper_note_summary(workspace, runtime_config)
+    helper_summary = _helper_runtime_summary(workspace, runtime_config)
     task_results_summary = _task_result_summary(workspace)
     helper_model = runtime_config.helper.model if runtime_config.helper is not None else None
     helper_provider = runtime_config.helper.provider if runtime_config.helper is not None else None
@@ -917,6 +930,10 @@ def _render_run_progress_markdown(payload: dict[str, Any]) -> str:
         f"- Helper note phases: `{json.dumps(helper.get('countsByPhase', {}), sort_keys=True)}`",
         f"- Helper note reasons: `{json.dumps(helper.get('countsByReason', {}), sort_keys=True)}`",
         f"- Helper prompt packs: `{json.dumps(helper.get('countsByPromptPack', {}), sort_keys=True)}`",
+        f"- Helper fresh calls: `{helper.get('freshCallCount', 0)}`",
+        f"- Helper note reuses: `{helper.get('noteReuseCount', 0)}`",
+        f"- Helper blocked by budget: `{helper.get('blockedByBudgetCount', 0)}`",
+        f"- Helper blocked by cooldown: `{helper.get('blockedByCooldownCount', 0)}`",
         f"- Historical routes enabled: `{historical_routes.get('enabled')}`",
         f"- Historical routes seeded: `{historical_routes.get('count', 0)}`",
         f"- Historical route manifest: `{historical_routes.get('manifest') or '(none)'}`",
@@ -982,6 +999,19 @@ def _render_run_progress_markdown(payload: dict[str, Any]) -> str:
             if isinstance(note.get("promptpack"), str):
                 descriptor.append(f"pack=`{note['promptpack']}`")
             lines.append("- " + " ".join(descriptor))
+    else:
+        lines.append("- none")
+
+    lines.extend(["", "## Helper Runtime", ""])
+    active_cooldowns = helper.get("cooldownState", {}).get("activeReasons") if isinstance(helper.get("cooldownState"), dict) else None
+    if isinstance(active_cooldowns, list) and active_cooldowns:
+        for row in active_cooldowns[:12]:
+            if not isinstance(row, dict):
+                continue
+            lines.append(
+                f"- cooldown `{row.get('phase', 'unknown')}:{row.get('reason', 'unknown')}`"
+                + (f" on `{row.get('relPath')}`" if isinstance(row.get("relPath"), str) and row.get("relPath") else "")
+            )
     else:
         lines.append("- none")
 

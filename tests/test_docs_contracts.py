@@ -18,6 +18,8 @@ def test_readme_centers_interactive_campaign_operator_and_result_paths():
     assert "scripts/start_campaign_operator.sh" in readme
     assert "$archon-orchestrator" in readme
     assert "autoarchon-render-operator-prompt" in readme
+    assert "Advanced: Rendered Prompt Path" in readme
+    assert "autoarchon-validate-launch-contract" in readme
     assert "control/mission-brief.md" in readme
     assert "control/launch-spec.resolved.json" in readme
     assert "control/operator-journal.md" in readme
@@ -43,7 +45,7 @@ def test_readme_centers_interactive_campaign_operator_and_result_paths():
     assert "reports/postmortem/lessons/lesson-records.jsonl" in readme
     assert "docs/campaign-operator.md" in readme
     assert "autoarchon-storage-report" in readme
-    assert "docs/roadmaps/control-plane-phase6.md" in readme
+    assert "docs/roadmaps/control-plane-phase7.md" in readme
 
 
 def test_operations_doc_covers_single_run_prewarm_supervisor_and_export_flow():
@@ -100,6 +102,7 @@ def test_campaign_operator_doc_covers_default_and_interactive_owner_paths():
     assert "$archon-orchestrator" in operator_doc
     assert "autoarchon-render-operator-prompt" in operator_doc
     assert "examples/helper.env" in operator_doc
+    assert "autoarchon-validate-launch-contract" in operator_doc
     assert "autoarchon-campaign-overview" in operator_doc
     assert "autoarchon-campaign-recover" in operator_doc
     assert "autoarchon-finalize-campaign" in operator_doc
@@ -247,3 +250,15 @@ def test_phase6_roadmap_captures_operator_helper_observability_and_knowledge_wor
     assert "mathlib-agent" in roadmap
     assert "formalization-default.json" in roadmap
     assert "operator bootstrap" in roadmap
+
+
+def test_phase7_roadmap_captures_operator_validator_helper_kanban_and_mathlib_research():
+    roadmap = read("docs/roadmaps/control-plane-phase7.md")
+
+    assert "Phase 7 Roadmap" in roadmap
+    assert "campaign-operator" in roadmap
+    assert "autoarchon-validate-launch-contract" in roadmap
+    assert "progress-summary.json" in roadmap
+    assert "lesson-reminders.json" in roadmap
+    assert "analysis/mathlib-agent/" in roadmap
+    assert "formalization" in roadmap

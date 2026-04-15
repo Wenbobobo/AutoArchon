@@ -51,7 +51,32 @@ REASONING_EFFORT=xhigh \
 bash /path/to/AutoArchon/scripts/start_campaign_operator.sh
 ```
 
-Render a paste-ready operator prompt:
+Then start with a natural-language intake message such as:
+
+```text
+Use $archon-orchestrator to own this AutoArchon campaign.
+
+Repository root: /path/to/AutoArchon
+Source root: /path/to/benchmarks/FATE-M-upstream
+Campaign root: /path/to/runs/campaigns/20260414-fate-m-full
+Reuse lake from: /path/to/benchmarks/FATE-M-upstream
+
+Real user objective:
+- run a benchmark-faithful FATE-M campaign
+- keep helper enabled unless the contract forbids it
+- ask intake questions before launch when scope or success criteria are unclear
+```
+
+The operator should translate that intake into `control/mission-brief.md`, `control/launch-spec.resolved.json`, and `control/operator-journal.md`, then validate the launch contract before starting the watchdog:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-validate-launch-contract \
+  --campaign-root /path/to/runs/campaigns/20260414-fate-m-full
+```
+
+## Advanced: Rendered Prompt Path
+
+Render a paste-ready operator prompt when you want a fully rendered handoff instead of free-form intake:
 
 ```bash
 uv run --directory /path/to/AutoArchon autoarchon-render-operator-prompt \
@@ -101,11 +126,12 @@ The operator should follow this checklist in order:
 2. Create or refresh `control/mission-brief.md`.
 3. Create or refresh `control/launch-spec.resolved.json`.
 4. Append the starting decision to `control/operator-journal.md`.
-5. Launch or resume the watchdog.
-6. Use `autoarchon-campaign-status` and `autoarchon-campaign-overview` as the primary truth surfaces.
-7. Prefer `autoarchon-campaign-recover --run-id <id> --execute` over ad hoc recovery.
-8. Record every recovery, archive, scope change, and finalization decision in `control/operator-journal.md`.
-9. Finalize or archive only after machine state and exported artifacts agree.
+5. Run `autoarchon-validate-launch-contract` before the watchdog.
+6. Launch or resume the watchdog.
+7. Use `autoarchon-campaign-status` and `autoarchon-campaign-overview` as the primary truth surfaces.
+8. Prefer `autoarchon-campaign-recover --run-id <id> --execute` over ad hoc recovery.
+9. Record every recovery, archive, scope change, and finalization decision in `control/operator-journal.md`.
+10. Finalize or archive only after machine state and exported artifacts agree.
 
 ## Progress Watching
 

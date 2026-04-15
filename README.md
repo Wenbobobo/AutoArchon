@@ -82,7 +82,49 @@ REASONING_EFFORT=xhigh \
 bash /path/to/AutoArchon/scripts/start_campaign_operator.sh
 ```
 
-4. Generate a paste-ready operator prompt:
+4. In that interactive session, describe the mission in natural language and let `campaign-operator` do the intake work. A good first message is:
+
+```text
+Use $archon-orchestrator to own this AutoArchon campaign.
+
+Repository root: /path/to/AutoArchon
+Source root: /path/to/benchmarks/FATE-M-upstream
+Campaign root: /path/to/runs/campaigns/20260414-fate-m-full
+Reuse lake from: /path/to/benchmarks/FATE-M-upstream
+
+Real user objective:
+- run a benchmark-faithful FATE-M campaign
+- keep helper enabled unless the benchmark contract forbids it
+- use single-file or micro-shard teachers
+- ask intake questions if scope, regex, success criteria, or monitoring policy is unclear
+```
+
+The operator should then:
+
+- turn that intake into `control/mission-brief.md`
+- resolve `control/launch-spec.resolved.json`
+- append the first decision block to `control/operator-journal.md`
+- validate the contract before launch with `autoarchon-validate-launch-contract`
+- only then launch or resume the watchdog
+
+5. Validate the launch contract explicitly when you want a deterministic preflight:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-validate-launch-contract \
+  --campaign-root /path/to/runs/campaigns/20260414-fate-m-full
+```
+
+6. The operator should leave behind these three files before the watchdog starts:
+
+- `control/mission-brief.md`
+- `control/launch-spec.resolved.json`
+- `control/operator-journal.md`
+
+## Advanced: Rendered Prompt Path
+
+If you want a fully rendered, paste-ready prompt instead of free-form intake, use the prompt renderer.
+
+1. Generate a paste-ready operator prompt:
 
 ```bash
 uv run --directory /path/to/AutoArchon autoarchon-render-operator-prompt \
@@ -97,7 +139,7 @@ uv run --directory /path/to/AutoArchon autoarchon-render-operator-prompt \
   --run-id-prefix teacher-m
 ```
 
-5. Paste the rendered prompt into the interactive Codex session. It will look like:
+2. Paste the rendered prompt into the interactive Codex session. It will look like:
 
 ```text
 Use $archon-orchestrator to own this AutoArchon campaign.
@@ -123,12 +165,6 @@ Then:
 - prefer deterministic recovery commands
 - finalize only validation-backed proofs and blockers
 ```
-
-6. The operator should leave behind these three files before the watchdog starts:
-
-- `control/mission-brief.md`
-- `control/launch-spec.resolved.json`
-- `control/operator-journal.md`
 
 ## Progress Watching
 
@@ -342,11 +378,15 @@ Concrete paths:
 - `reports/final/lessons/lesson-records.jsonl`
 - `reports/final/lessons/lesson-clusters.json`
 - `reports/final/lessons/lesson-clusters.md`
+- `reports/final/lessons/lesson-reminders.json`
+- `reports/final/lessons/lesson-reminders.md`
 - `reports/final/runs/<run>/run-summary.json`
 - `reports/postmortem/postmortem-summary.json`
 - `reports/postmortem/lessons/lesson-records.jsonl`
 - `reports/postmortem/lessons/lesson-clusters.json`
 - `reports/postmortem/lessons/lesson-clusters.md`
+- `reports/postmortem/lessons/lesson-reminders.json`
+- `reports/postmortem/lessons/lesson-reminders.md`
 
 For mathematician review, prefer exported proofs and validation-backed artifacts under `artifacts/` or `reports/final/`, not the live workspace alone.
 For debugging an active teacher, inspect the live workspace first; for acceptance or human review after a run is done, prefer `artifacts/` and `reports/final/`.
@@ -445,6 +485,7 @@ AutoArchon/
 - [docs/operations.md](docs/operations.md): single-run operational baseline, prewarm, soak-test commands.
 - [docs/teacher-agents.md](docs/teacher-agents.md): one-run-per-teacher launch and monitoring.
 - [docs/agent-registry.md](docs/agent-registry.md): runtime role contracts and future role notes.
+- [docs/roadmaps/control-plane-phase7.md](docs/roadmaps/control-plane-phase7.md): launch-contract validation, operator intake, helper budgeting, reminders, and mathlib research skeleton.
 - [docs/roadmaps/control-plane-phase6.md](docs/roadmaps/control-plane-phase6.md): next-phase plan for operator productization, helper policy, observability, and knowledge capture.
 - [docs/roadmaps/control-plane-phase5.md](docs/roadmaps/control-plane-phase5.md): current unattended-phase roadmap and remaining high-ROI work.
 - [docs/postmortem-20260415-rerun12-fatem-42-45-94.md](docs/postmortem-20260415-rerun12-fatem-42-45-94.md): fresh finalized rerun evidence on the hardened path.

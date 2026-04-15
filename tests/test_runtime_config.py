@@ -29,6 +29,8 @@ model = "gemini-3.1-pro-preview"
 [helper.plan]
 enabled = true
 max_calls_per_iteration = 2
+max_calls_per_reason = 2
+cooldown_iterations_per_reason = 1
 trigger_on_missing_infrastructure = true
 trigger_on_external_reference = false
 trigger_on_repeated_failure = true
@@ -38,6 +40,8 @@ notes_dir = ".archon/informal/helper"
 [helper.prover]
 enabled = true
 max_calls_per_session = 3
+max_calls_per_reason = 2
+cooldown_attempts_per_reason = 1
 trigger_on_missing_infrastructure = true
 trigger_on_lsp_timeout = false
 trigger_on_first_stuck_attempt = true
@@ -59,9 +63,13 @@ write_progress_surface = false
     assert len(config.helper.fallbacks) == 1
     assert config.helper.fallbacks[0].provider == "gemini"
     assert config.helper_plan.max_calls_per_iteration == 2
+    assert config.helper_plan.max_calls_per_reason == 2
+    assert config.helper_plan.cooldown_iterations_per_reason == 1
     assert config.helper_plan.trigger_on_external_reference is False
     assert config.helper_plan.reuse_recent_note_by_reason is False
     assert config.helper_prover.max_calls_per_session == 3
+    assert config.helper_prover.max_calls_per_reason == 2
+    assert config.helper_prover.cooldown_attempts_per_reason == 1
     assert config.helper_prover.trigger_on_lsp_timeout is False
     assert config.helper_prover.reuse_recent_note_by_reason is False
     assert config.observability.write_progress_surface is False
@@ -92,7 +100,11 @@ def test_load_runtime_config_falls_back_to_legacy_helper_json(tmp_path: Path):
     assert config.helper.model == "deepseek-reasoner"
     assert config.legacy_helper_json_used is True
     assert config.helper_plan.max_calls_per_iteration == 1
+    assert config.helper_plan.max_calls_per_reason == 1
+    assert config.helper_plan.cooldown_iterations_per_reason == 0
     assert config.helper_plan.reuse_recent_note_by_reason is True
+    assert config.helper_prover.max_calls_per_reason == 2
+    assert config.helper_prover.cooldown_attempts_per_reason == 0
     assert config.observability.write_progress_surface is True
 
 

@@ -180,6 +180,88 @@ def render_lesson_clusters_markdown(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def build_lesson_reminders(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    top_n: int = 10,
+) -> dict[str, Any]:
+    materialized = [dict(record) for record in records]
+    buckets: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for record in materialized:
+        category = _string(record.get("category"), "unknown")
+        recommended_action = _string(record.get("recommended_action"), _string(record.get("action_taken"), "record_lesson"))
+        source_status = _string(record.get("source_status"), _string(record.get("accepted_state"), "unknown"))
+        buckets[(category, recommended_action, source_status)].append(record)
+
+    reminders: list[dict[str, Any]] = []
+    for (category, recommended_action, source_status), bucket in buckets.items():
+        signal_counter = Counter()
+        summaries: list[str] = []
+        for record in bucket:
+            signal_tags = record.get("signal_tags")
+            if isinstance(signal_tags, list):
+                for tag in signal_tags:
+                    if isinstance(tag, str) and tag:
+                        signal_counter[tag] += 1
+            summary = record.get("summary")
+            if isinstance(summary, str) and summary and summary not in summaries:
+                summaries.append(summary)
+        reminders.append(
+            {
+                "category": category,
+                "recommendedAction": recommended_action,
+                "sourceStatus": source_status,
+                "count": len(bucket),
+                "signalTags": _sorted_counter(signal_counter, top_n=top_n),
+                "sampleSummaries": summaries[: min(top_n, 3)],
+            }
+        )
+    reminders.sort(
+        key=lambda row: (
+            -int(row["count"]),
+            str(row["category"]),
+            str(row["recommendedAction"]),
+            str(row["sourceStatus"]),
+        )
+    )
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "generatedAt": _utc_now(),
+        "recordCount": len(materialized),
+        "reminders": reminders[:top_n],
+    }
+
+
+def render_lesson_reminders_markdown(payload: Mapping[str, Any]) -> str:
+    lines = [
+        "# Lesson Reminders",
+        "",
+        f"- Generated at: `{payload.get('generatedAt')}`",
+        f"- Record count: `{payload.get('recordCount')}`",
+        "",
+    ]
+    reminders = payload.get("reminders")
+    if not isinstance(reminders, list) or not reminders:
+        lines.append("- none")
+        return "\n".join(lines) + "\n"
+
+    for row in reminders:
+        if not isinstance(row, Mapping):
+            continue
+        signal_tags = ", ".join(
+            f"{item.get('value')} ({item.get('count')})"
+            for item in row.get("signalTags", [])[:4]
+            if isinstance(item, Mapping)
+        ) or "none"
+        lines.append(
+            f"- `{row.get('category')}` action=`{row.get('recommendedAction')}` "
+            f"source=`{row.get('sourceStatus')}` count={row.get('count')} signals={signal_tags}"
+        )
+        for summary in row.get("sampleSummaries", [])[:2]:
+            lines.append(f"  sample: {summary}")
+    return "\n".join(lines) + "\n"
+
+
 def write_lesson_cluster_artifacts(
     lessons_root: Path,
     *,
@@ -191,9 +273,16 @@ def write_lesson_cluster_artifacts(
     payload = build_lesson_clusters(records, source_paths=source_paths, top_n=top_n)
     json_path = lessons_root / "lesson-clusters.json"
     markdown_path = lessons_root / "lesson-clusters.md"
+    reminders_payload = build_lesson_reminders(records, top_n=top_n)
+    reminders_json_path = lessons_root / "lesson-reminders.json"
+    reminders_markdown_path = lessons_root / "lesson-reminders.md"
     json_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     markdown_path.write_text(render_lesson_clusters_markdown(payload), encoding="utf-8")
+    reminders_json_path.write_text(json.dumps(reminders_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    reminders_markdown_path.write_text(render_lesson_reminders_markdown(reminders_payload), encoding="utf-8")
     return {
         "json": str(json_path),
         "markdown": str(markdown_path),
+        "remindersJson": str(reminders_json_path),
+        "remindersMarkdown": str(reminders_markdown_path),
     }

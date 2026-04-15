@@ -2100,6 +2100,7 @@ def build_campaign_overview(
                         "acceptedBlockerCount": len(run.get("acceptedBlockers", [])) if isinstance(run.get("acceptedBlockers"), list) else 0,
                         "pendingTargetCount": len(run.get("pendingTargets", [])) if isinstance(run.get("pendingTargets"), list) else 0,
                         "remainingTargetCount": len(run.get("remainingTargets", [])) if isinstance(run.get("remainingTargets"), list) else 0,
+                        "helperCooldownState": run.get("helperCooldownState"),
                     }
                 )
             recovery = run.get("recommendedRecovery")
@@ -2182,6 +2183,22 @@ def build_campaign_overview(
         },
         "progress": progress,
         "eta": eta,
+        "statusBuckets": _status_buckets(
+            status_payload.get("counts", {}) if isinstance(status_payload.get("counts"), Mapping) else {}
+        ),
+        "recentTransitions": _recent_transitions(campaign_root),
+        "recommendedCommands": _recommended_commands(
+            campaign_root,
+            running_rows=running_rows,
+            recoverable_rows=recoverable_rows,
+        ),
+        "cooldownState": _cooldown_state(
+            runs=[run for run in runs if isinstance(run, dict)] if isinstance(runs, list) else [],
+            watchdog_runtime={
+                "providerCooldownUntil": watchdog_state.get("providerCooldownUntil") if isinstance(watchdog_state, Mapping) else None,
+                "providerCooldownSeconds": watchdog_state.get("providerCooldownSeconds") if isinstance(watchdog_state, Mapping) else None,
+            },
+        ),
         "recentFinalizedTargets": accepted_targets[:12],
         "ownerMode": owner_mode,
         "ownerLease": lease,
@@ -2234,6 +2251,124 @@ def build_campaign_progress_payload(
         "percent": percent,
         "bar": bar,
         "label": label,
+    }
+
+
+def _status_buckets(run_counts: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = {str(key): int(value or 0) for key, value in run_counts.items()}
+    terminal_total = sum(normalized.get(status, 0) for status in TERMINAL_RUN_STATUSES)
+    active_total = normalized.get("running", 0)
+    queued_total = normalized.get("queued", 0)
+    attention_total = sum(
+        count
+        for status, count in normalized.items()
+        if status not in TERMINAL_RUN_STATUSES and status not in {"running", "queued"}
+    )
+    return {
+        "terminal": {
+            "total": terminal_total,
+            "accepted": normalized.get("accepted", 0),
+            "blocked": normalized.get("blocked", 0),
+            "contaminated": normalized.get("contaminated", 0),
+        },
+        "active": {
+            "total": active_total,
+            "running": normalized.get("running", 0),
+        },
+        "queued": {
+            "total": queued_total,
+            "queued": normalized.get("queued", 0),
+        },
+        "attention": {
+            "total": attention_total,
+            "statuses": {
+                status: count
+                for status, count in sorted(normalized.items())
+                if status not in TERMINAL_RUN_STATUSES and status not in {"running", "queued"}
+            },
+        },
+    }
+
+
+def _recent_transitions(campaign_root: Path, *, limit: int = 12) -> list[dict[str, Any]]:
+    transitions: list[dict[str, Any]] = []
+    for event in _read_event_log(campaign_root / "events.jsonl"):
+        if event.get("event") not in {
+            "run_status_changed",
+            "validation_accepted",
+            "blocker_accepted",
+            "run_recovery_executed",
+            "recovery_planned",
+            "campaign_status_refreshed",
+        }:
+            continue
+        transitions.append(
+            {
+                "timestamp": event.get("timestamp"),
+                "event": event.get("event"),
+                "runId": event.get("runId"),
+                "summary": _summarize_run_event(event),
+            }
+        )
+    return transitions[-limit:]
+
+
+def _recommended_commands(
+    campaign_root: Path,
+    *,
+    running_rows: list[dict[str, Any]],
+    recoverable_rows: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    commands = [
+        {
+            "label": "Watch campaign",
+            "command": f"bash scripts/watch_campaign.sh {shlex.quote(str(campaign_root))}",
+        },
+        {
+            "label": "Refresh overview",
+            "command": f"uv run autoarchon-campaign-overview --campaign-root {shlex.quote(str(campaign_root))}",
+        },
+    ]
+    if recoverable_rows:
+        commands.append(
+            {
+                "label": "Dry-run recovery",
+                "command": f"uv run autoarchon-campaign-recover --campaign-root {shlex.quote(str(campaign_root))} --dry-run",
+            }
+        )
+    if running_rows:
+        commands.append(
+            {
+                "label": "Watch first active run",
+                "command": f"bash scripts/watch_run.sh {shlex.quote(str(campaign_root / 'runs' / str(running_rows[0]['runId']) / 'workspace'))}",
+            }
+        )
+    return commands
+
+
+def _cooldown_state(
+    *,
+    runs: list[dict[str, Any]],
+    watchdog_runtime: Mapping[str, Any],
+) -> dict[str, Any]:
+    helper_cooldowns: list[dict[str, Any]] = []
+    for run in runs:
+        cooldown_state = run.get("helperCooldownState")
+        if not isinstance(cooldown_state, Mapping):
+            continue
+        active_reasons = cooldown_state.get("activeReasons")
+        if not isinstance(active_reasons, list) or not active_reasons:
+            continue
+        helper_cooldowns.append(
+            {
+                "runId": run.get("runId"),
+                "activeReasons": active_reasons,
+            }
+        )
+    return {
+        "watchdogProviderCooldownUntil": watchdog_runtime.get("providerCooldownUntil"),
+        "watchdogProviderCooldownSeconds": watchdog_runtime.get("providerCooldownSeconds"),
+        "runHelperCooldowns": helper_cooldowns,
     }
 
 
@@ -2325,6 +2460,9 @@ def render_campaign_progress_markdown(overview: Mapping[str, Any]) -> str:
     eta = overview.get("eta") if isinstance(overview.get("eta"), Mapping) else {}
     paths = overview.get("paths") if isinstance(overview.get("paths"), Mapping) else {}
     recent_finalized = overview.get("recentFinalizedTargets") if isinstance(overview.get("recentFinalizedTargets"), list) else []
+    status_buckets = overview.get("statusBuckets") if isinstance(overview.get("statusBuckets"), Mapping) else {}
+    recommended_commands = overview.get("recommendedCommands") if isinstance(overview.get("recommendedCommands"), list) else []
+    cooldown_state = overview.get("cooldownState") if isinstance(overview.get("cooldownState"), Mapping) else {}
 
     lines = [
         f"# Campaign Progress: {campaign_id}",
@@ -2341,6 +2479,8 @@ def render_campaign_progress_markdown(overview: Mapping[str, Any]) -> str:
         f"- ETA: `{eta.get('etaText', 'unknown')}`",
         f"- Last progress at: `{overview.get('lastProgressAt') or 'unknown'}`",
         f"- Last recovery at: `{overview.get('lastRecoveryAt') or 'none'}`",
+        f"- Status buckets: `{json.dumps(status_buckets, sort_keys=True)}`",
+        f"- Cooldown state: `{json.dumps(cooldown_state, sort_keys=True)}`",
         "",
         "## Running",
         "",
@@ -2370,6 +2510,14 @@ def render_campaign_progress_markdown(overview: Mapping[str, Any]) -> str:
                 f"- `{row.get('runId')}` scope={row.get('scopeHint') or 'unknown'} status={row.get('status')} "
                 f"action={row.get('action')} class={row.get('recoveryClass')}"
             )
+    else:
+        lines.append("- none")
+    lines.extend(["", "## Recommended Commands", ""])
+    if recommended_commands:
+        for row in recommended_commands[:8]:
+            if not isinstance(row, Mapping):
+                continue
+            lines.append(f"- `{row.get('label', 'command')}`: `{row.get('command', '')}`")
     else:
         lines.append("- none")
     lines.extend(
@@ -3253,6 +3401,13 @@ def collect_campaign_status(campaign_root: Path, *, heartbeat_seconds: int = DEF
                 and isinstance(supervisor_progress.get("helper", {}).get("countsByReason"), Mapping)
                 else {}
             ),
+            "helperCooldownState": (
+                dict(supervisor_progress.get("helper", {}).get("cooldownState", {}))
+                if isinstance(supervisor_progress, Mapping)
+                and isinstance(supervisor_progress.get("helper"), Mapping)
+                and isinstance(supervisor_progress.get("helper", {}).get("cooldownState"), Mapping)
+                else {}
+            ),
             "taskResultBlockerCount": (
                 int(supervisor_progress.get("taskResultsSummary", {}).get("counts", {}).get("blocker", 0))
                 if isinstance(supervisor_progress, Mapping)
@@ -3686,6 +3841,9 @@ def _lesson_record(
     action_taken: str,
     outcome: str,
     accepted_state: str,
+    recommended_action: str | None = None,
+    source_status: str | None = None,
+    signal_tags: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "campaign_id": campaign_id,
@@ -3698,6 +3856,9 @@ def _lesson_record(
         "action_taken": action_taken,
         "outcome": outcome,
         "accepted_state": accepted_state,
+        "recommended_action": recommended_action or action_taken,
+        "source_status": source_status or outcome,
+        "signal_tags": signal_tags if isinstance(signal_tags, list) else [stage, category, accepted_state],
         "timestamp": _utc_now(),
     }
 
@@ -3754,6 +3915,7 @@ def _collect_run_lesson_records(
         evidence_base = [f"runs/{run_id}/artifacts/lessons/{lesson_name}"]
         action_taken = str(lesson_payload.get("recommendedAction") or "record_lesson")
         outcome = str(lesson_payload.get("status") or accepted_state)
+        lesson_signals = lesson_payload.get("signals")
         entries = lesson_payload.get("lessons")
         if not isinstance(entries, list):
             continue
@@ -3780,6 +3942,18 @@ def _collect_run_lesson_records(
                     action_taken=action_taken,
                     outcome=outcome,
                     accepted_state=accepted_state,
+                    recommended_action=action_taken,
+                    source_status=outcome,
+                    signal_tags=[
+                        tag
+                        for tag in (
+                            [str(item) for item in lesson_signals if isinstance(item, str)]
+                            if isinstance(lesson_signals, list)
+                            else []
+                        )
+                        + [category, "supervised_cycle", accepted_state]
+                        if tag
+                    ],
                 )
             )
     return records

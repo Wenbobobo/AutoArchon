@@ -2137,6 +2137,8 @@ def test_finalize_campaign_copies_only_accepted_proofs_and_blockers(tmp_path: Pa
     ]
     assert (final_root / "lessons" / "lesson-clusters.json").exists()
     assert (final_root / "lessons" / "lesson-clusters.md").exists()
+    assert (final_root / "lessons" / "lesson-reminders.json").exists()
+    assert (final_root / "lessons" / "lesson-reminders.md").exists()
     lesson_categories = {record["category"] for record in lesson_records}
     assert "accepted_proof" in lesson_categories
     assert "accepted_blocker" in lesson_categories
@@ -2145,6 +2147,9 @@ def test_finalize_campaign_copies_only_accepted_proofs_and_blockers(tmp_path: Pa
     assert accepted_proof_record["run_id"] == "accepted-run"
     assert accepted_proof_record["theorem_id"] == "FATEM/1.lean"
     assert accepted_proof_record["accepted_state"] == "accepted"
+    assert "recommended_action" in accepted_proof_record
+    assert "source_status" in accepted_proof_record
+    assert "signal_tags" in accepted_proof_record
     compare_markdown = (final_root / "compare-report.md").read_text(encoding="utf-8")
     assert "| run | status | class | retry_after | launch_exit | proofs | blockers |" in compare_markdown
     assert "| prewarm | recommended | timeline |" in compare_markdown
@@ -2492,6 +2497,8 @@ def test_campaign_overview_and_archive_capture_owner_lease_and_status(tmp_path: 
     ]
     assert (campaign_root / "reports" / "postmortem" / "lessons" / "lesson-clusters.json").exists()
     assert (campaign_root / "reports" / "postmortem" / "lessons" / "lesson-clusters.md").exists()
+    assert (campaign_root / "reports" / "postmortem" / "lessons" / "lesson-reminders.json").exists()
+    assert (campaign_root / "reports" / "postmortem" / "lessons" / "lesson-reminders.md").exists()
     postmortem_categories = {record["category"] for record in postmortem_records}
     assert "provider_transport" in postmortem_categories
     assert "watchdog_relaunch" in postmortem_categories
@@ -2671,6 +2678,11 @@ def test_build_campaign_overview_surfaces_run_progress_summary_signals(tmp_path:
     assert "phase=proving" in progress_markdown
     assert "helper_notes=2" in progress_markdown
     assert "blocker_notes=1" in progress_markdown
+    progress_payload = json.loads((campaign_root / "control" / "progress-summary.json").read_text(encoding="utf-8"))
+    assert "statusBuckets" in progress_payload
+    assert "recommendedCommands" in progress_payload
+    assert "recentTransitions" in progress_payload
+    assert "cooldownState" in progress_payload
 
 
 def test_create_campaign_scaffolds_operator_surfaces(tmp_path: Path):

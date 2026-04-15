@@ -1,4 +1,5 @@
 {
+  "campaignMode": "benchmark_faithful",
   "campaignRoot": "${CAMPAIGNS_ROOT}/${FATE_DATE_TAG}-fate-m-full",
   "sourceRoot": "${BENCHMARK_ROOT}/FATE-M-upstream",
   "reuseLakeFrom": "${BENCHMARK_ROOT}/FATE-M-upstream",

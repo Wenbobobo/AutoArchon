@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from archonlib.helper_index import append_helper_index_event, helper_index_entries
 from archonlib.helper_models import HelperProviderConfig
 from archonlib.runtime_config import (
     RuntimeConfig,
@@ -133,6 +134,8 @@ def _effective_config(
         "planPolicy": {
             "enabled": runtime_config.helper_plan.enabled,
             "maxCallsPerIteration": runtime_config.helper_plan.max_calls_per_iteration,
+            "maxCallsPerReason": runtime_config.helper_plan.max_calls_per_reason,
+            "cooldownIterationsPerReason": runtime_config.helper_plan.cooldown_iterations_per_reason,
             "triggerOnMissingInfrastructure": runtime_config.helper_plan.trigger_on_missing_infrastructure,
             "triggerOnExternalReference": runtime_config.helper_plan.trigger_on_external_reference,
             "triggerOnRepeatedFailure": runtime_config.helper_plan.trigger_on_repeated_failure,
@@ -142,6 +145,8 @@ def _effective_config(
         "proverPolicy": {
             "enabled": runtime_config.helper_prover.enabled,
             "maxCallsPerSession": runtime_config.helper_prover.max_calls_per_session,
+            "maxCallsPerReason": runtime_config.helper_prover.max_calls_per_reason,
+            "cooldownAttemptsPerReason": runtime_config.helper_prover.cooldown_attempts_per_reason,
             "triggerOnMissingInfrastructure": runtime_config.helper_prover.trigger_on_missing_infrastructure,
             "triggerOnLspTimeout": runtime_config.helper_prover.trigger_on_lsp_timeout,
             "triggerOnFirstStuckAttempt": runtime_config.helper_prover.trigger_on_first_stuck_attempt,
@@ -184,6 +189,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--rel-path", help="Optional target Lean file relative path such as FATEM/42.lean")
     parser.add_argument("--reason", help="Optional short trigger/reason label such as lsp_timeout or repeated_failure")
+    parser.add_argument("--iteration", type=int, help="Optional planner iteration index for cooldown/budget bookkeeping")
+    parser.add_argument("--attempt", type=int, help="Optional prover attempt index for cooldown/budget bookkeeping")
     parser.add_argument(
         "--prompt-pack",
         choices=("auto",) + HELPER_PROMPT_PACKS,
@@ -380,6 +387,141 @@ def _render_prompt_with_pack(
 
 def _phase_policy(runtime_config: RuntimeConfig, phase: str) -> Any:
     return runtime_config.helper_plan if phase == "plan" else runtime_config.helper_prover
+
+
+def _matching_provider_call_entries(
+    workspace: Path,
+    *,
+    phase: str,
+    rel_path: str | None,
+    reason: str,
+) -> list[dict[str, Any]]:
+    normalized_reason = _normalize_reason(reason)
+    matches: list[dict[str, Any]] = []
+    for entry in helper_index_entries(workspace):
+        if entry.get("event") != "provider_call":
+            continue
+        if entry.get("phase") != phase:
+            continue
+        if _normalize_reason(entry.get("reason")) != normalized_reason:
+            continue
+        if rel_path is not None and entry.get("relPath") != rel_path:
+            continue
+        matches.append(entry)
+    return matches
+
+
+def _enforce_fresh_call_policy(
+    *,
+    workspace: Path,
+    runtime_config: RuntimeConfig,
+    phase: str | None,
+    rel_path: str | None,
+    reason: str | None,
+    prompt_pack: str | None,
+    provider: str,
+    model: str,
+    iteration: int | None,
+    attempt: int | None,
+) -> None:
+    normalized_reason = _normalize_reason(reason)
+    if phase is None or normalized_reason is None:
+        return
+    policy = _phase_policy(runtime_config, phase)
+    provider_calls = _matching_provider_call_entries(
+        workspace,
+        phase=phase,
+        rel_path=rel_path,
+        reason=normalized_reason,
+    )
+    if phase == "plan":
+        cooldown = getattr(policy, "cooldown_iterations_per_reason", 0)
+        if isinstance(iteration, int) and isinstance(cooldown, int) and cooldown > 0:
+            prior_iterations = [
+                int(entry["iteration"])
+                for entry in provider_calls
+                if isinstance(entry.get("iteration"), int)
+            ]
+            if prior_iterations:
+                latest_iteration = max(prior_iterations)
+                if iteration - latest_iteration <= cooldown:
+                    append_helper_index_event(
+                        workspace,
+                        event="skipped_by_cooldown",
+                        phase=phase,
+                        rel_path=rel_path,
+                        reason=normalized_reason,
+                        prompt_pack=prompt_pack,
+                        provider=provider,
+                        model=model,
+                        iteration=iteration,
+                        attempt=attempt,
+                        metadata={
+                            "cooldownKind": "iterations",
+                            "latestFreshIteration": latest_iteration,
+                            "cooldownWindow": cooldown,
+                        },
+                    )
+                    raise SystemExit(
+                        f"Error: helper cooldown is active for {phase}:{normalized_reason}"
+                        + (f" on {rel_path}" if rel_path else "")
+                        + "."
+                    )
+
+    if phase == "prover":
+        cooldown = getattr(policy, "cooldown_attempts_per_reason", 0)
+        if isinstance(attempt, int) and isinstance(cooldown, int) and cooldown > 0:
+            prior_attempts = [
+                int(entry["attempt"])
+                for entry in provider_calls
+                if isinstance(entry.get("attempt"), int)
+            ]
+            if prior_attempts:
+                latest_attempt = max(prior_attempts)
+                if attempt - latest_attempt <= cooldown:
+                    append_helper_index_event(
+                        workspace,
+                        event="skipped_by_cooldown",
+                        phase=phase,
+                        rel_path=rel_path,
+                        reason=normalized_reason,
+                        prompt_pack=prompt_pack,
+                        provider=provider,
+                        model=model,
+                        iteration=iteration,
+                        attempt=attempt,
+                        metadata={
+                            "cooldownKind": "attempts",
+                            "latestFreshAttempt": latest_attempt,
+                            "cooldownWindow": cooldown,
+                        },
+                    )
+                    raise SystemExit(
+                        f"Error: helper cooldown is active for {phase}:{normalized_reason}"
+                        + (f" on {rel_path}" if rel_path else "")
+                        + "."
+                    )
+
+    max_calls_per_reason = getattr(policy, "max_calls_per_reason", None)
+    if isinstance(max_calls_per_reason, int) and max_calls_per_reason >= 0 and len(provider_calls) >= max_calls_per_reason:
+        append_helper_index_event(
+            workspace,
+            event="skipped_by_budget",
+            phase=phase,
+            rel_path=rel_path,
+            reason=normalized_reason,
+            prompt_pack=prompt_pack,
+            provider=provider,
+            model=model,
+            iteration=iteration,
+            attempt=attempt,
+            metadata={"budgetKind": "per_reason", "observedProviderCalls": len(provider_calls)},
+        )
+        raise SystemExit(
+            f"Error: helper reason budget exhausted for {phase}:{normalized_reason}"
+            + (f" on {rel_path}" if rel_path else "")
+            + "."
+        )
 
 
 def _parse_note_metadata(path: Path) -> dict[str, str]:
@@ -635,11 +777,38 @@ def main() -> int:
     failures: list[str] = []
     response: str | None = None
     used_config: HelperProviderConfig | None = None
+    event_note_path: Path | None = None
     if reusable_note is not None:
         note_path, response = reusable_note
         used_config = attempts[0]
         sys.stderr.write(f"[archon-helper] reused note {note_path}\n")
+        append_helper_index_event(
+            workspace,
+            event="note_reuse",
+            phase=args.phase,
+            rel_path=args.rel_path,
+            reason=args.reason,
+            prompt_pack=selected_prompt_pack,
+            provider=used_config.provider,
+            model=used_config.model,
+            note_path=note_path,
+            reused_from=note_path,
+            iteration=args.iteration,
+            attempt=args.attempt,
+        )
     else:
+        _enforce_fresh_call_policy(
+            workspace=workspace,
+            runtime_config=runtime_config,
+            phase=args.phase,
+            rel_path=args.rel_path,
+            reason=args.reason,
+            prompt_pack=selected_prompt_pack,
+            provider=attempts[0].provider,
+            model=attempts[0].model,
+            iteration=args.iteration,
+            attempt=args.attempt,
+        )
         for index, attempt in enumerate(attempts):
             try:
                 response = _call_provider(
@@ -686,11 +855,26 @@ def main() -> int:
         else:
             note_path = Path(args.write_note).resolve()
             note_text = response + ("\n" if not response.endswith("\n") else "")
+        event_note_path = note_path
         if args.write_note != "auto" or reusable_note is None:
             note_path.parent.mkdir(parents=True, exist_ok=True)
             note_path.write_text(note_text, encoding="utf-8")
             if args.write_note == "auto":
                 sys.stderr.write(f"[archon-helper] wrote note {note_path}\n")
+    if reusable_note is None:
+        append_helper_index_event(
+            workspace,
+            event="provider_call",
+            phase=args.phase,
+            rel_path=args.rel_path,
+            reason=args.reason,
+            prompt_pack=selected_prompt_pack,
+            provider=used_config.provider,
+            model=used_config.model,
+            note_path=event_note_path,
+            iteration=args.iteration,
+            attempt=args.attempt,
+        )
     sys.stdout.write(response)
     if response and not response.endswith("\n"):
         sys.stdout.write("\n")

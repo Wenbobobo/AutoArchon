@@ -29,6 +29,8 @@ def legacy_helper_config_path(workspace: Path) -> Path:
 class HelperPlanPolicy:
     enabled: bool
     max_calls_per_iteration: int
+    max_calls_per_reason: int
+    cooldown_iterations_per_reason: int
     trigger_on_missing_infrastructure: bool
     trigger_on_external_reference: bool
     trigger_on_repeated_failure: bool
@@ -40,6 +42,8 @@ class HelperPlanPolicy:
 class HelperProverPolicy:
     enabled: bool
     max_calls_per_session: int
+    max_calls_per_reason: int
+    cooldown_attempts_per_reason: int
     trigger_on_missing_infrastructure: bool
     trigger_on_lsp_timeout: bool
     trigger_on_first_stuck_attempt: bool
@@ -116,6 +120,8 @@ def _resolve_helper_plan_policy(payload: Mapping[str, Any] | None) -> HelperPlan
     return HelperPlanPolicy(
         enabled=_as_bool(mapping.get("enabled"), default=True),
         max_calls_per_iteration=_as_int(mapping.get("max_calls_per_iteration"), default=1, minimum=0),
+        max_calls_per_reason=_as_int(mapping.get("max_calls_per_reason"), default=1, minimum=0),
+        cooldown_iterations_per_reason=_as_int(mapping.get("cooldown_iterations_per_reason"), default=0, minimum=0),
         trigger_on_missing_infrastructure=_as_bool(mapping.get("trigger_on_missing_infrastructure"), default=True),
         trigger_on_external_reference=_as_bool(mapping.get("trigger_on_external_reference"), default=True),
         trigger_on_repeated_failure=_as_bool(mapping.get("trigger_on_repeated_failure"), default=True),
@@ -129,6 +135,8 @@ def _resolve_helper_prover_policy(payload: Mapping[str, Any] | None) -> HelperPr
     return HelperProverPolicy(
         enabled=_as_bool(mapping.get("enabled"), default=True),
         max_calls_per_session=_as_int(mapping.get("max_calls_per_session"), default=2, minimum=0),
+        max_calls_per_reason=_as_int(mapping.get("max_calls_per_reason"), default=2, minimum=0),
+        cooldown_attempts_per_reason=_as_int(mapping.get("cooldown_attempts_per_reason"), default=0, minimum=0),
         trigger_on_missing_infrastructure=_as_bool(mapping.get("trigger_on_missing_infrastructure"), default=True),
         trigger_on_lsp_timeout=_as_bool(mapping.get("trigger_on_lsp_timeout"), default=True),
         trigger_on_first_stuck_attempt=_as_bool(mapping.get("trigger_on_first_stuck_attempt"), default=True),
@@ -243,6 +251,8 @@ def render_default_runtime_config(
         "[helper.plan]\n"
         "enabled = true\n"
         "max_calls_per_iteration = 1\n"
+        "max_calls_per_reason = 1\n"
+        "cooldown_iterations_per_reason = 0\n"
         "trigger_on_missing_infrastructure = true\n"
         "trigger_on_external_reference = true\n"
         "trigger_on_repeated_failure = true\n"
@@ -251,6 +261,8 @@ def render_default_runtime_config(
         "[helper.prover]\n"
         "enabled = true\n"
         "max_calls_per_session = 2\n"
+        "max_calls_per_reason = 2\n"
+        "cooldown_attempts_per_reason = 0\n"
         "trigger_on_missing_infrastructure = true\n"
         "trigger_on_lsp_timeout = true\n"
         "trigger_on_first_stuck_attempt = true\n"

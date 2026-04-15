@@ -10,8 +10,9 @@
     "workspace/.archon/validation/"
   ],
   "writes": [
-    "analysis/mathlib-hints/",
-    "analysis/error-clusters/"
+    "analysis/mathlib-agent/",
+    "analysis/mathlib-agent/hints/",
+    "analysis/mathlib-agent/error-clusters/"
   ],
   "outputs": [
     "retrieval datasets",

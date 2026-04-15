@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from archonlib.campaign import create_campaign, ensure_campaign_control_root, plan_campaign_shards, refresh_campaign_launch_assets
+from archonlib.launch_contract import validate_launch_contract
 from archonlib.operator_surfaces import ensure_operator_surfaces
 
 
@@ -499,9 +500,23 @@ def main() -> int:
     else:
         operator_surfaces = None
 
+    contract_validation = (
+        {"status": "skipped_dry_run"}
+        if args.dry_run
+        else validate_launch_contract(campaign_root, repo_root=ROOT, strict=False)
+    )
+
     watchdog_payload = {"status": "disabled", "command": None}
-    if watchdog_enabled:
+    if watchdog_enabled and args.dry_run:
+        watchdog_payload = _start_watchdog(campaign_root, spec, dry_run=True)
+    elif watchdog_enabled and contract_validation.get("valid") is True:
         watchdog_payload = _start_watchdog(campaign_root, spec, dry_run=args.dry_run)
+    elif watchdog_enabled and not args.dry_run:
+        watchdog_payload = {
+            "status": "not_started",
+            "reason": "launch_contract_invalid",
+            "command": None,
+        }
 
     payload = {
         "specFile": str(spec_file),
@@ -516,9 +531,14 @@ def main() -> int:
         "dryRun": args.dry_run,
         "resolvedSpecPath": str(resolved_spec_path),
         "operatorSurfaces": operator_surfaces,
+        "launchContractValidation": contract_validation,
         "watchdog": watchdog_payload,
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
+    if args.dry_run:
+        return 0
+    if not args.dry_run and contract_validation.get("valid") is not True:
+        return 2
     watchdog_status = watchdog_payload.get("status") if isinstance(watchdog_payload, dict) else None
     if watchdog_enabled and watchdog_status not in {"started", "already_running", "dry_run"}:
         return 1

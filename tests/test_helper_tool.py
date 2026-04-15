@@ -80,8 +80,10 @@ notes_dir = ".archon/informal/prover"
     ]
     assert payload["legacyHelperJsonUsed"] is False
     assert payload["planPolicy"] == {
+        "cooldownIterationsPerReason": 0,
         "enabled": True,
         "maxCallsPerIteration": 3,
+        "maxCallsPerReason": 1,
         "notesDir": ".archon/informal/plan",
         "reuseRecentNoteByReason": True,
         "triggerOnExternalReference": True,
@@ -89,8 +91,10 @@ notes_dir = ".archon/informal/prover"
         "triggerOnRepeatedFailure": True,
     }
     assert payload["proverPolicy"] == {
+        "cooldownAttemptsPerReason": 0,
         "enabled": True,
         "maxCallsPerSession": 4,
+        "maxCallsPerReason": 2,
         "notesDir": ".archon/informal/prover",
         "reuseRecentNoteByReason": True,
         "triggerOnFirstStuckAttempt": True,
@@ -270,6 +274,13 @@ notes_dir = ".archon/helper/prover"
             "",
         ]
     )
+    index_path = tmp_path / ".archon" / "informal" / "helper" / "helper-index.json"
+    assert index_path.exists()
+    index_payload = json.loads(index_path.read_text(encoding="utf-8"))
+    assert index_payload["entries"][0]["event"] == "provider_call"
+    assert index_payload["entries"][0]["phase"] == "prover"
+    assert index_payload["entries"][0]["reason"] == "lsp_timeout"
+    assert index_payload["entries"][0]["notePath"] == ".archon/helper/prover/FATEM_42.lean__prover__lsp_timeout__20260415T030405Z.md"
 
 
 def test_helper_tool_auto_prompt_pack_wraps_request_and_exposes_selection(monkeypatch, tmp_path: Path, capsys):
@@ -484,6 +495,9 @@ reuse_recent_note_by_reason = true
     assert captured.out == "reuse this note\n"
     assert str(note_path) in captured.err
     assert calls == 0
+    index_payload = json.loads((tmp_path / ".archon" / "informal" / "helper" / "helper-index.json").read_text(encoding="utf-8"))
+    assert index_payload["entries"][0]["event"] == "note_reuse"
+    assert index_payload["entries"][0]["reusedFrom"] == ".archon/helper/prover/FATEM_42.lean__prover__lsp_timeout__20260415T030405Z.md"
 
 
 def test_helper_tool_requires_phase_before_auto_note_transport(monkeypatch, tmp_path: Path):
@@ -622,3 +636,182 @@ model = "gemini-3.1-pro-preview"
     assert "trying next fallback" in captured.err
     assert "used fallback gemini:gemini-3.1-pro-preview" in captured.err
     assert attempts == [("openai", "deepseek-reasoner"), ("gemini", "gemini-3.1-pro-preview")]
+
+
+def test_helper_tool_blocks_fresh_call_after_reason_budget_and_requires_reuse(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "runtime-config.toml"
+    config_path.write_text(
+        """
+[helper]
+enabled = true
+provider = "openai"
+model = "gpt-5.4-mini"
+
+[helper.prover]
+max_calls_per_reason = 1
+reuse_recent_note_by_reason = false
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    index_path = tmp_path / ".archon" / "informal" / "helper" / "helper-index.json"
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "entries": [
+                    {
+                        "createdAt": "2026-04-15T00:00:00+00:00",
+                        "event": "provider_call",
+                        "notePath": None,
+                        "phase": "prover",
+                        "promptPack": "lsp_timeout",
+                        "provider": "openai",
+                        "reason": "lsp_timeout",
+                        "relPath": "FATEM/42.lean",
+                        "reusedFrom": None,
+                    }
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    calls = 0
+
+    def fake_call(prompt: str, model: str, think: bool, *, max_retries: int, initial_backoff_seconds: int, timeout_seconds: int) -> str:
+        nonlocal calls
+        calls += 1
+        return "fresh helper result"
+
+    fake_agent = SimpleNamespace(
+        API_KEY_ENVS={"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "openrouter": "OPENROUTER_API_KEY"},
+        BASE_URL_ENVS={"openai": "OPENAI_BASE_URL", "gemini": "GEMINI_BASE_URL", "openrouter": "OPENROUTER_BASE_URL"},
+        DEFAULTS={"openai": "gpt-5.4", "gemini": "gemini-3.1-pro-preview", "openrouter": "google/gemini-3.1-pro-preview"},
+        MAX_RETRIES=5,
+        INITIAL_BACKOFF_SECONDS=5,
+        TIMEOUT=300,
+        call_openai=fake_call,
+        call_gemini=fake_call,
+        call_openrouter=fake_call,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    module = load_helper_tool()
+    monkeypatch.setattr(module, "_load_informal_agent", lambda: fake_agent)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "archon-helper",
+            "--config",
+            str(config_path),
+            "--phase",
+            "prover",
+            "--rel-path",
+            "FATEM/42.lean",
+            "--reason",
+            "lsp_timeout",
+            "Need a route that survives missing Lean LSP.",
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="reason budget exhausted"):
+        module.main()
+    assert calls == 0
+
+
+def test_helper_tool_blocks_fresh_call_during_plan_cooldown_and_records_skip(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "runtime-config.toml"
+    config_path.write_text(
+        """
+[helper]
+enabled = true
+provider = "openai"
+model = "gpt-5.4-mini"
+
+[helper.plan]
+cooldown_iterations_per_reason = 1
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    index_path = tmp_path / ".archon" / "informal" / "helper" / "helper-index.json"
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "entries": [
+                    {
+                        "createdAt": "2026-04-15T00:00:00+00:00",
+                        "event": "provider_call",
+                        "iteration": 7,
+                        "notePath": None,
+                        "phase": "plan",
+                        "promptPack": "repeated_failure",
+                        "provider": "openai",
+                        "reason": "repeated_failure",
+                        "relPath": "FATEM/42.lean",
+                        "reusedFrom": None,
+                    }
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    calls = 0
+
+    def fake_call(prompt: str, model: str, think: bool, *, max_retries: int, initial_backoff_seconds: int, timeout_seconds: int) -> str:
+        nonlocal calls
+        calls += 1
+        return "fresh helper result"
+
+    fake_agent = SimpleNamespace(
+        API_KEY_ENVS={"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "openrouter": "OPENROUTER_API_KEY"},
+        BASE_URL_ENVS={"openai": "OPENAI_BASE_URL", "gemini": "GEMINI_BASE_URL", "openrouter": "OPENROUTER_BASE_URL"},
+        DEFAULTS={"openai": "gpt-5.4", "gemini": "gemini-3.1-pro-preview", "openrouter": "google/gemini-3.1-pro-preview"},
+        MAX_RETRIES=5,
+        INITIAL_BACKOFF_SECONDS=5,
+        TIMEOUT=300,
+        call_openai=fake_call,
+        call_gemini=fake_call,
+        call_openrouter=fake_call,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    module = load_helper_tool()
+    monkeypatch.setattr(module, "_load_informal_agent", lambda: fake_agent)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "archon-helper",
+            "--config",
+            str(config_path),
+            "--phase",
+            "plan",
+            "--rel-path",
+            "FATEM/42.lean",
+            "--reason",
+            "repeated_failure",
+            "--iteration",
+            "8",
+            "Need a materially different plan.",
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="cooldown is active"):
+        module.main()
+    assert calls == 0
+    index_payload = json.loads(index_path.read_text(encoding="utf-8"))
+    assert index_payload["entries"][-1]["event"] == "skipped_by_cooldown"
+    assert index_payload["entries"][-1]["reason"] == "repeated_failure"

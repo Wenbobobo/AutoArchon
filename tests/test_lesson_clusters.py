@@ -115,5 +115,9 @@ def test_lesson_clusters_cli_discovers_campaign_inputs_and_writes_default_files(
     assert "provider_transport" in result.stdout
     assert (final_lessons / "lesson-clusters.json").exists()
     assert (final_lessons / "lesson-clusters.md").exists()
+    assert (final_lessons / "lesson-reminders.json").exists()
+    assert (final_lessons / "lesson-reminders.md").exists()
     assert (postmortem_lessons / "lesson-clusters.json").exists()
     assert (postmortem_lessons / "lesson-clusters.md").exists()
+    assert (postmortem_lessons / "lesson-reminders.json").exists()
+    assert (postmortem_lessons / "lesson-reminders.md").exists()
