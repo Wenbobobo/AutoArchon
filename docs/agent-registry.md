@@ -17,7 +17,7 @@ Each registry entry records:
 
 ## Active Runtime Roles
 
-- `campaign-operator`: default outer operator that prepares spec-driven campaigns, launches watchdogs, reads overviews, and archives postmortems.
+- `campaign-operator`: default interactive outer operator that interprets user intent, maintains `mission-brief.md` / `launch-spec.resolved.json` / `operator-journal.md`, launches watchdogs, reads overviews, and archives postmortems.
 - `orchestrator-agent`: owns one campaign root, launches teachers, runs deterministic recovery, and finalizes accepted outputs.
 - `supervisor-agent`: owns one run root and one supervised loop at a time.
 - `plan-agent`: scopes next work from `.archon/PROGRESS.md` and durable task results.
@@ -37,9 +37,58 @@ Its observable surfaces are:
 - `control/owner-lease.json`
 - `reports/final/compare-report.json`
 
-## Proposed Future Role
+## Proposed Extension Roles
 
-- `manager-agent`: optional future owner above `campaign-operator` for cross-campaign scheduling, human-facing rollups, or portfolio-level policy. It is not part of the default path today.
+- `helper-prover-agent`: bounded side-model helper that may propose lemmas, tactics, or informal proof sketches through the runtime surfaces `.archon/runtime-config.toml` and `.archon/tools/archon-helper-prover-agent.py`, but does not own final acceptance.
+- `mathlib-agent`: future retrieval and clustering role driven by `reports/final/lessons/lesson-records.jsonl`, `reports/postmortem/lessons/lesson-records.jsonl`, and their derived `lesson-clusters.json` / `lesson-clusters.md`.
+- `manager-agent`: archived future portfolio role. See [archive/manager-agent.md](archive/manager-agent.md). It is not part of the default runtime path.
+
+## Helper Provider Contract
+
+The canonical `helper-prover-agent` transport contract now lives in `.archon/runtime-config.toml`:
+
+```toml
+[helper]
+enabled = true
+provider = "openai"
+model = "gpt-5.4"
+api_key_env = "OPENAI_API_KEY"
+base_url_env = "OPENAI_BASE_URL"
+max_retries = 5
+initial_backoff_seconds = 5
+timeout_seconds = 300
+
+[helper.plan]
+enabled = true
+max_calls_per_iteration = 1
+trigger_on_missing_infrastructure = true
+trigger_on_external_reference = true
+trigger_on_repeated_failure = true
+notes_dir = ".archon/informal/helper"
+
+[helper.prover]
+enabled = true
+max_calls_per_session = 2
+trigger_on_missing_infrastructure = true
+trigger_on_lsp_timeout = true
+trigger_on_first_stuck_attempt = true
+notes_dir = ".archon/informal/helper"
+
+[observability]
+write_progress_surface = true
+```
+
+`provider` resolves through the existing informal-agent transport and is validated against `openai`, `gemini`, and `openrouter`. OpenAI-compatible providers such as DeepSeek should be wired through `api_key_env` and `base_url_env` rather than a separate runtime role.
+
+Each initialized workspace gets:
+
+- `.archon/runtime-config.toml`
+- `.archon/tools/archon-helper-prover-agent.py`
+- `.archon/tools/archon-informal-agent.py`
+
+The helper wrapper prefers the config-backed transport when `enabled` is true and otherwise leaves the older informal tool available as a fallback. Legacy `.archon/helper-provider.json` is still accepted for compatibility, but new workspaces should use the TOML file.
+
+By default, helper output should be written under `.archon/informal/helper/` and then referenced from `PROGRESS.md` or `task_results/<file>.md`, rather than mixed directly into the durable task-result note namespace.
 
 ## Boundary With Vendored Lean4 Material
 
@@ -50,7 +99,7 @@ When updating AutoArchon itself, use these as the source of truth:
 - `agents/*.json`
 - `.archon-src/archon-template/AGENTS.md`
 - `docs/architecture.md`
-- `docs/orchestrator.md`
+- `docs/campaign-operator.md`
 - `docs/operations.md`
 
 Treat vendored Lean4 agent files as reference material, not scheduler truth.

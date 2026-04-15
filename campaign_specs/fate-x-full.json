@@ -22,7 +22,9 @@
     "maxActiveLaunches": 2,
     "launchBatchSize": 1,
     "launchCooldownSeconds": 90,
-    "finalizeOnTerminal": true
+    "finalizeOnTerminal": true,
+    "pruneWorkspaceLake": true,
+    "pruneBrokenPrewarm": true
   },
   "environment": {
     "ARCHON_CODEX_READY_RETRIES": "${ARCHON_CODEX_READY_RETRIES}",

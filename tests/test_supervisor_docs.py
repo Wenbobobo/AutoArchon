@@ -25,6 +25,8 @@ def test_readme_includes_repo_layout_skill_install_and_supervisor_entrypoint():
     assert "$archon-supervisor" in readme
     assert "docs/operations.md" in readme
     assert "autoarchon-supervised-cycle" in readme
+    assert "workspace/.archon/supervisor/progress-summary.md" in readme
+    assert "autoarchon-storage-report" in readme
 
 
 def test_operations_doc_contains_full_supervisor_soak_test_and_monitoring_commands():
@@ -36,6 +38,8 @@ def test_operations_doc_contains_full_supervisor_soak_test_and_monitoring_comman
     assert "tail -f" in operations
     assert "violations.jsonl" in operations
     assert "autoarchon-export-run-artifacts" in operations
+    assert "progress-summary.md" in operations
+    assert "autoarchon-storage-report" in operations
 
 
 def test_supervisor_skill_has_startup_brief_and_failure_taxonomy():
@@ -69,3 +73,24 @@ def test_supervisor_skill_openai_yaml_exists():
     assert "display_name:" in openai_yaml
     assert "short_description:" in openai_yaml
     assert "default_prompt:" in openai_yaml
+
+
+def test_orchestrator_skill_requires_operator_surfaces_and_journal_updates():
+    skill = read("skills/archon-orchestrator/SKILL.md")
+    startup = read("skills/archon-orchestrator/references/startup-brief.md")
+    surfaces = read("skills/archon-orchestrator/references/operator-surfaces.md")
+
+    assert "references/operator-surfaces.md" in skill
+    assert "mission-brief.md" in skill
+    assert "operator-journal.md" in skill
+    assert "operator-journal.md" in startup
+    assert "control/mission-brief.md" in surfaces
+    assert "control/operator-journal.md" in surfaces
+
+
+def test_start_campaign_operator_script_uses_repo_defaults():
+    script = read("scripts/start_campaign_operator.sh")
+
+    assert 'MODEL="${MODEL:-gpt-5.4}"' in script
+    assert 'REASONING_EFFORT="${REASONING_EFFORT:-xhigh}"' in script
+    assert '--config "model_reasoning_effort=${REASONING_EFFORT}"' in script

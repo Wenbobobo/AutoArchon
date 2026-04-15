@@ -411,6 +411,8 @@ def test_orchestrator_watchdog_cli_writes_owner_mode_and_uses_control_paths(tmp_
             "orchestrator_watchdog.py",
             "--campaign-root",
             str(campaign_root),
+            "--prune-workspace-lake",
+            "--prune-broken-prewarm",
         ],
     )
 
@@ -432,6 +434,8 @@ def test_orchestrator_watchdog_cli_writes_owner_mode_and_uses_control_paths(tmp_
     assert captured["prompt_path"] == control_root / "orchestrator-prompt.txt"
     assert captured["state_path"] == control_root / "orchestrator-watchdog.json"
     assert captured["log_path"] == control_root / "orchestrator-watchdog.log"
+    assert captured["prune_workspace_lake"] is True
+    assert captured["prune_broken_prewarm"] is True
 
 
 def test_classify_watchdog_likely_cause_distinguishes_provider_and_resource_pressure():
@@ -635,6 +639,115 @@ def test_run_watchdog_bootstraps_recovery_once_and_persists_runtime_state(tmp_pa
     assert state_payload["lastRecoveryAt"] is not None
     assert state_payload["stallReason"] is None
     assert state_payload["watchdogStatus"] == "terminal"
+
+
+def test_run_watchdog_passes_prune_flags_to_finalize_when_enabled(tmp_path: Path, monkeypatch):
+    campaign_root = tmp_path / "campaign"
+    prompt_path = tmp_path / "prompt.txt"
+    state_path = tmp_path / "watchdog-state.json"
+    log_path = tmp_path / "watchdog.log"
+    captured_finalize: dict[str, object] = {}
+    clock = {"now": 0.0}
+
+    class FakeProcess:
+        pid = 5252
+
+        def __init__(self) -> None:
+            self.stdout = io.StringIO("")
+
+        def poll(self) -> None:
+            return None
+
+    def fake_launch_codex_session(**kwargs):
+        log_handle = Path(kwargs["log_path"]).open("a", encoding="utf-8")
+        output_state = type(
+            "OutputState",
+            (),
+            {
+                "session_id": "session-123",
+                "last_output_at": "2026-01-01T00:00:00+00:00",
+                "last_output_monotonic": 0.0,
+                "line_count": 0,
+                "reconnect_count": 0,
+                "stream_disconnect_count": 0,
+                "last_transport_event_at": None,
+                "lock": threading.Lock(),
+            },
+        )()
+        output_thread = type(
+            "OutputThread",
+            (),
+            {
+                "is_alive": staticmethod(lambda: False),
+                "join": staticmethod(lambda timeout=None: None),
+            },
+        )()
+        return type(
+            "FakeLaunch",
+            (),
+            {
+                "process": FakeProcess(),
+                "log_handle": log_handle,
+                "session_id": "session-123",
+                "mode": "start",
+                "command": ["codex", "exec"],
+                "output_state": output_state,
+                "output_thread": output_thread,
+            },
+        )()
+
+    def fake_collect_campaign_status(_campaign_root: Path):
+        return {
+            "runs": [{"runId": "teacher-001", "status": "accepted", "recommendedRecovery": {"action": "none"}}],
+            "counts": {"accepted": 1},
+        }
+
+    def fake_campaign_progress_fingerprint(_campaign_root: Path, _status_payload: dict):
+        return {"runFingerprints": [{"runId": "teacher-001", "latestActivityNs": 123}], "eventLines": 1}
+
+    def fake_finalize_campaign(_campaign_root: Path, **kwargs):
+        captured_finalize.update(kwargs)
+        final_root = _campaign_root / "reports" / "final"
+        final_root.mkdir(parents=True, exist_ok=True)
+        (final_root / "final-summary.json").write_text("{}", encoding="utf-8")
+
+    def fake_compare_report(_campaign_root: Path, *, heartbeat_seconds: int):
+        final_root = _campaign_root / "reports" / "final"
+        final_root.mkdir(parents=True, exist_ok=True)
+        (final_root / "compare-report.json").write_text("{}", encoding="utf-8")
+        return {"generatedAt": "2026-01-01T00:00:00+00:00"}
+
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.launch_codex_session", fake_launch_codex_session)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.collect_campaign_status", fake_collect_campaign_status)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.campaign_progress_fingerprint", fake_campaign_progress_fingerprint)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.finalize_campaign", fake_finalize_campaign)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.build_campaign_compare_report", fake_compare_report)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.terminate_process_group", lambda *args, **kwargs: None)
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.time.sleep", lambda seconds: clock.__setitem__("now", clock["now"] + seconds))
+    monkeypatch.setattr("archonlib.orchestrator_watchdog.time.monotonic", lambda: clock["now"])
+
+    result = run_watchdog(
+        archon_root=tmp_path,
+        campaign_root=campaign_root,
+        prompt_path=prompt_path,
+        state_path=state_path,
+        log_path=log_path,
+        model="gpt-5.4",
+        reasoning_effort="xhigh",
+        poll_seconds=5,
+        stall_seconds=60,
+        max_restarts=1,
+        finalize_on_terminal=True,
+        prune_workspace_lake=True,
+        prune_broken_prewarm=True,
+    )
+
+    assert result["terminal"] is True
+    assert result["finalized"] is True
+    assert captured_finalize == {
+        "prune_workspace_lake": True,
+        "prune_broken_prewarm": True,
+    }
 
 
 def test_run_watchdog_bootstraps_recovery_despite_historical_activity(tmp_path: Path, monkeypatch):

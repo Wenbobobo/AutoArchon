@@ -84,6 +84,16 @@ def parse_args() -> argparse.Namespace:
         help="Refresh host resource snapshots at most this often while the watchdog is running",
     )
     parser.add_argument("--no-finalize", action="store_true", help="Do not run finalize_campaign after terminal closure")
+    parser.add_argument(
+        "--prune-workspace-lake",
+        action="store_true",
+        help="When finalizing a terminal campaign, also remove inactive run workspace/.lake caches under the campaign",
+    )
+    parser.add_argument(
+        "--prune-broken-prewarm",
+        action="store_true",
+        help="When finalizing a terminal campaign, also remove failed or abandoned .lake.prewarm-* directories under the campaign",
+    )
     return parser.parse_args()
 
 
@@ -131,6 +141,8 @@ def main() -> int:
         provider_cooldown_max_seconds=args.provider_cooldown_max_seconds,
         resource_snapshot_interval_seconds=args.resource_snapshot_interval_seconds,
         finalize_on_terminal=not args.no_finalize,
+        prune_workspace_lake=args.prune_workspace_lake,
+        prune_broken_prewarm=args.prune_broken_prewarm,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     status = result.get("watchdogStatus")

@@ -1,4 +1,4 @@
 interface:
   display_name: "AutoArchon Orchestrator"
   short_description: "Coordinate multi-run teacher campaigns and finalize accepted artifacts"
-  default_prompt: "Use $archon-orchestrator to create or resume an AutoArchon campaign, deploy teachers, monitor run health, and finalize only validated proofs and blocker notes."
+  default_prompt: "Use $archon-orchestrator to own this AutoArchon campaign, keep mission-brief.md / launch-spec.resolved.json / operator-journal.md current, deploy teachers, monitor run health, and finalize only validated proofs and blocker notes."

@@ -349,7 +349,7 @@ def export_run_artifacts(run_root: Path) -> dict[str, object]:
 
     supervisor_files: list[str] = []
     if supervisor_root.exists():
-        for name in ("HOT_NOTES.md", "LEDGER.md", "violations.jsonl"):
+        for name in ("HOT_NOTES.md", "LEDGER.md", "violations.jsonl", "progress-summary.md", "progress-summary.json"):
             source_path = supervisor_root / name
             if source_path.exists():
                 supervisor_files.append(name)

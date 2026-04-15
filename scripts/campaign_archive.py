@@ -23,6 +23,16 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_HEARTBEAT_SECONDS,
         help="Recent activity threshold used while refreshing campaign status",
     )
+    parser.add_argument(
+        "--prune-workspace-lake",
+        action="store_true",
+        help="After archiving the postmortem, remove inactive run workspace/.lake caches under the campaign",
+    )
+    parser.add_argument(
+        "--prune-broken-prewarm",
+        action="store_true",
+        help="After archiving the postmortem, remove failed or abandoned .lake.prewarm-* directories under the campaign",
+    )
     return parser.parse_args()
 
 
@@ -31,6 +41,8 @@ def main() -> int:
     payload = archive_campaign_postmortem(
         Path(args.campaign_root),
         heartbeat_seconds=args.heartbeat_seconds,
+        prune_workspace_lake=args.prune_workspace_lake,
+        prune_broken_prewarm=args.prune_broken_prewarm,
     )
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0

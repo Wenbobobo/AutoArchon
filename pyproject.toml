@@ -3,6 +3,9 @@ name = "archon-codex"
 version = "0.1.0"
 description = "Codex-compatible Archon runtime helpers"
 requires-python = ">=3.10"
+dependencies = [
+  "tomli>=2.0; python_version < '3.11'",
+]
 
 [project.scripts]
 autoarchon-campaign-compare = "scripts.campaign_compare:main"
@@ -17,12 +20,16 @@ autoarchon-create-run-workspace = "scripts.create_run_workspace:main"
 autoarchon-export-run-artifacts = "scripts.export_run_artifacts:main"
 autoarchon-extract-attempts = "scripts.extract_attempts:main"
 autoarchon-finalize-campaign = "scripts.finalize_campaign:main"
+autoarchon-init-campaign-spec = "scripts.init_campaign_spec:main"
+autoarchon-lesson-clusters = "scripts.lesson_clusters:main"
 autoarchon-orchestrator-watchdog = "scripts.orchestrator_watchdog:main"
 autoarchon-plan-shards = "scripts.plan_campaign_shards:main"
 autoarchon-prewarm-project = "scripts.prewarm_project:main"
 autoarchon-refresh-launch-assets = "scripts.refresh_launch_assets:main"
+autoarchon-render-operator-prompt = "scripts.render_operator_prompt:main"
 autoarchon-run-orchestrator = "scripts.run_orchestrator:main"
 autoarchon-launch-from-spec = "scripts.launch_from_spec:main"
+autoarchon-storage-report = "scripts.storage_report:main"
 autoarchon-supervised-cycle = "scripts.supervised_cycle:main"
 autoarchon-validate-review = "scripts.validate_review:main"
 

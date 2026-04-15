@@ -23,12 +23,27 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_HEARTBEAT_SECONDS,
         help="Recent activity threshold used while recomputing campaign status",
     )
+    parser.add_argument(
+        "--prune-workspace-lake",
+        action="store_true",
+        help="After exporting final artifacts, remove inactive run workspace/.lake caches under the campaign",
+    )
+    parser.add_argument(
+        "--prune-broken-prewarm",
+        action="store_true",
+        help="After exporting final artifacts, remove failed or abandoned .lake.prewarm-* directories under the campaign",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    payload = finalize_campaign(Path(args.campaign_root), heartbeat_seconds=args.heartbeat_seconds)
+    payload = finalize_campaign(
+        Path(args.campaign_root),
+        heartbeat_seconds=args.heartbeat_seconds,
+        prune_workspace_lake=args.prune_workspace_lake,
+        prune_broken_prewarm=args.prune_broken_prewarm,
+    )
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 

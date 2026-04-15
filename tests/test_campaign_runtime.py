@@ -348,6 +348,82 @@ def test_cleanup_stale_launch_processes_can_execute_terminal_orphan_cleanup(tmp_
     assert killed == [3003]
 
 
+def test_cleanup_stale_launch_processes_marks_terminal_stale_launch_state_inactive(tmp_path: Path, monkeypatch):
+    source = make_source_project(tmp_path, file_count=1)
+    campaign_root = tmp_path / "campaign"
+    create_campaign(
+        archon_root=ROOT,
+        source_root=source,
+        campaign_root=campaign_root,
+        run_specs=[
+            {"id": "teacher-001", "objective_regex": "^FATEM/1\\.lean$", "objective_limit": 1, "scope_hint": "FATEM/1.lean"},
+        ],
+    )
+    run_root = campaign_root / "runs" / "teacher-001"
+    control_root = run_root / "control"
+    workspace = run_root / "workspace"
+    write(workspace / ".archon" / "RUN_SCOPE.md", run_scope_markdown("FATEM/1.lean"))
+    write(
+        control_root / "teacher-launch-state.json",
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "active": True,
+                "phase": "codex_exec",
+                "updatedAt": "2000-01-01T00:00:00+00:00",
+                "pid": 3003,
+            },
+            indent=2,
+        ),
+    )
+    now_iso = datetime.now(timezone.utc).isoformat()
+    write(
+        workspace / ".archon" / "supervisor" / "run-lease.json",
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "active": False,
+                "status": "completed",
+                "finalStatus": "clean",
+                "updatedAt": now_iso,
+                "completedAt": now_iso,
+                "lastHeartbeatAt": now_iso,
+            },
+            indent=2,
+        ),
+    )
+
+    monkeypatch.setattr(
+        "archonlib.campaign._live_launch_process_records",
+        lambda _campaign_root: [
+            {
+                "runId": "teacher-001",
+                "pid": 3003,
+                "pgid": 3003,
+                "elapsedSeconds": 120,
+                "command": "bash ...teacher-001/control/launch-teacher.sh",
+            }
+        ],
+    )
+    killed: list[int] = []
+    monkeypatch.setattr("archonlib.campaign.os.killpg", lambda pgid, sig: killed.append(pgid))
+
+    payload = cleanup_stale_launch_processes(
+        campaign_root,
+        heartbeat_seconds=900,
+        duplicate_grace_seconds=30,
+        execute=True,
+    )
+
+    assert payload["candidateCount"] == 1
+    assert payload["executed"][0]["reason"] == "stale_after_terminal_lease"
+    assert killed == [3003]
+    launch_state = json.loads((control_root / "teacher-launch-state.json").read_text(encoding="utf-8"))
+    assert launch_state["active"] is False
+    assert launch_state["phase"] == "cleanup_terminated"
+    assert launch_state["launcher"] == "cleanup_stale_launch_processes"
+
+
 def test_plan_campaign_shards_cli_writes_grouped_specs(tmp_path: Path):
     source = make_source_project(tmp_path, file_count=5)
     output_path = tmp_path / "run-specs.json"
@@ -765,7 +841,8 @@ def test_create_campaign_builds_isolated_runs_and_teacher_launch_assets(tmp_path
     assert "Bootstrap state:" in prompt
     assert "freshRun = true" in prompt
     assert "autoarchon-supervised-cycle" in prompt
-    assert "--tail-scope-objective-threshold 2" in prompt
+    assert "--tail-scope-objective-threshold 4" in prompt
+    assert "--tail-scope-plan-timeout-seconds 300" in prompt
     assert "--tail-scope-prover-timeout-seconds 360" in prompt
     assert "codex exec" in launch_script
     assert "--skip-mcp" in launch_script
@@ -829,6 +906,34 @@ def test_collect_campaign_status_reports_prewarm_plan_for_queued_runs(tmp_path: 
     assert run["prewarmPlan"] == "scoped_verify"
     assert run["prewarmPending"] is True
     assert run["prewarmSummary"] == "scoped_verify, 2 files, pending"
+    assert run["projectBuildReused"] is False
+
+
+def test_collect_campaign_status_reports_sampled_prewarm_plan_for_wide_queued_runs(tmp_path: Path):
+    source = make_source_project(tmp_path, file_count=5)
+    campaign_root = tmp_path / "campaign"
+    create_campaign(
+        archon_root=ROOT,
+        source_root=source,
+        campaign_root=campaign_root,
+        run_specs=[
+            {
+                "id": "queued-run",
+                "objective_regex": "^(FATEM/1\\.lean|FATEM/2\\.lean|FATEM/3\\.lean|FATEM/4\\.lean|FATEM/5\\.lean)$",
+                "objective_limit": 5,
+                "scope_hint": "FATEM/1.lean, FATEM/2.lean, FATEM/3.lean, FATEM/4.lean, FATEM/5.lean",
+            },
+        ],
+    )
+
+    status = collect_campaign_status(campaign_root, heartbeat_seconds=1)
+
+    run = status["runs"][0]
+    assert run["status"] == "queued"
+    assert run["configuredAllowedFiles"] == ["FATEM/1.lean", "FATEM/2.lean", "FATEM/3.lean", "FATEM/4.lean", "FATEM/5.lean"]
+    assert run["prewarmPlan"] == "scoped_verify_sample"
+    assert run["prewarmPending"] is True
+    assert run["prewarmSummary"] == "scoped_verify_sample, sample 4/5 files, pending"
     assert run["projectBuildReused"] is False
 
 
@@ -1033,7 +1138,7 @@ def test_generated_launch_teacher_script_uses_scoped_verify_for_narrow_multi_fil
     assert "--verify-file FATEM/2.lean" in prewarm_lines[0]
 
 
-def test_generated_launch_teacher_script_skips_scoped_verify_for_wide_shards(tmp_path: Path):
+def test_generated_launch_teacher_script_samples_scoped_verify_for_wide_shards(tmp_path: Path):
     source = make_source_project(tmp_path, file_count=5)
     campaign_root = tmp_path / "campaign"
     create_campaign(
@@ -1083,7 +1188,9 @@ def test_generated_launch_teacher_script_skips_scoped_verify_for_wide_shards(tmp
         if "autoarchon-prewarm-project" in line
     ]
     assert len(prewarm_lines) == 1
-    assert "--verify-file" not in prewarm_lines[0]
+    assert prewarm_lines[0].count("--verify-file") == 4
+    assert "--verify-file FATEM/1.lean" in prewarm_lines[0]
+    assert "--verify-file FATEM/5.lean" in prewarm_lines[0]
 
 
 def test_collect_campaign_status_records_transition_events_for_acceptance(tmp_path: Path):
@@ -1237,6 +1344,26 @@ def test_collect_campaign_status_classifies_run_health_states(tmp_path: Path):
     accepted_workspace = campaign_root / "runs" / "accepted-run" / "workspace"
     write(accepted_workspace / ".archon" / "RUN_SCOPE.md", run_scope_markdown("FATEM/1.lean"))
     write(accepted_workspace / "FATEM" / "1.lean", "theorem file_1 : True := by\n  trivial\n")
+    write(
+        accepted_workspace / ".archon" / "lessons" / "iter-001-clean.json",
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "status": "no_progress",
+                "iteration": "iter-001",
+                "signals": ["no_progress"],
+                "recommendedAction": "Tighten scope or lower timeouts before the next cycle.",
+                "lessons": [
+                    {
+                        "category": "scope_control",
+                        "summary": "When a cycle produces no new changed files or task results, tighten the scope or reduce time budgets before the next attempt.",
+                        "evidence": ["FATEM/1.lean"],
+                    }
+                ],
+            },
+            indent=2,
+        ),
+    )
     write_validation(
         accepted_workspace,
         rel_path="FATEM/1.lean",
@@ -1886,6 +2013,26 @@ def test_finalize_campaign_copies_only_accepted_proofs_and_blockers(tmp_path: Pa
     accepted_workspace = campaign_root / "runs" / "accepted-run" / "workspace"
     write(accepted_workspace / ".archon" / "RUN_SCOPE.md", run_scope_markdown("FATEM/1.lean"))
     write(accepted_workspace / "FATEM" / "1.lean", "theorem file_1 : True := by\n  trivial\n")
+    write(
+        accepted_workspace / ".archon" / "lessons" / "iter-001-clean.json",
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "status": "no_progress",
+                "iteration": "iter-001",
+                "signals": ["no_progress"],
+                "recommendedAction": "Tighten scope or lower timeouts before the next cycle.",
+                "lessons": [
+                    {
+                        "category": "scope_control",
+                        "summary": "When a cycle produces no new changed files or task results, tighten the scope or reduce time budgets before the next attempt.",
+                        "evidence": ["FATEM/1.lean"],
+                    }
+                ],
+            },
+            indent=2,
+        ),
+    )
     write_validation(
         accepted_workspace,
         rel_path="FATEM/1.lean",
@@ -1955,6 +2102,21 @@ def test_finalize_campaign_copies_only_accepted_proofs_and_blockers(tmp_path: Pa
     assert accepted_timeline_file["runId"] == "accepted-run"
     assert accepted_timeline_file["entryCount"] == accepted_row["timelineEntryCount"]
     assert any(event["event"] == "validation_accepted" for event in accepted_timeline_file["entries"])
+    lesson_records = [
+        json.loads(line)
+        for line in (final_root / "lessons" / "lesson-records.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert (final_root / "lessons" / "lesson-clusters.json").exists()
+    assert (final_root / "lessons" / "lesson-clusters.md").exists()
+    lesson_categories = {record["category"] for record in lesson_records}
+    assert "accepted_proof" in lesson_categories
+    assert "accepted_blocker" in lesson_categories
+    assert "scope_control" in lesson_categories
+    accepted_proof_record = next(record for record in lesson_records if record["category"] == "accepted_proof")
+    assert accepted_proof_record["run_id"] == "accepted-run"
+    assert accepted_proof_record["theorem_id"] == "FATEM/1.lean"
+    assert accepted_proof_record["accepted_state"] == "accepted"
     compare_markdown = (final_root / "compare-report.md").read_text(encoding="utf-8")
     assert "| run | status | class | retry_after | launch_exit | proofs | blockers |" in compare_markdown
     assert "| prewarm | recommended | timeline |" in compare_markdown
@@ -1964,6 +2126,47 @@ def test_finalize_campaign_copies_only_accepted_proofs_and_blockers(tmp_path: Pa
     assert "- accepted-run (`accepted`):" in compare_markdown
     assert "status queued -> accepted" in compare_markdown
     assert "blocker accepted: FATEM/2.lean (FATEM_2.lean.md)" in compare_markdown
+
+
+def test_finalize_campaign_can_prune_rebuildable_caches_after_export(tmp_path: Path):
+    source = make_source_project(tmp_path, file_count=1)
+    campaign_root = tmp_path / "campaign"
+    create_campaign(
+        archon_root=ROOT,
+        source_root=source,
+        campaign_root=campaign_root,
+        run_specs=[
+            {"id": "accepted-run", "objective_regex": "^FATEM/1\\.lean$", "objective_limit": 1, "scope_hint": "FATEM/1.lean"},
+        ],
+    )
+
+    workspace = campaign_root / "runs" / "accepted-run" / "workspace"
+    write(workspace / ".archon" / "RUN_SCOPE.md", run_scope_markdown("FATEM/1.lean"))
+    write(workspace / "FATEM" / "1.lean", "theorem file_1 : True := by\n  trivial\n")
+    write(workspace / ".lake" / "build" / "artifact.bin", "x" * 128)
+    write(campaign_root / "tmp.mathlib" / ".lake.prewarm-broken-20260414" / "junk", "y" * 64)
+    write_validation(
+        workspace,
+        rel_path="FATEM/1.lean",
+        acceptance_status="accepted",
+        validation_status="passed",
+        workspace_changed=True,
+    )
+
+    summary = finalize_campaign(
+        campaign_root,
+        heartbeat_seconds=1,
+        prune_workspace_lake=True,
+        prune_broken_prewarm=True,
+    )
+
+    final_root = campaign_root / "reports" / "final"
+    assert (final_root / "proofs" / "accepted-run" / "FATEM" / "1.lean").exists()
+    assert summary["cachePrune"]["selectedCount"] == 2
+    assert not (workspace / ".lake").exists()
+    assert not (campaign_root / "tmp.mathlib" / ".lake.prewarm-broken-20260414").exists()
+    final_summary = json.loads((final_root / "final-summary.json").read_text(encoding="utf-8"))
+    assert final_summary["cachePrune"]["selectedCount"] == 2
 
 
 def test_execute_run_recovery_runs_recovery_only_and_exports_artifacts(tmp_path: Path):
@@ -2230,13 +2433,14 @@ def test_campaign_overview_and_archive_capture_owner_lease_and_status(tmp_path: 
     write(
         campaign_root / "control" / "orchestrator-watchdog.json",
         json.dumps(
-            {
-                "watchdogStatus": "degraded",
-                "restartCount": 2,
-                "lastProgressAt": "2026-04-13T10:00:00+00:00",
-                "lastRecoveryAt": "2026-04-13T10:05:00+00:00",
-                "activeWorkRunIds": [],
-            },
+                {
+                    "watchdogStatus": "degraded",
+                    "restartCount": 2,
+                    "likelyCause": "likely_provider_transport",
+                    "lastProgressAt": "2026-04-13T10:00:00+00:00",
+                    "lastRecoveryAt": "2026-04-13T10:05:00+00:00",
+                    "activeWorkRunIds": [],
+                },
             indent=2,
         ),
     )
@@ -2245,11 +2449,24 @@ def test_campaign_overview_and_archive_capture_owner_lease_and_status(tmp_path: 
     assert overview["targetCounts"]["acceptedProofs"] == 1
     assert overview["ownerLease"]["sessionId"] == "session-lease"
     assert overview["watchdogStatus"] == "degraded"
+    assert overview["progress"]["percent"] == 100
+    assert overview["progress"]["completed"] == 1
+    assert overview["progress"]["total"] == 1
 
     archive_payload = archive_campaign_postmortem(campaign_root, heartbeat_seconds=0)
     assert archive_payload["overview"]["ownerLease"]["sessionId"] == "session-lease"
     assert (campaign_root / "reports" / "postmortem" / "postmortem-summary.json").exists()
     assert (campaign_root / "reports" / "postmortem" / "postmortem-summary.md").exists()
+    postmortem_records = [
+        json.loads(line)
+        for line in (campaign_root / "reports" / "postmortem" / "lessons" / "lesson-records.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert (campaign_root / "reports" / "postmortem" / "lessons" / "lesson-clusters.json").exists()
+    assert (campaign_root / "reports" / "postmortem" / "lessons" / "lesson-clusters.md").exists()
+    postmortem_categories = {record["category"] for record in postmortem_records}
+    assert "provider_transport" in postmortem_categories
+    assert "watchdog_relaunch" in postmortem_categories
 
     overview_result = subprocess.run(
         [
@@ -2269,6 +2486,11 @@ def test_campaign_overview_and_archive_capture_owner_lease_and_status(tmp_path: 
     overview_cli = json.loads(overview_result.stdout)
     assert overview_cli["ownerLease"]["sessionId"] == "session-lease"
     assert overview_cli["targetCounts"]["acceptedProofs"] == 1
+    assert (campaign_root / "control" / "progress-summary.md").exists()
+    assert (campaign_root / "control" / "progress-summary.json").exists()
+    progress_summary = (campaign_root / "control" / "progress-summary.md").read_text(encoding="utf-8")
+    assert "# Campaign Progress:" in progress_summary
+    assert "100% (1/1 finalized targets)" in progress_summary
 
     archive_result = subprocess.run(
         [
@@ -2342,6 +2564,26 @@ def test_owner_lease_operations_preserve_owner_mode_metadata(tmp_path: Path):
     assert owner_mode["ownerEntrypoint"] == "autoarchon-orchestrator-watchdog"
 
 
+def test_create_campaign_scaffolds_operator_surfaces(tmp_path: Path):
+    source = make_source_project(tmp_path, file_count=1)
+    campaign_root = tmp_path / "campaign"
+    create_campaign(
+        archon_root=ROOT,
+        source_root=source,
+        campaign_root=campaign_root,
+        run_specs=[
+            {"id": "teacher-1", "objective_regex": "^FATEM/1\\.lean$", "objective_limit": 1, "scope_hint": "FATEM/1.lean"},
+        ],
+    )
+
+    mission_brief = campaign_root / "control" / "mission-brief.md"
+    operator_journal = campaign_root / "control" / "operator-journal.md"
+    assert mission_brief.exists()
+    assert operator_journal.exists()
+    assert "Mission Brief" in mission_brief.read_text(encoding="utf-8")
+    assert "autoarchon-create-campaign" in operator_journal.read_text(encoding="utf-8")
+
+
 def test_launch_from_spec_cli_bootstraps_campaign_and_starts_watchdog(tmp_path: Path):
     source = make_source_project(tmp_path, file_count=3)
     campaign_root = tmp_path / "nightly-campaign"
@@ -2373,6 +2615,8 @@ def test_launch_from_spec_cli_bootstraps_campaign_and_starts_watchdog(tmp_path: 
                     "launchBatchSize": 1,
                     "launchCooldownSeconds": 30,
                     "finalizeOnTerminal": False,
+                    "pruneWorkspaceLake": True,
+                    "pruneBrokenPrewarm": True,
                 },
             },
             indent=2,
@@ -2410,9 +2654,13 @@ def test_launch_from_spec_cli_bootstraps_campaign_and_starts_watchdog(tmp_path: 
     assert payload["campaignCreated"] is True
     assert payload["runSpecFile"] == str(run_spec_output)
     assert payload["runSpecCount"] == 2
+    assert payload["operatorSurfaces"]["missionBriefPath"].endswith("control/mission-brief.md")
+    assert payload["operatorSurfaces"]["operatorJournalPath"].endswith("control/operator-journal.md")
     assert payload["watchdog"]["status"] == "started"
     assert (campaign_root / "CAMPAIGN_MANIFEST.json").exists()
     assert (campaign_root / "control" / "launch-spec.resolved.json").exists()
+    assert (campaign_root / "control" / "mission-brief.md").exists()
+    assert (campaign_root / "control" / "operator-journal.md").exists()
     owner_mode = json.loads((campaign_root / "control" / "owner-mode.json").read_text(encoding="utf-8"))
     assert owner_mode["ownerMode"] == "campaign_operator"
     assert owner_mode["watchdogEnabled"] is True
@@ -2423,6 +2671,8 @@ def test_launch_from_spec_cli_bootstraps_campaign_and_starts_watchdog(tmp_path: 
     assert json.loads(spec_path.read_text(encoding="utf-8"))["planShards"]["shardSize"] == 8
     resolved_spec = json.loads((campaign_root / "control" / "launch-spec.resolved.json").read_text(encoding="utf-8"))
     assert resolved_spec["teacherModel"] == "teacher-model"
+    operator_journal = (campaign_root / "control" / "operator-journal.md").read_text(encoding="utf-8")
+    assert "autoarchon-launch-from-spec" in operator_journal
 
     watchdog_command = payload["watchdog"]["command"]
     assert watchdog_command[0] == str(fake_watchdog)
@@ -2431,6 +2681,8 @@ def test_launch_from_spec_cli_bootstraps_campaign_and_starts_watchdog(tmp_path: 
     assert "--model owner-model" in rendered_watchdog_command
     assert "--reasoning-effort xhigh" in rendered_watchdog_command
     assert "--no-finalize" in rendered_watchdog_command
+    assert "--prune-workspace-lake" in rendered_watchdog_command
+    assert "--prune-broken-prewarm" in rendered_watchdog_command
     assert "--campaign-root" in watchdog_log.read_text(encoding="utf-8")
 
 
@@ -2727,6 +2979,37 @@ def test_build_campaign_overview_flags_stale_watchdog_state(tmp_path: Path):
     assert "stale_watchdog_state" in archive_payload["incidentTags"]
 
 
+def test_archive_campaign_postmortem_can_prune_rebuildable_caches(tmp_path: Path):
+    source = make_source_project(tmp_path, file_count=1)
+    campaign_root = tmp_path / "campaign"
+    create_campaign(
+        archon_root=ROOT,
+        source_root=source,
+        campaign_root=campaign_root,
+        run_specs=[
+            {"id": "teacher-001", "objective_regex": "^FATEM/1\\.lean$", "objective_limit": 1, "scope_hint": "FATEM/1.lean"},
+        ],
+    )
+
+    workspace = campaign_root / "runs" / "teacher-001" / "workspace"
+    write(workspace / ".archon" / "RUN_SCOPE.md", run_scope_markdown("FATEM/1.lean"))
+    write(workspace / ".lake" / "build" / "artifact.bin", "x" * 128)
+    write(campaign_root / "tmp.mathlib" / ".lake.prewarm-broken-20260414" / "junk", "y" * 64)
+
+    archive_payload = archive_campaign_postmortem(
+        campaign_root,
+        heartbeat_seconds=0,
+        prune_workspace_lake=True,
+        prune_broken_prewarm=True,
+    )
+
+    assert archive_payload["cachePrune"]["selectedCount"] == 2
+    assert not (workspace / ".lake").exists()
+    assert not (campaign_root / "tmp.mathlib" / ".lake.prewarm-broken-20260414").exists()
+    archived_summary = json.loads((campaign_root / "reports" / "postmortem" / "postmortem-summary.json").read_text(encoding="utf-8"))
+    assert archived_summary["cachePrune"]["selectedCount"] == 2
+
+
 def test_build_campaign_overview_and_postmortem_surface_watchdog_cooldown_and_cause(tmp_path: Path):
     source = make_source_project(tmp_path, file_count=1)
     campaign_root = tmp_path / "campaign"
@@ -2793,6 +3076,9 @@ def test_build_campaign_overview_uses_remaining_targets_for_fresh_campaign_eta(t
     assert overview["runCounts"] == {"queued": 1}
     assert overview["targetCounts"]["pendingTargets"] == 0
     assert overview["targetCounts"]["remainingTargets"] == 2
+    assert overview["progress"]["percent"] == 0
+    assert overview["progress"]["completed"] == 0
+    assert overview["progress"]["total"] == 2
     assert overview["eta"]["state"] == "unknown"
     assert overview["eta"]["reason"] != "No pending targets remain."
     assert overview["recoverableRuns"][0]["runId"] == "teacher-001"

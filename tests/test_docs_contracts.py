@@ -9,23 +9,32 @@ def read(rel_path: str) -> str:
     return (ROOT / rel_path).read_text(encoding="utf-8")
 
 
-def test_readme_centers_campaign_operator_spec_launch_and_proof_locations():
+def test_readme_centers_interactive_campaign_operator_and_result_paths():
     readme = read("README.md")
 
     assert "# AutoArchon" in readme
     assert "campaign-operator" in readme
     assert "Fastest Campaign Start" in readme
-    assert "bash scripts/start_fate_overnight_watchdogs.sh" in readme
-    assert "autoarchon-launch-from-spec" in readme
-    assert "autoarchon-campaign-overview" in readme
-    assert "autoarchon-campaign-archive" in readme
-    assert "control-plane commands" in readme
+    assert "scripts/start_campaign_operator.sh" in readme
+    assert "$archon-orchestrator" in readme
+    assert "autoarchon-render-operator-prompt" in readme
+    assert "control/mission-brief.md" in readme
+    assert "control/launch-spec.resolved.json" in readme
+    assert "control/operator-journal.md" in readme
+    assert "autoarchon-init-campaign-spec" in readme
+    assert "Shortcut: Scripted Start" in readme
+    assert "bash scripts/watch_campaign.sh" in readme
+    assert "Control-plane commands" in readme
     assert "not the web UI" in readme
-    assert "Where Proofs End Up" in readme
-    assert "run-root/workspace/" in readme
-    assert "reports/final/" in readme
-    assert "reports/postmortem/" in readme
-    assert "campaign_specs/" in readme
+    assert "control/progress-summary.md" in readme
+    assert "control/progress-summary.json" in readme
+    assert "workspace/.archon/supervisor/progress-summary.md" in readme
+    assert "runtime-config.toml" in readme
+    assert "Where Proofs and Lessons End Up" in readme
+    assert "reports/final/lessons/lesson-records.jsonl" in readme
+    assert "reports/postmortem/lessons/lesson-records.jsonl" in readme
+    assert "docs/campaign-operator.md" in readme
+    assert "autoarchon-storage-report" in readme
 
 
 def test_operations_doc_covers_single_run_prewarm_supervisor_and_export_flow():
@@ -43,6 +52,8 @@ def test_operations_doc_covers_single_run_prewarm_supervisor_and_export_flow():
     assert "$archon-supervisor" in operations
     assert "autoarchon-supervised-cycle" in operations
     assert "autoarchon-export-run-artifacts" in operations
+    assert "autoarchon-storage-report" in operations
+    assert "workspace/.archon/supervisor/progress-summary.md" in operations
 
 
 def test_teacher_agents_doc_covers_launch_monitoring_and_results():
@@ -56,47 +67,57 @@ def test_teacher_agents_doc_covers_launch_monitoring_and_results():
     assert "allowedFiles" in teacher_doc
     assert "HOT_NOTES.md" in teacher_doc
     assert "LEDGER.md" in teacher_doc
+    assert "progress-summary.md" in teacher_doc
     assert "task_results" in teacher_doc
     assert "artifacts/" in teacher_doc
     assert "timeline.json" in teacher_doc
 
 
-def test_orchestrator_doc_covers_interactive_and_spec_driven_owner_paths():
-    orchestrator_doc = read("docs/orchestrator.md")
+def test_campaign_operator_doc_covers_default_and_interactive_owner_paths():
+    operator_doc = read("docs/campaign-operator.md")
 
-    assert "campaign-operator" in orchestrator_doc
-    assert "bash scripts/start_fate_overnight_watchdogs.sh" in orchestrator_doc or "autoarchon-launch-from-spec" in orchestrator_doc
-    assert "codex -C /path/to/AutoArchon" in orchestrator_doc
-    assert "$archon-orchestrator" in orchestrator_doc
-    assert "autoarchon-plan-shards" in orchestrator_doc
-    assert "autoarchon-create-campaign" in orchestrator_doc
-    assert "autoarchon-launch-from-spec" in orchestrator_doc
-    assert "autoarchon-campaign-overview" in orchestrator_doc
-    assert "autoarchon-campaign-recover" in orchestrator_doc
-    assert "autoarchon-finalize-campaign" in orchestrator_doc
-    assert "autoarchon-campaign-archive" in orchestrator_doc
-    assert "launch-teacher.sh" in orchestrator_doc
-    assert "owner-mode.json" in orchestrator_doc
-    assert "owner-lease.json" in orchestrator_doc
-    assert "launch-spec.resolved.json" in orchestrator_doc
-    assert "file_stem" in orchestrator_doc
+    assert "campaign-operator" in operator_doc
+    assert "control/mission-brief.md" in operator_doc
+    assert "control/operator-journal.md" in operator_doc
+    assert "Detailed TODO" in operator_doc
+    assert "autoarchon-init-campaign-spec" in operator_doc
+    assert "autoarchon-launch-from-spec" in operator_doc
+    assert "bash scripts/start_fate_overnight_watchdogs.sh" in operator_doc
+    assert "bash scripts/watch_campaign.sh" in operator_doc
+    assert "scripts/start_campaign_operator.sh" in operator_doc
+    assert "$archon-orchestrator" in operator_doc
+    assert "autoarchon-render-operator-prompt" in operator_doc
+    assert "autoarchon-campaign-overview" in operator_doc
+    assert "autoarchon-campaign-recover" in operator_doc
+    assert "autoarchon-finalize-campaign" in operator_doc
+    assert "autoarchon-campaign-archive" in operator_doc
+    assert "owner-mode.json" in operator_doc
+    assert "owner-lease.json" in operator_doc
+    assert "launch-spec.resolved.json" in operator_doc
 
 
-def test_architecture_doc_contains_global_mermaid_and_outer_role_story():
+def test_architecture_doc_contains_global_mermaid_and_future_extension_points():
     architecture = read("docs/architecture.md")
 
     assert "```mermaid" in architecture
     assert "campaign-operator" in architecture
     assert "orchestrator-agent" in architecture
     assert "watchdog" in architecture
-    assert "manager-agent" in architecture
     assert "statement-validator" in architecture
     assert "supervisor-agent" in architecture
+    assert "helper-prover-agent" in architecture
+    assert "mathlib-agent" in architecture
     assert "reports/final/" in architecture
     assert "reports/postmortem/" in architecture
+    assert "reports/final/lessons/lesson-records.jsonl" in architecture
     assert "archon-lean-lsp" in architecture
+    assert "mission-brief.md" in architecture
+    assert "operator-journal.md" in architecture
     assert "owner-lease.json" in architecture
     assert "launch-spec.resolved.json" in architecture
+    assert "progress-summary.md" in architecture
+    assert "progress-summary.json" in architecture
+    assert "workspace/.archon/supervisor/progress-summary.md" in architecture
     assert "reportFreshness" in architecture
     assert "input_tokens" in architecture
     assert "output_tokens" in architecture
@@ -111,14 +132,18 @@ def test_benchmarking_doc_still_explains_contamination_and_faithful_runs():
     assert "FATEM/42.lean" in benchmarking
 
 
-def test_agent_registry_doc_marks_campaign_operator_active_and_manager_future():
+def test_agent_registry_doc_marks_campaign_operator_active_and_future_roles_explicit():
     registry_doc = read("docs/agent-registry.md")
 
     assert "`agents/*.json`" in registry_doc
     assert "campaign-operator" in registry_doc
-    assert "orchestrator-agent" in registry_doc
-    assert "manager-agent" in registry_doc
+    assert "helper-prover-agent" in registry_doc
+    assert "mathlib-agent" in registry_doc
+    assert "runtime-config.toml" in registry_doc
+    assert "mission-brief.md" in registry_doc
+    assert "operator-journal.md" in registry_doc
     assert "mechanical wrapper" in registry_doc
+    assert "archive/manager-agent.md" in registry_doc
     assert "not the canonical runtime registry" in registry_doc
     assert ".archon-src/skills/lean4/agents/" in registry_doc
 
@@ -133,6 +158,8 @@ def test_agent_registry_json_files_are_well_formed_and_cover_current_roles():
 
     assert {
         "campaign-operator",
+        "helper-prover-agent",
+        "mathlib-agent",
         "manager-agent",
         "plan-agent",
         "prover-agent",
@@ -154,34 +181,12 @@ def test_agent_registry_json_files_are_well_formed_and_cover_current_roles():
         assert payload["observability"]
 
 
-def test_manager_watchdog_doc_covers_watchdog_state_owner_lease_and_launch_from_spec():
-    manager_doc = read("docs/manager-watchdog.md")
+def test_manager_archive_doc_keeps_manager_off_the_default_runtime_path():
+    archive_doc = read("docs/archive/manager-agent.md")
 
-    assert "campaign-operator" in manager_doc
-    assert "manager-agent" in manager_doc
-    assert "autoarchon-launch-from-spec" in manager_doc
-    assert "autoarchon-orchestrator-watchdog" in manager_doc
-    assert "owner-mode.json" in manager_doc
-    assert "owner-lease.json" in manager_doc
-    assert "orchestrator-watchdog.json" in manager_doc
-    assert "watchdogStatus" in manager_doc
-    assert "restartCount" in manager_doc
-    assert "runCounts" in manager_doc
-    assert "statusRunIds" in manager_doc
-    assert "recoverableRunIds" in manager_doc
-    assert "prewarmPlanCounts" in manager_doc
-    assert "prewarmPendingRunIds" in manager_doc
-    assert "activeLaunches" in manager_doc
-    assert "launchBudget" in manager_doc
-    assert "lastStatusRefreshAt" in manager_doc
-    assert "lastProgressAt" in manager_doc
-    assert "lastRecoveryAt" in manager_doc
-    assert "lastCompareReportAt" in manager_doc
-    assert "ownerLastLogAt" in manager_doc
-    assert "budgetExhausted" in manager_doc
-    assert "reportFreshness" in manager_doc
-    assert "ownerLease" in manager_doc
-    assert "concrete reliability wrapper" in manager_doc
+    assert "manager-agent" in archive_doc
+    assert "not part of the default runtime path" in archive_doc
+    assert "campaign-operator" in archive_doc
 
 
 def test_postmortem_doc_records_20260413_nightly_samples_as_archived_only():

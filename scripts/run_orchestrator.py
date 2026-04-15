@@ -50,6 +50,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Build compare/final reports automatically once every run is terminal",
     )
+    parser.add_argument(
+        "--prune-workspace-lake",
+        action="store_true",
+        help="When --finalize-on-terminal is enabled, also remove inactive run workspace/.lake caches under the campaign",
+    )
+    parser.add_argument(
+        "--prune-broken-prewarm",
+        action="store_true",
+        help="When --finalize-on-terminal is enabled, also remove failed or abandoned .lake.prewarm-* directories under the campaign",
+    )
     return parser.parse_args()
 
 
@@ -169,7 +179,12 @@ def main() -> int:
         if campaign_is_terminal(status):
             build_campaign_compare_report(campaign_root, heartbeat_seconds=args.heartbeat_seconds)
             if args.finalize_on_terminal:
-                finalize_campaign(campaign_root, heartbeat_seconds=args.heartbeat_seconds)
+                finalize_campaign(
+                    campaign_root,
+                    heartbeat_seconds=args.heartbeat_seconds,
+                    prune_workspace_lake=args.prune_workspace_lake,
+                    prune_broken_prewarm=args.prune_broken_prewarm,
+                )
             return 0
         if args.max_attempts and attempt > args.max_attempts:
             return 1
@@ -179,7 +194,12 @@ def main() -> int:
         if campaign_is_terminal(status):
             build_campaign_compare_report(campaign_root, heartbeat_seconds=args.heartbeat_seconds)
             if args.finalize_on_terminal:
-                finalize_campaign(campaign_root, heartbeat_seconds=args.heartbeat_seconds)
+                finalize_campaign(
+                    campaign_root,
+                    heartbeat_seconds=args.heartbeat_seconds,
+                    prune_workspace_lake=args.prune_workspace_lake,
+                    prune_broken_prewarm=args.prune_broken_prewarm,
+                )
             return 0
         if args.max_attempts and attempt >= args.max_attempts:
             return returncode if returncode != 0 else 1

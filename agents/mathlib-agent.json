@@ -1,0 +1,32 @@
+{
+  "id": "mathlib-agent",
+  "status": "proposed",
+  "kind": "retrieval",
+  "summary": "Future specialist that clusters repeated blocker patterns, mines mathlib usage, and feeds reusable retrieval hints back into benchmark campaigns.",
+  "reads": [
+    "reports/final/lessons/lesson-records.jsonl",
+    "reports/postmortem/lessons/lesson-records.jsonl",
+    "workspace/.archon/logs/",
+    "workspace/.archon/validation/"
+  ],
+  "writes": [
+    "analysis/mathlib-hints/",
+    "analysis/error-clusters/"
+  ],
+  "outputs": [
+    "retrieval datasets",
+    "error clusters",
+    "mathlib hint packs"
+  ],
+  "handoff_to": [
+    "campaign-operator",
+    "supervisor-agent",
+    "human"
+  ],
+  "observability": [
+    "inputRecordCount",
+    "clusterCount",
+    "hintPackCount",
+    "lastUpdatedAt"
+  ]
+}

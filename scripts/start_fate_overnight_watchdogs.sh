@@ -18,6 +18,8 @@ OWNER_SILENCE_SECONDS="${OWNER_SILENCE_SECONDS:-1200}"
 MAX_ACTIVE_LAUNCHES="${MAX_ACTIVE_LAUNCHES:-2}"
 LAUNCH_BATCH_SIZE="${LAUNCH_BATCH_SIZE:-1}"
 LAUNCH_COOLDOWN_SECONDS="${LAUNCH_COOLDOWN_SECONDS:-90}"
+PRUNE_WORKSPACE_LAKE="${PRUNE_WORKSPACE_LAKE:-1}"
+PRUNE_BROKEN_PREWARM="${PRUNE_BROKEN_PREWARM:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 ARCHON_CODEX_READY_RETRIES="${ARCHON_CODEX_READY_RETRIES:-10}"
 ARCHON_CODEX_READY_RETRY_DELAY_SECONDS="${ARCHON_CODEX_READY_RETRY_DELAY_SECONDS:-15}"
@@ -43,17 +45,34 @@ run_cmd() {
 
 launch_spec() {
   local slug="$1"
-  local spec_path="$2"
+  local template_path="$2"
   local shard_size="$3"
+  local resolved_spec_path="${RUN_SPECS_ROOT}/${DATE_TAG}-${slug}.launch.json"
 
-  printf '[launch-spec] %s: %s\n' "${slug}" "${spec_path}" >&2
-  local cmd=(
-    uv run --directory "${ARCHON_ROOT}" autoarchon-launch-from-spec
-    --spec-file "${spec_path}"
+  printf '[launch-spec] %s: %s -> %s\n' "${slug}" "${template_path}" "${resolved_spec_path}" >&2
+  local init_cmd=(
+    uv run --directory "${ARCHON_ROOT}" autoarchon-init-campaign-spec
+    --template "${template_path}"
+    --benchmark-root "${BENCHMARK_ROOT}"
+    --campaigns-root "${CAMPAIGNS_ROOT}"
+    --run-specs-root "${RUN_SPECS_ROOT}"
+    --date-tag "${DATE_TAG}"
+    --model "${MODEL}"
+    --reasoning-effort "${REASONING_EFFORT}"
     --shard-size "${shard_size}"
+    --output "${resolved_spec_path}"
   )
   if [[ "${DRY_RUN}" == "1" ]]; then
-    cmd+=(--dry-run)
+    init_cmd+=(--dry-run)
+  fi
+  run_cmd "${init_cmd[@]}"
+
+  local launch_cmd=(
+    uv run --directory "${ARCHON_ROOT}" autoarchon-launch-from-spec
+    --spec-file "${resolved_spec_path}"
+  )
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    launch_cmd+=(--dry-run)
   fi
   run_cmd env \
     FATE_DATE_TAG="${DATE_TAG}" \
@@ -70,9 +89,11 @@ launch_spec() {
     MAX_ACTIVE_LAUNCHES="${MAX_ACTIVE_LAUNCHES}" \
     LAUNCH_BATCH_SIZE="${LAUNCH_BATCH_SIZE}" \
     LAUNCH_COOLDOWN_SECONDS="${LAUNCH_COOLDOWN_SECONDS}" \
+    PRUNE_WORKSPACE_LAKE="${PRUNE_WORKSPACE_LAKE}" \
+    PRUNE_BROKEN_PREWARM="${PRUNE_BROKEN_PREWARM}" \
     ARCHON_CODEX_READY_RETRIES="${ARCHON_CODEX_READY_RETRIES}" \
     ARCHON_CODEX_READY_RETRY_DELAY_SECONDS="${ARCHON_CODEX_READY_RETRY_DELAY_SECONDS}" \
-    "${cmd[@]}"
+    "${launch_cmd[@]}"
 }
 
 main() {
@@ -93,10 +114,7 @@ Campaign roots:
 - ${x_root}
 
 Quick monitor:
-for c in "${m_root}" "${h_root}" "${x_root}"; do
-  echo "== \$c ==";
-  uv run --directory "${ARCHON_ROOT}" autoarchon-campaign-overview --campaign-root "\$c" --markdown;
-done
+bash "${ARCHON_ROOT}/scripts/watch_campaign.sh" "${m_root}" "${h_root}" "${x_root}"
 EOF
 }
 

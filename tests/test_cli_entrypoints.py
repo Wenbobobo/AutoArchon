@@ -28,6 +28,8 @@ def test_pyproject_declares_core_autoarchon_entrypoints():
         "autoarchon-campaign-compare",
         "autoarchon-clean-launchers",
         "autoarchon-finalize-campaign",
+        "autoarchon-init-campaign-spec",
+        "autoarchon-lesson-clusters",
         "autoarchon-launch-from-spec",
         "autoarchon-orchestrator-watchdog",
         "autoarchon-run-orchestrator",
@@ -37,20 +39,27 @@ def test_pyproject_declares_core_autoarchon_entrypoints():
         "autoarchon-create-campaign",
         "autoarchon-prewarm-project",
         "autoarchon-refresh-launch-assets",
+        "autoarchon-render-operator-prompt",
+        "autoarchon-storage-report",
     } <= set(scripts)
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required for AutoArchon public entrypoint smoke tests")
 def test_uv_run_help_smokes_for_core_entrypoints():
     commands = [
-        ("autoarchon-campaign-archive", "campaign-root"),
+        ("autoarchon-campaign-archive", "prune-workspace-lake"),
         ("autoarchon-campaign-overview", "markdown"),
         ("autoarchon-campaign-status", "campaign-root"),
         ("autoarchon-campaign-recover", "campaign-root"),
         ("autoarchon-clean-launchers", "duplicate-grace-seconds"),
+        ("autoarchon-finalize-campaign", "prune-workspace-lake"),
+        ("autoarchon-init-campaign-spec", "template"),
+        ("autoarchon-lesson-clusters", "campaign-root"),
         ("autoarchon-launch-from-spec", "dry-run"),
-        ("autoarchon-orchestrator-watchdog", "campaign-root"),
+        ("autoarchon-orchestrator-watchdog", "prune-workspace-lake"),
+        ("autoarchon-render-operator-prompt", "repo-root"),
         ("autoarchon-refresh-launch-assets", "refresh-prompts"),
+        ("autoarchon-storage-report", "retention"),
         ("autoarchon-supervised-cycle", "workspace"),
         ("autoarchon-prewarm-project", "verify-file"),
     ]

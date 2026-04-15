@@ -3,7 +3,11 @@ set -euo pipefail
 
 ARCHON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODEX_MODEL="${ARCHON_CODEX_MODEL:-gpt-5.4}"
-CODEX_EXTRA_ARGS="${ARCHON_CODEX_EXEC_ARGS:--config model_reasoning_effort=xhigh}"
+if [[ -n "${ARCHON_CODEX_EXEC_ARGS:-}" ]]; then
+    CODEX_EXTRA_ARGS="${ARCHON_CODEX_EXEC_ARGS}"
+else
+    CODEX_EXTRA_ARGS="--config model_reasoning_effort=xhigh"
+fi
 CODEX_ENABLE_SEARCH="${ARCHON_CODEX_ENABLE_SEARCH:-0}"
 CODEX_TIMEOUT_SECONDS="${ARCHON_REVIEW_TIMEOUT_SECONDS:-${ARCHON_CODEX_TIMEOUT_SECONDS:-}}"
 
@@ -81,6 +85,9 @@ export LEAN4_PLUGIN_ROOT="${STATE_DIR}/lean4"
 export LEAN4_SCRIPTS="${LEAN4_PLUGIN_ROOT}/lib/scripts"
 export LEAN4_REFS="${LEAN4_PLUGIN_ROOT}/skills/lean4/references"
 export LEAN4_PYTHON_BIN="${LEAN4_PYTHON_BIN:-$(command -v python3 || command -v python)}"
+export ARCHON_RUNTIME_CONFIG="${STATE_DIR}/runtime-config.toml"
+export ARCHON_HELPER_CONFIG="${STATE_DIR}/runtime-config.toml"
+export ARCHON_HELPER_TOOL="${STATE_DIR}/tools/archon-helper-prover-agent.py"
 export ARCHON_INFORMAL_TOOL="${STATE_DIR}/tools/archon-informal-agent.py"
 
 STAGE=$(awk '/^## Current Stage/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; exit}' "${STATE_DIR}/PROGRESS.md" 2>/dev/null || echo "unknown")
@@ -93,6 +100,8 @@ Lean workflow references are vendored under ${STATE_DIR}/lean4/. Consult ${STATE
 Session number: ${SESSION_NUM}.
 Pre-processed attempt data: ${ATTEMPTS_FILE} (READ THIS FIRST).
 Prover log: ${LOG_FILE}
+Optional helper tool: ${ARCHON_HELPER_TOOL}
+Runtime config: ${ARCHON_RUNTIME_CONFIG}
 
 CRITICAL — Write your output files to EXACTLY these paths:
   ${SESSION_DIR}/milestones.jsonl

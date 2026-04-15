@@ -59,6 +59,7 @@ PROJECT_NAME="$(basename "$PROJECT_PATH")"
 STATE_DIR="${PROJECT_PATH}/.archon"
 LEAN_LINK="${STATE_DIR}/lean4"
 TOOLS_DIR="${STATE_DIR}/tools"
+RUNTIME_CONFIG="${STATE_DIR}/runtime-config.toml"
 MCP_DIR="${ARCHON_DIR}/.archon-src/tools/lean-lsp-mcp"
 LEAN_BUILD_CONCURRENCY="${ARCHON_LEAN_BUILD_CONCURRENCY:-share}"
 LEAN_REPL_TIMEOUT="${ARCHON_LEAN_REPL_TIMEOUT:-90}"
@@ -77,6 +78,7 @@ mkdir -p \
     "${STATE_DIR}/task_results" \
     "${STATE_DIR}/logs" \
     "${STATE_DIR}/informal" \
+    "${STATE_DIR}/informal/helper" \
     "${STATE_DIR}/prompts" \
     "${STATE_DIR}/proof-journal/sessions" \
     "${STATE_DIR}/proof-journal/current_session" \
@@ -106,8 +108,58 @@ ok "Prompts linked"
 
 ln -sfn "${ARCHON_DIR}/agents" "${STATE_DIR}/agents"
 ln -sfn "${ARCHON_DIR}/.archon-src/tools/informal_agent.py" "${TOOLS_DIR}/archon-informal-agent.py"
+ln -sfn "${ARCHON_DIR}/.archon-src/tools/helper_prover_agent.py" "${TOOLS_DIR}/archon-helper-prover-agent.py"
 ln -sfn "${ARCHON_DIR}/.archon-src/skills/lean4" "${LEAN_LINK}"
-ok "Lean references, canonical agent contracts, and informal agent linked"
+ok "Lean references, canonical agent contracts, and helper tools linked"
+
+if [[ ! -f "${RUNTIME_CONFIG}" ]]; then
+    PYTHONPATH="${ARCHON_DIR}" python3 - "${RUNTIME_CONFIG}" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+from archonlib.runtime_config import render_default_runtime_config
+
+
+provider_defaults = {
+    "openai": {
+        "api_key_env": "OPENAI_API_KEY",
+        "base_url_env": "OPENAI_BASE_URL",
+        "model": "gpt-5.4",
+    },
+    "gemini": {
+        "api_key_env": "GEMINI_API_KEY",
+        "base_url_env": "GEMINI_BASE_URL",
+        "model": "gemini-3.1-pro-preview",
+    },
+    "openrouter": {
+        "api_key_env": "OPENROUTER_API_KEY",
+        "base_url_env": "OPENROUTER_BASE_URL",
+        "model": "google/gemini-3.1-pro-preview",
+    },
+}
+
+
+path = Path(sys.argv[1])
+provider = os.environ.get("ARCHON_HELPER_PROVIDER", "").strip() or "openai"
+defaults = provider_defaults.get(provider, provider_defaults["openai"])
+path.write_text(
+    render_default_runtime_config(
+        helper_enabled=bool(os.environ.get("ARCHON_HELPER_PROVIDER", "").strip()),
+        helper_provider=provider,
+        helper_model=os.environ.get("ARCHON_HELPER_MODEL", "").strip() or defaults["model"],
+        helper_api_key_env=os.environ.get("ARCHON_HELPER_API_KEY_ENV", "").strip() or defaults["api_key_env"],
+        helper_base_url_env=os.environ.get("ARCHON_HELPER_BASE_URL_ENV", "").strip() or defaults["base_url_env"],
+        helper_max_retries=int(os.environ.get("ARCHON_HELPER_MAX_RETRIES", "5")),
+        helper_initial_backoff_seconds=int(os.environ.get("ARCHON_HELPER_INITIAL_BACKOFF_SECONDS", "5")),
+        helper_timeout_seconds=int(os.environ.get("ARCHON_HELPER_TIMEOUT_SECONDS", "300")),
+        write_progress_surface=os.environ.get("ARCHON_WRITE_PROGRESS_SURFACE", "1").strip() not in {"0", "false", "False"},
+    ),
+    encoding="utf-8",
+)
+PY
+    ok "runtime-config.toml initialized"
+fi
 
 if [[ "$SKIP_MCP" != true ]]; then
     info "Refreshing archon-lean-lsp MCP via Codex..."

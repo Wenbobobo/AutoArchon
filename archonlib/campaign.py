@@ -11,7 +11,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from archonlib.operator_surfaces import ensure_operator_surfaces
+from archonlib.lesson_clusters import write_lesson_cluster_artifacts
 from archonlib.run_workspace import export_run_artifacts, create_isolated_run
+from archonlib.storage import prune_storage_candidates
 from archonlib.supervisor import collect_changed_files, latest_iteration_meta, read_allowed_files
 
 
@@ -22,6 +25,7 @@ DEFAULT_LAUNCH_RETRY_AFTER_SECONDS = 300
 RATE_LIMIT_RETRY_AFTER_SECONDS = 900
 DEFAULT_OWNER_LEASE_SECONDS = 900
 MAX_SCOPED_PREWARM_FILES = 4
+DEFAULT_TAIL_SCOPE_OBJECTIVE_THRESHOLD = 4
 IGNORED_SHARD_DIRS = {".archon", ".git", ".lake", "build", "lake-packages", "__pycache__"}
 TERMINAL_RUN_STATUSES = {"accepted", "blocked", "contaminated"}
 _UNSET = object()
@@ -131,6 +135,20 @@ def _tail_text(path: Path, *, max_bytes: int = 131072) -> str:
         handle.seek(max(0, size - max_bytes))
         data = handle.read()
     return data.decode("utf-8", errors="replace")
+
+
+def _scoped_prewarm_verify_files(allowed_files: list[str]) -> list[str]:
+    if not allowed_files:
+        return []
+    if len(allowed_files) <= MAX_SCOPED_PREWARM_FILES:
+        return list(allowed_files)
+
+    last_index = len(allowed_files) - 1
+    selected_indices = {
+        int(offset * last_index / (MAX_SCOPED_PREWARM_FILES - 1))
+        for offset in range(MAX_SCOPED_PREWARM_FILES)
+    }
+    return [allowed_files[index] for index in sorted(selected_indices)]
 
 
 def ensure_campaign_control_root(
@@ -508,7 +526,9 @@ def _build_teacher_prompt(
         "--prover-timeout-seconds",
         str(prover_timeout_seconds),
         "--tail-scope-objective-threshold",
-        "2",
+        str(DEFAULT_TAIL_SCOPE_OBJECTIVE_THRESHOLD),
+        "--tail-scope-plan-timeout-seconds",
+        str(max(plan_timeout_seconds, 300)),
         "--tail-scope-prover-timeout-seconds",
         str(max(prover_timeout_seconds, 360)),
         "--prover-idle-seconds",
@@ -634,9 +654,8 @@ def _build_launch_script(
         f"--objective-limit {objective_limit} --objective-regex {shlex.quote(objective_regex)} {workspace_rendered}"
     )
     prewarm_args = [str(workspace_root)]
-    if 0 < len(allowed_files) <= MAX_SCOPED_PREWARM_FILES:
-        for rel_path in allowed_files:
-            prewarm_args.extend(["--verify-file", rel_path])
+    for rel_path in _scoped_prewarm_verify_files(allowed_files):
+        prewarm_args.extend(["--verify-file", rel_path])
     prewarm_cmd = _command_rendered(_uv_run_command(archon_root, "autoarchon-prewarm-project", *prewarm_args))
     return "\n".join(
         [
@@ -1356,6 +1375,11 @@ def _configured_allowed_files(run_payload: Mapping[str, Any], bootstrap_payload:
 def _planned_prewarm_mode(*, configured_allowed_files: list[str], project_build_reused: bool) -> str:
     if project_build_reused:
         return "reuse_build_outputs"
+    verify_files = _scoped_prewarm_verify_files(configured_allowed_files)
+    if not verify_files:
+        return "full_build"
+    if len(verify_files) < len(configured_allowed_files):
+        return "scoped_verify_sample"
     if 0 < len(configured_allowed_files) <= MAX_SCOPED_PREWARM_FILES:
         return "scoped_verify"
     return "full_build"
@@ -1368,7 +1392,9 @@ def _prewarm_summary(
     prewarm_pending: bool | None,
 ) -> str:
     parts = [plan]
-    if configured_allowed_files:
+    if plan == "scoped_verify_sample" and configured_allowed_files:
+        parts.append(f"sample {len(_scoped_prewarm_verify_files(configured_allowed_files))}/{len(configured_allowed_files)} files")
+    elif configured_allowed_files:
         parts.append(f"{len(configured_allowed_files)} files")
     if prewarm_pending is not None:
         parts.append("pending" if prewarm_pending else "ready")
@@ -1398,6 +1424,7 @@ def _write_teacher_launch_state(
     phase: str,
     launcher: str | None = None,
     pid: int | None = None,
+    exit_code: int | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "schemaVersion": SCHEMA_VERSION,
@@ -1409,6 +1436,8 @@ def _write_teacher_launch_state(
         payload["launcher"] = launcher
     if pid is not None:
         payload["pid"] = pid
+    if exit_code is not None:
+        payload["exitCode"] = exit_code
     _write_json(path, payload)
     return payload
 
@@ -2074,6 +2103,10 @@ def build_campaign_overview(
         if isinstance(status_payload.get("counts"), Mapping)
         else max(0, len(running_rows) + len(recoverable_rows) - terminal_run_count),
     )
+    progress = build_campaign_progress_payload(
+        target_counts=target_counts,
+        run_counts=status_payload.get("counts", {}) if isinstance(status_payload.get("counts"), Mapping) else {},
+    )
 
     return {
         "schemaVersion": SCHEMA_VERSION,
@@ -2112,6 +2145,7 @@ def build_campaign_overview(
             "likelyCause": watchdog_state.get("likelyCause") if isinstance(watchdog_state, Mapping) else None,
             "resourceSnapshot": watchdog_state.get("resourceSnapshot") if isinstance(watchdog_state, Mapping) else None,
         },
+        "progress": progress,
         "eta": eta,
         "ownerMode": owner_mode,
         "ownerLease": lease,
@@ -2120,7 +2154,47 @@ def build_campaign_overview(
             "statusPath": str(campaign_root / "campaign-status.json"),
             "compareReportPath": str(campaign_root / "reports" / "final" / "compare-report.json"),
             "watchdogStatePath": str(campaign_root / "control" / "orchestrator-watchdog.json"),
+            "progressSummaryPath": str(campaign_root / "control" / "progress-summary.md"),
+            "progressSummaryJsonPath": str(campaign_root / "control" / "progress-summary.json"),
         },
+    }
+
+
+def build_campaign_progress_payload(
+    *,
+    target_counts: Mapping[str, Any],
+    run_counts: Mapping[str, Any],
+) -> dict[str, Any]:
+    accepted_proofs = int(target_counts.get("acceptedProofs", 0) or 0)
+    accepted_blockers = int(target_counts.get("acceptedBlockers", 0) or 0)
+    remaining_targets = int(target_counts.get("remainingTargets", 0) or 0)
+    unverified_artifacts = int(target_counts.get("unverifiedArtifacts", 0) or 0)
+    finalized_targets = accepted_proofs + accepted_blockers
+    total_targets = finalized_targets + remaining_targets + unverified_artifacts
+
+    if total_targets > 0:
+        percent = int(round((finalized_targets / total_targets) * 100))
+        completed = finalized_targets
+        total = total_targets
+        label = "finalized targets"
+    else:
+        accepted_runs = int(run_counts.get("accepted", 0) or 0)
+        blocked_runs = int(run_counts.get("blocked", 0) or 0)
+        contaminated_runs = int(run_counts.get("contaminated", 0) or 0)
+        completed = accepted_runs + blocked_runs + contaminated_runs
+        total = sum(int(value or 0) for value in run_counts.values()) if run_counts else 0
+        percent = int(round((completed / total) * 100)) if total > 0 else 0
+        label = "terminal runs"
+
+    bar_width = 20
+    filled = max(0, min(bar_width, int(round((percent / 100) * bar_width))))
+    bar = "[" + "#" * filled + "-" * (bar_width - filled) + "]"
+    return {
+        "completed": completed,
+        "total": total,
+        "percent": percent,
+        "bar": bar,
+        "label": label,
     }
 
 
@@ -2138,6 +2212,7 @@ def render_campaign_overview_markdown(overview: Mapping[str, Any]) -> str:
     eta = overview.get("eta") if isinstance(overview.get("eta"), Mapping) else {}
     paths = overview.get("paths") if isinstance(overview.get("paths"), Mapping) else {}
     watchdog_runtime = overview.get("watchdogRuntime") if isinstance(overview.get("watchdogRuntime"), Mapping) else {}
+    progress = overview.get("progress") if isinstance(overview.get("progress"), Mapping) else {}
     running_runs = overview.get("runningRuns") if isinstance(overview.get("runningRuns"), list) else []
     recoverable_runs = overview.get("recoverableRuns") if isinstance(overview.get("recoverableRuns"), list) else []
 
@@ -2149,6 +2224,7 @@ def render_campaign_overview_markdown(overview: Mapping[str, Any]) -> str:
         f"- Target counts: `{target_counts}`",
         f"- Prewarm counts: `{prewarm_counts}`",
         f"- Watchdog status: `{watchdog_status}`",
+        f"- Progress: `{progress.get('bar', '[--------------------]')} {progress.get('percent', 0)}% ({progress.get('completed', 0)}/{progress.get('total', 0)} {progress.get('label', 'items')})`",
         f"- Restart count: `{restart_count if restart_count is not None else 'unknown'}`",
         f"- Active work runs: `{active_work_text}`",
         f"- Last progress at: `{overview.get('lastProgressAt') or 'unknown'}`",
@@ -2190,16 +2266,96 @@ def render_campaign_overview_markdown(overview: Mapping[str, Any]) -> str:
             f"- Status path: `{paths.get('statusPath', 'unknown')}`",
             f"- Compare report path: `{paths.get('compareReportPath', 'unknown')}`",
             f"- Watchdog state path: `{paths.get('watchdogStatePath', 'unknown')}`",
+            f"- Progress summary path: `{paths.get('progressSummaryPath', 'unknown')}`",
+            f"- Progress summary JSON path: `{paths.get('progressSummaryJsonPath', 'unknown')}`",
             "",
         ]
     )
     return "\n".join(lines) + "\n"
 
 
+def render_campaign_progress_markdown(overview: Mapping[str, Any]) -> str:
+    campaign_id = overview.get("campaignId", "unknown")
+    progress = overview.get("progress") if isinstance(overview.get("progress"), Mapping) else {}
+    target_counts = overview.get("targetCounts") if isinstance(overview.get("targetCounts"), Mapping) else {}
+    running_runs = overview.get("runningRuns") if isinstance(overview.get("runningRuns"), list) else []
+    recoverable_runs = overview.get("recoverableRuns") if isinstance(overview.get("recoverableRuns"), list) else []
+    watchdog_runtime = overview.get("watchdogRuntime") if isinstance(overview.get("watchdogRuntime"), Mapping) else {}
+
+    lines = [
+        f"# Campaign Progress: {campaign_id}",
+        "",
+        f"- Updated at: `{overview.get('generatedAt', 'unknown')}`",
+        f"- Progress: `{progress.get('bar', '[--------------------]')} {progress.get('percent', 0)}% ({progress.get('completed', 0)}/{progress.get('total', 0)} {progress.get('label', 'items')})`",
+        f"- Active work runs: `{', '.join(overview.get('activeWorkRunIds', [])) if isinstance(overview.get('activeWorkRunIds'), list) and overview.get('activeWorkRunIds') else 'none'}`",
+        f"- Remaining targets: `{target_counts.get('remainingTargets', 0)}`",
+        f"- Accepted proofs: `{target_counts.get('acceptedProofs', 0)}`",
+        f"- Accepted blockers: `{target_counts.get('acceptedBlockers', 0)}`",
+        f"- Watchdog status: `{overview.get('watchdogStatus') or 'unknown'}`",
+        f"- Likely cause: `{watchdog_runtime.get('likelyCause') or 'unknown'}`",
+        "",
+        "## Running",
+        "",
+    ]
+    if running_runs:
+        for row in running_runs[:8]:
+            lines.append(
+                f"- `{row.get('runId')}` iter={row.get('latestIteration')} remaining={row.get('remainingTargetCount')} "
+                f"accepted_proofs={row.get('acceptedProofCount')} accepted_blockers={row.get('acceptedBlockerCount')}"
+            )
+    else:
+        lines.append("- none")
+
+    lines.extend(["", "## Attention", ""])
+    if recoverable_runs:
+        for row in recoverable_runs[:8]:
+            lines.append(
+                f"- `{row.get('runId')}` status={row.get('status')} action={row.get('action')} class={row.get('recoveryClass')}"
+            )
+    else:
+        lines.append("- none")
+    return "\n".join(lines) + "\n"
+
+
+def write_campaign_progress_surface(campaign_root: Path, overview: Mapping[str, Any]) -> dict[str, str]:
+    control_root = campaign_root / "control"
+    control_root.mkdir(parents=True, exist_ok=True)
+    markdown_path = control_root / "progress-summary.md"
+    json_path = control_root / "progress-summary.json"
+    markdown_path.write_text(render_campaign_progress_markdown(overview), encoding="utf-8")
+    json_path.write_text(json.dumps(dict(overview), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        "markdown": str(markdown_path),
+        "json": str(json_path),
+    }
+
+
+def _maybe_prune_campaign_storage(
+    campaign_root: Path,
+    *,
+    prune_workspace_lake: bool,
+    prune_broken_prewarm: bool,
+) -> dict[str, Any] | None:
+    if not prune_workspace_lake and not prune_broken_prewarm:
+        return None
+    cleanup_payload = cleanup_stale_launch_processes(campaign_root, execute=True)
+    prune_payload = prune_storage_candidates(
+        campaign_root,
+        prune_workspace_lake=prune_workspace_lake,
+        prune_broken_prewarm=prune_broken_prewarm,
+        execute=True,
+    )
+    if cleanup_payload.get("candidateCount"):
+        prune_payload["staleLaunchCleanup"] = cleanup_payload
+    return prune_payload
+
+
 def archive_campaign_postmortem(
     campaign_root: Path,
     *,
     heartbeat_seconds: int = DEFAULT_HEARTBEAT_SECONDS,
+    prune_workspace_lake: bool = False,
+    prune_broken_prewarm: bool = False,
 ) -> dict[str, Any]:
     campaign_root = campaign_root.resolve()
     status_payload = collect_campaign_status(campaign_root, heartbeat_seconds=heartbeat_seconds)
@@ -2268,6 +2424,45 @@ def archive_campaign_postmortem(
             "watchdogLogTail": str(postmortem_root / "watchdog-log.tail.txt"),
         },
     }
+    lesson_records: list[dict[str, Any]] = []
+    status_by_run = {
+        item["runId"]: item
+        for item in status_payload.get("runs", [])
+        if isinstance(item, dict) and isinstance(item.get("runId"), str)
+    }
+    for run_id, run_status in status_by_run.items():
+        lesson_records.extend(
+            _collect_run_lesson_records(
+                campaign_id=str(payload["campaignId"]),
+                run_id=run_id,
+                artifacts_root=campaign_root / "runs" / run_id / "artifacts",
+                run_status=run_status,
+            )
+        )
+    lesson_records.extend(
+        _watchdog_postmortem_records(
+            campaign_id=str(payload["campaignId"]),
+            watchdog_state=watchdog_state if isinstance(watchdog_state, Mapping) else None,
+            incident_tags=incident_tags,
+        )
+    )
+    postmortem_lessons_root = postmortem_root / "lessons"
+    postmortem_records_path = postmortem_lessons_root / "lesson-records.jsonl"
+    _write_lesson_records(postmortem_records_path, lesson_records)
+    lesson_cluster_paths = write_lesson_cluster_artifacts(
+        postmortem_lessons_root,
+        records=lesson_records,
+        source_paths=[str(postmortem_records_path)],
+    )
+    payload["paths"]["lessonRecords"] = str(postmortem_records_path)
+    payload["paths"]["lessonClusters"] = lesson_cluster_paths
+    cache_prune = _maybe_prune_campaign_storage(
+        campaign_root,
+        prune_workspace_lake=prune_workspace_lake,
+        prune_broken_prewarm=prune_broken_prewarm,
+    )
+    if cache_prune is not None:
+        payload["cachePrune"] = cache_prune
     _write_json(postmortem_root / "postmortem-summary.json", payload)
 
     lines = [
@@ -2278,14 +2473,15 @@ def archive_campaign_postmortem(
         f"- Target counts: `{json.dumps(payload['targetCounts'], sort_keys=True)}`",
         f"- Watchdog status: `{watchdog_state.get('watchdogStatus') if isinstance(watchdog_state, Mapping) else 'unknown'}`",
         f"- Incident tags: `{', '.join(incident_tags) if incident_tags else 'none'}`",
-        f"- Compare freshness: `{overview['reportFreshness']['compareIsFresh']}`",
-        f"- ETA: `{overview['eta']['etaText']}`",
-        f"- Likely cause: `{overview['watchdogRuntime'].get('likelyCause') if isinstance(overview.get('watchdogRuntime'), Mapping) else 'unknown'}`",
-        f"- Effective launch cap: `{overview['watchdogRuntime'].get('effectiveMaxActiveLaunches') if isinstance(overview.get('watchdogRuntime'), Mapping) else 'unknown'}`",
-        "",
-        "## Running Runs",
-        "",
-    ]
+            f"- Compare freshness: `{overview['reportFreshness']['compareIsFresh']}`",
+            f"- ETA: `{overview['eta']['etaText']}`",
+            f"- Likely cause: `{overview['watchdogRuntime'].get('likelyCause') if isinstance(overview.get('watchdogRuntime'), Mapping) else 'unknown'}`",
+            f"- Effective launch cap: `{overview['watchdogRuntime'].get('effectiveMaxActiveLaunches') if isinstance(overview.get('watchdogRuntime'), Mapping) else 'unknown'}`",
+            f"- Cache prune: `{cache_prune['selectedCount']} selected / {cache_prune['reclaimedBytes']} bytes`" if cache_prune is not None else "- Cache prune: `disabled`",
+            "",
+            "## Running Runs",
+            "",
+        ]
     if overview["runningRuns"]:
         for row in overview["runningRuns"]:
             lines.append(
@@ -2374,6 +2570,20 @@ def create_campaign(
 
     runs_root = campaign_root / "runs"
     campaign_control_root = ensure_campaign_control_root(campaign_root)
+    ensure_operator_surfaces(
+        campaign_root,
+        source_root=source_root,
+        spec_reference=None,
+        resolved_spec={
+            "campaignRoot": str(campaign_root),
+            "sourceRoot": str(source_root),
+            "teacherModel": teacher_model,
+            "teacherReasoningEffort": teacher_reasoning_effort,
+        },
+        mode="campaign_bootstrap",
+        entrypoint="autoarchon-create-campaign",
+        note="Campaign root bootstrapped; operator should review mission brief and resolved spec before launch.",
+    )
     reports_root = campaign_root / "reports" / "final"
     runs_root.mkdir(parents=True, exist_ok=True)
     reports_root.mkdir(parents=True, exist_ok=True)
@@ -2701,6 +2911,18 @@ def cleanup_stale_launch_processes(
             if error:
                 payload["error"] = error
             executed.append(payload)
+            if killed and str(candidate.get("reason")) in {"stale_after_terminal_lease", "launch_marked_inactive"}:
+                run_id = str(candidate.get("runId") or "")
+                run_summary = run_index.get(run_id, {})
+                run_root_rel = run_summary.get("runRoot")
+                if isinstance(run_root_rel, str) and run_root_rel:
+                    launch_state_path = campaign_root / run_root_rel / "control" / "teacher-launch-state.json"
+                    _write_teacher_launch_state(
+                        launch_state_path,
+                        active=False,
+                        phase="cleanup_terminated",
+                        launcher="cleanup_stale_launch_processes",
+                    )
         if executed:
             _append_jsonl(
                 campaign_root / "events.jsonl",
@@ -3313,7 +3535,245 @@ def _copy_if_exists(source: Path, destination: Path) -> None:
     shutil.copy2(source, destination)
 
 
-def finalize_campaign(campaign_root: Path, *, heartbeat_seconds: int = DEFAULT_HEARTBEAT_SECONDS) -> dict[str, Any]:
+def _lesson_record(
+    *,
+    campaign_id: str,
+    run_id: str | None,
+    theorem_id: str | None,
+    stage: str,
+    category: str,
+    summary: str,
+    evidence_paths: list[str],
+    action_taken: str,
+    outcome: str,
+    accepted_state: str,
+) -> dict[str, Any]:
+    return {
+        "campaign_id": campaign_id,
+        "run_id": run_id,
+        "theorem_id": theorem_id,
+        "stage": stage,
+        "category": category,
+        "summary": summary,
+        "evidence_paths": evidence_paths,
+        "action_taken": action_taken,
+        "outcome": outcome,
+        "accepted_state": accepted_state,
+        "timestamp": _utc_now(),
+    }
+
+
+def _write_lesson_records(path: Path, records: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _lesson_theorem_id(
+    artifacts_root: Path,
+    lesson_payload: Mapping[str, Any],
+    run_status: Mapping[str, Any],
+) -> str | None:
+    validation_files = lesson_payload.get("validationFiles")
+    if isinstance(validation_files, list):
+        for name in validation_files:
+            if not isinstance(name, str):
+                continue
+            validation_payload = _read_json(artifacts_root / "validation" / name)
+            rel_path = validation_payload.get("relPath") if isinstance(validation_payload, Mapping) else None
+            if isinstance(rel_path, str) and rel_path:
+                return rel_path
+    allowed_files = lesson_payload.get("allowedFiles")
+    if isinstance(allowed_files, list):
+        for rel_path in allowed_files:
+            if isinstance(rel_path, str) and rel_path:
+                return rel_path
+    for key in ("acceptedProofs", "acceptedBlockers"):
+        values = run_status.get(key)
+        if isinstance(values, list):
+            for rel_path in values:
+                if isinstance(rel_path, str) and rel_path:
+                    return rel_path
+    return None
+
+
+def _collect_run_lesson_records(
+    *,
+    campaign_id: str,
+    run_id: str,
+    artifacts_root: Path,
+    run_status: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    accepted_state = str(run_status.get("status") or "unknown")
+    for lesson_name in _list_file_names(artifacts_root / "lessons", "*"):
+        lesson_payload = _read_json(artifacts_root / "lessons" / lesson_name)
+        if not isinstance(lesson_payload, Mapping):
+            continue
+        theorem_id = _lesson_theorem_id(artifacts_root, lesson_payload, run_status)
+        evidence_base = [f"runs/{run_id}/artifacts/lessons/{lesson_name}"]
+        action_taken = str(lesson_payload.get("recommendedAction") or "record_lesson")
+        outcome = str(lesson_payload.get("status") or accepted_state)
+        entries = lesson_payload.get("lessons")
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            category = entry.get("category")
+            summary = entry.get("summary")
+            if not isinstance(category, str) or not isinstance(summary, str):
+                continue
+            evidence = []
+            raw_evidence = entry.get("evidence")
+            if isinstance(raw_evidence, list):
+                evidence = [str(item) for item in raw_evidence if isinstance(item, str)]
+            records.append(
+                _lesson_record(
+                    campaign_id=campaign_id,
+                    run_id=run_id,
+                    theorem_id=theorem_id,
+                    stage="supervised_cycle",
+                    category=category,
+                    summary=summary,
+                    evidence_paths=evidence_base + evidence,
+                    action_taken=action_taken,
+                    outcome=outcome,
+                    accepted_state=accepted_state,
+                )
+            )
+    return records
+
+
+def _accepted_proof_records(
+    *,
+    campaign_id: str,
+    run_id: str,
+    run_status: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    accepted_proofs = run_status.get("acceptedProofs")
+    if not isinstance(accepted_proofs, list):
+        return records
+    for rel_path in accepted_proofs:
+        if not isinstance(rel_path, str):
+            continue
+        validation_name = rel_path.replace("/", "_") + ".json"
+        records.append(
+            _lesson_record(
+                campaign_id=campaign_id,
+                run_id=run_id,
+                theorem_id=rel_path,
+                stage="finalize",
+                category="accepted_proof",
+                summary="Validation-backed proof exported to reports/final/proofs.",
+                evidence_paths=[
+                    f"runs/{run_id}/artifacts/proofs/{rel_path}",
+                    f"runs/{run_id}/artifacts/validation/{validation_name}",
+                ],
+                action_taken="export_final_proof",
+                outcome="accepted",
+                accepted_state="accepted",
+            )
+        )
+    return records
+
+
+def _accepted_blocker_records(
+    *,
+    campaign_id: str,
+    run_id: str,
+    artifacts_root: Path,
+    run_status: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    accepted_blockers = run_status.get("acceptedBlockers")
+    if not isinstance(accepted_blockers, list):
+        return records
+    for rel_path in accepted_blockers:
+        if not isinstance(rel_path, str):
+            continue
+        validation_name = rel_path.replace("/", "_") + ".json"
+        validation_payload = _read_json(artifacts_root / "validation" / validation_name)
+        evidence_paths = [f"runs/{run_id}/artifacts/validation/{validation_name}"]
+        if isinstance(validation_payload, Mapping):
+            blocker_notes = validation_payload.get("blockerNotes")
+            if isinstance(blocker_notes, list):
+                for note_name in blocker_notes:
+                    if isinstance(note_name, str):
+                        evidence_paths.append(f"runs/{run_id}/artifacts/task-results/{note_name}")
+        records.append(
+            _lesson_record(
+                campaign_id=campaign_id,
+                run_id=run_id,
+                theorem_id=rel_path,
+                stage="finalize",
+                category="accepted_blocker",
+                summary="Validation-backed blocker note exported to reports/final/blockers.",
+                evidence_paths=evidence_paths,
+                action_taken="export_final_blocker",
+                outcome="accepted",
+                accepted_state="blocked",
+            )
+        )
+    return records
+
+
+def _watchdog_postmortem_records(
+    *,
+    campaign_id: str,
+    watchdog_state: Mapping[str, Any] | None,
+    incident_tags: list[str],
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    if "provider_transport_instability" in incident_tags:
+        records.append(
+            _lesson_record(
+                campaign_id=campaign_id,
+                run_id=None,
+                theorem_id=None,
+                stage="watchdog",
+                category="provider_transport",
+                summary="Provider or transport instability triggered cooldown or archive handling.",
+                evidence_paths=[
+                    "reports/postmortem/orchestrator-watchdog.snapshot.json",
+                    "reports/postmortem/watchdog-log.tail.txt",
+                ],
+                action_taken="apply_provider_cooldown_and_archive",
+                outcome="archived_postmortem",
+                accepted_state="postmortem",
+            )
+        )
+    restart_count = watchdog_state.get("restartCount") if isinstance(watchdog_state, Mapping) else None
+    if isinstance(restart_count, int) and restart_count > 0:
+        records.append(
+            _lesson_record(
+                campaign_id=campaign_id,
+                run_id=None,
+                theorem_id=None,
+                stage="watchdog",
+                category="watchdog_relaunch",
+                summary="The watchdog restarted or relaunched the outer owner while preserving campaign state.",
+                evidence_paths=[
+                    "reports/postmortem/orchestrator-watchdog.snapshot.json",
+                    "events.jsonl",
+                ],
+                action_taken="restart_orchestrator_with_budget",
+                outcome="archived_postmortem",
+                accepted_state="postmortem",
+            )
+        )
+    return records
+
+
+def finalize_campaign(
+    campaign_root: Path,
+    *,
+    heartbeat_seconds: int = DEFAULT_HEARTBEAT_SECONDS,
+    prune_workspace_lake: bool = False,
+    prune_broken_prewarm: bool = False,
+) -> dict[str, Any]:
     campaign_root = campaign_root.resolve()
     manifest = _read_json(campaign_root / "CAMPAIGN_MANIFEST.json")
     if manifest is None:
@@ -3341,6 +3801,7 @@ def finalize_campaign(campaign_root: Path, *, heartbeat_seconds: int = DEFAULT_H
 
     copied_proofs: list[str] = []
     copied_blockers: list[str] = []
+    lesson_records: list[dict[str, Any]] = []
     run_reports: list[dict[str, Any]] = []
     status_by_run = {item["runId"]: item for item in status_payload["runs"] if isinstance(item, dict)}
     for run in runs:
@@ -3389,6 +3850,29 @@ def finalize_campaign(campaign_root: Path, *, heartbeat_seconds: int = DEFAULT_H
         }
         run_reports.append(run_report)
         _write_json(runs_root / run_id / "run-summary.json", run_report)
+        lesson_records.extend(
+            _collect_run_lesson_records(
+                campaign_id=str(manifest.get("campaignId")),
+                run_id=run_id,
+                artifacts_root=artifacts_root,
+                run_status=run_status,
+            )
+        )
+        lesson_records.extend(
+            _accepted_proof_records(
+                campaign_id=str(manifest.get("campaignId")),
+                run_id=run_id,
+                run_status=run_status,
+            )
+        )
+        lesson_records.extend(
+            _accepted_blocker_records(
+                campaign_id=str(manifest.get("campaignId")),
+                run_id=run_id,
+                artifacts_root=artifacts_root,
+                run_status=run_status,
+            )
+        )
 
     summary = {
         "schemaVersion": SCHEMA_VERSION,
@@ -3400,6 +3884,14 @@ def finalize_campaign(campaign_root: Path, *, heartbeat_seconds: int = DEFAULT_H
         "runs": run_reports,
     }
     _write_json(final_root / "final-summary.json", summary)
+    final_lessons_root = final_root / "lessons"
+    final_records_path = final_lessons_root / "lesson-records.jsonl"
+    _write_lesson_records(final_records_path, lesson_records)
+    lesson_cluster_paths = write_lesson_cluster_artifacts(
+        final_lessons_root,
+        records=lesson_records,
+        source_paths=[str(final_records_path)],
+    )
     compare_report = build_campaign_compare_report(campaign_root, heartbeat_seconds=heartbeat_seconds)
     _append_jsonl(
         campaign_root / "events.jsonl",
@@ -3416,5 +3908,14 @@ def finalize_campaign(campaign_root: Path, *, heartbeat_seconds: int = DEFAULT_H
         "runCounts": compare_report["runCounts"],
         "targetCounts": compare_report["targetCounts"],
     }
+    summary["lessonRecordsPath"] = str(final_records_path)
+    summary["lessonClusters"] = lesson_cluster_paths
+    cache_prune = _maybe_prune_campaign_storage(
+        campaign_root,
+        prune_workspace_lake=prune_workspace_lake,
+        prune_broken_prewarm=prune_broken_prewarm,
+    )
+    if cache_prune is not None:
+        summary["cachePrune"] = cache_prune
     _write_json(final_root / "final-summary.json", summary)
     return summary

@@ -2,31 +2,37 @@
   "id": "campaign-operator",
   "status": "active",
   "kind": "operator",
-  "summary": "Default outer owner that translates user intent into spec-driven campaigns, launches or resumes watchdog-owned runs, reads campaign overviews, and archives postmortems before reruns.",
+  "summary": "Default interactive outer owner that interprets user intent, maintains mission brief / resolved spec / operator journal, launches or resumes watchdog-owned campaigns, and closes them out with finalization or postmortem archive.",
   "reads": [
     "campaign_specs/*.json",
+    "run_specs/*.launch.json",
     "campaign-status.json",
+    "control/mission-brief.md",
     "control/owner-mode.json",
     "control/owner-lease.json",
+    "control/operator-journal.md",
     "control/orchestrator-watchdog.json",
     "reports/final/compare-report.json",
     "reports/postmortem/"
   ],
   "writes": [
+    "campaign/control/mission-brief.md",
     "campaign/control/launch-spec.resolved.json",
+    "campaign/control/operator-journal.md",
     "campaign/control/owner-mode.json",
     "campaign/run-spec output json",
     "operator-facing launch and archive commands"
   ],
   "outputs": [
+    "mission brief",
     "resolved campaign spec",
+    "operator journal",
     "watchdog launch command",
     "campaign overview",
     "postmortem archive"
   ],
   "handoff_to": [
     "orchestrator-agent",
-    "manager-agent",
     "human"
   ],
   "observability": [

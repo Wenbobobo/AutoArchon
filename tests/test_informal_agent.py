@@ -35,3 +35,11 @@ def test_require_key_prefers_environment(monkeypatch, tmp_path: Path):
     module = load_informal_agent()
 
     assert module._require_key("OPENAI_API_KEY") == "sk-test-from-env"
+
+
+def test_base_url_prefers_environment_override(monkeypatch):
+    module = load_informal_agent()
+
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.invalid/v1")
+
+    assert module._base_url("openai") == "https://example.invalid/v1"

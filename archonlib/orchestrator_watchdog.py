@@ -15,6 +15,7 @@ from typing import Any, Mapping, TextIO
 from archonlib.campaign import (
     DEFAULT_HEARTBEAT_SECONDS,
     DEFAULT_OWNER_LEASE_SECONDS,
+    build_campaign_overview,
     build_campaign_compare_report,
     claim_owner_lease,
     cleanup_stale_launch_processes,
@@ -24,6 +25,7 @@ from archonlib.campaign import (
     finalize_campaign,
     refresh_owner_lease,
     release_owner_lease,
+    write_campaign_progress_surface,
 )
 
 
@@ -761,6 +763,8 @@ def run_watchdog(
     resource_snapshot_interval_seconds: int = 60,
     owner_silence_seconds: int = 1200,
     finalize_on_terminal: bool = True,
+    prune_workspace_lake: bool = False,
+    prune_broken_prewarm: bool = False,
     owner_entrypoint: str = "autoarchon-orchestrator-watchdog",
     owner_lease_seconds: int = DEFAULT_OWNER_LEASE_SECONDS,
 ) -> dict[str, Any]:
@@ -896,6 +900,21 @@ def run_watchdog(
             "watchdogError": watchdog_error,
         }
 
+    def refresh_progress_surface() -> None:
+        try:
+            overview = build_campaign_overview(
+                campaign_root,
+                heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS,
+                refresh_status=False,
+            )
+            write_campaign_progress_surface(campaign_root, overview)
+        except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+            try:
+                with log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(f"\n[watchdog] progress surface skipped at {utc_now_iso()}: {exc}\n")
+            except OSError:
+                pass
+
     claimed, owner_lease = claim_owner_lease(
         campaign_root,
         owner_entrypoint=owner_entrypoint,
@@ -917,6 +936,7 @@ def run_watchdog(
             "finalized": False,
         }
         write_watchdog_state(state_path, {**result, "campaignSnapshot": snapshot, "updatedAt": utc_now_iso()})
+        refresh_progress_surface()
         return result
     launch_result = None
     try:
@@ -959,6 +979,7 @@ def run_watchdog(
                     updated_at=utc_now_iso(),
                 ),
             )
+            refresh_progress_surface()
 
             if launch_result.process.poll() is not None:
                 _stop_output_mirror(launch_result)
@@ -1193,11 +1214,25 @@ def run_watchdog(
                     last_compare_report_at = _refresh_compare_report(campaign_root, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS)
 
             if is_campaign_terminal(status):
+                if launch_result is not None:
+                    _cleanup_stale_launchers_best_effort(
+                        campaign_root=campaign_root,
+                        log_handle=launch_result.log_handle,
+                        output_state=launch_result.output_state,
+                        heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS,
+                    )
                 watchdog_status = "terminal"
                 break
 
         if finalize_on_terminal and is_campaign_terminal(status):
-            finalize_campaign(campaign_root)
+            if prune_workspace_lake or prune_broken_prewarm:
+                finalize_campaign(
+                    campaign_root,
+                    prune_workspace_lake=prune_workspace_lake,
+                    prune_broken_prewarm=prune_broken_prewarm,
+                )
+            else:
+                finalize_campaign(campaign_root)
             status = collect_campaign_status(campaign_root)
             snapshot = watchdog_campaign_snapshot(status)
             last_compare_report_at = utc_now_iso()
@@ -1254,4 +1289,5 @@ def run_watchdog(
     if watchdog_error is not None:
         result["watchdogError"] = watchdog_error
     write_watchdog_state(state_path, {**result, "campaignSnapshot": snapshot, "updatedAt": utc_now_iso()})
+    refresh_progress_surface()
     return result

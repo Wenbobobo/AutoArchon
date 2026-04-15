@@ -1,5 +1,13 @@
 # Runbook
 
+## Interactive Operator Checklist
+
+1. Create or verify `control/mission-brief.md`.
+2. Create or verify `control/launch-spec.resolved.json`.
+3. Append the starting decision to `control/operator-journal.md`.
+4. Only then launch or resume the watchdog.
+5. After every recovery, archive, or finalize action, append another journal block.
+
 ## Create A Campaign
 
 Generate stable run specs:

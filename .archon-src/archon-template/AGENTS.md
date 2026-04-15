@@ -10,6 +10,8 @@ Project-local state under `.archon/` takes precedence over global Archon source 
 
 - Structured agent contracts live under `.archon/agents/`
 - Lean references and helper scripts live under `.archon/lean4/`
+- Canonical runtime policy lives in `.archon/runtime-config.toml`
+- The helper-prover wrapper lives at `.archon/tools/archon-helper-prover-agent.py`
 - The informal reasoning tool lives at `.archon/tools/archon-informal-agent.py`
 - Lean LSP MCP is expected to be configured as `archon-lean-lsp`
 

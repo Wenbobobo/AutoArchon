@@ -1,0 +1,34 @@
+{
+  "id": "helper-prover-agent",
+  "status": "proposed",
+  "kind": "helper",
+  "summary": "Optional bounded helper that proposes lemmas, tactics, or informal proof sketches through a provider-configured side model without owning final file acceptance.",
+  "reads": [
+    "workspace/.archon/runtime-config.toml",
+    "workspace/.archon/RUN_SCOPE.md",
+    "workspace/.archon/task_results/",
+    "workspace/.archon/validation/",
+    "agents/informal-agent.json"
+  ],
+  "writes": [
+    "workspace/.archon/informal/helper/"
+  ],
+  "outputs": [
+    "lemma suggestions",
+    "tactic sketches",
+    "fallback proof ideas"
+  ],
+  "handoff_to": [
+    "supervisor-agent",
+    "prover-agent",
+    "human"
+  ],
+  "observability": [
+    "provider",
+    "model",
+    "retryCount",
+    "timeoutSeconds",
+    "artifactPath",
+    "noteCount"
+  ]
+}

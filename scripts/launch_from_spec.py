@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from archonlib.campaign import create_campaign, ensure_campaign_control_root, plan_campaign_shards, refresh_campaign_launch_assets
+from archonlib.operator_surfaces import ensure_operator_surfaces
 
 
 WATCHDOG_ENV_OVERRIDES = {
@@ -34,6 +35,8 @@ WATCHDOG_ENV_OVERRIDES = {
     "providerCooldownStepSeconds": "PROVIDER_COOLDOWN_STEP_SECONDS",
     "providerCooldownMaxSeconds": "PROVIDER_COOLDOWN_MAX_SECONDS",
     "resourceSnapshotIntervalSeconds": "RESOURCE_SNAPSHOT_INTERVAL_SECONDS",
+    "pruneWorkspaceLake": "PRUNE_WORKSPACE_LAKE",
+    "pruneBrokenPrewarm": "PRUNE_BROKEN_PREWARM",
 }
 
 
@@ -100,6 +103,18 @@ def _as_int(value: object, *, field: str) -> int:
         except ValueError as exc:
             raise ValueError(f"{field} must be an integer") from exc
     raise ValueError(f"{field} must be an integer")
+
+
+def _as_bool(value: object, *, field: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise ValueError(f"{field} must be a boolean")
 
 
 def _coalesce_config_value(*values: object) -> object:
@@ -316,8 +331,13 @@ def _build_watchdog_command(campaign_root: Path, spec: dict[str, Any]) -> tuple[
         ),
         ]
     )
-    if watchdog.get("finalizeOnTerminal") is False:
+    finalize_on_terminal = _as_bool(watchdog.get("finalizeOnTerminal"), field="watchdog.finalizeOnTerminal") if watchdog.get("finalizeOnTerminal") is not None else True
+    if not finalize_on_terminal:
         command.append("--no-finalize")
+    if _as_bool(watchdog.get("pruneWorkspaceLake"), field="watchdog.pruneWorkspaceLake") if watchdog.get("pruneWorkspaceLake") is not None else False:
+        command.append("--prune-workspace-lake")
+    if _as_bool(watchdog.get("pruneBrokenPrewarm"), field="watchdog.pruneBrokenPrewarm") if watchdog.get("pruneBrokenPrewarm") is not None else False:
+        command.append("--prune-broken-prewarm")
 
     child_env = os.environ.copy()
     extra_env = spec.get("environment", {})
@@ -466,6 +486,17 @@ def main() -> int:
         )
         resolved_spec_path = control_root / "launch-spec.resolved.json"
         resolved_spec_path.write_text(json.dumps(spec, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        operator_surfaces = ensure_operator_surfaces(
+            campaign_root,
+            source_root=source_root,
+            spec_reference=str(spec_file),
+            resolved_spec=spec,
+            mode="scripted_launch",
+            entrypoint="autoarchon-launch-from-spec",
+            note="Resolved launch spec written and watchdog launch prepared from scripted entrypoint.",
+        )
+    else:
+        operator_surfaces = None
 
     watchdog_payload = {"status": "disabled", "command": None}
     if watchdog_enabled:
@@ -483,6 +514,7 @@ def main() -> int:
         "refreshedRuns": refreshed_runs,
         "dryRun": args.dry_run,
         "resolvedSpecPath": str(resolved_spec_path),
+        "operatorSurfaces": operator_surfaces,
         "watchdog": watchdog_payload,
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
