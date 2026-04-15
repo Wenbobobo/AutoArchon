@@ -321,6 +321,18 @@ uv run --directory /path/to/AutoArchon autoarchon-materialize-problem-pack \
 
 That command writes a self-contained Lean root with `lakefile.lean`, `lean-toolchain`, per-problem `.lean` files, `QUESTIONS.md`, and `problem-pack.json`. You can then point `autoarchon-init-campaign-spec` or `autoarchon-init-operator-intake` at that generated source root exactly like any other non-benchmark formalization project.
 
+If your upstream source is a markdown question table such as `Questions.md` from an open-problem note pack, materialize a declaration-free Lean source root instead:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-materialize-markdown-problem-pack \
+  --questions-markdown /path/to/benchmarks/Open-problem/motivic-flag-maps/Questions.md \
+  --output-root /path/to/benchmarks/Open-problem-generated/motivic-flag-maps-q1 \
+  --problem-id 1 \
+  --force
+```
+
+This writes comment-only `.lean` files with no declarations yet. That is intentional: the generated project enters `autoformalize` stage truthfully, so the run starts by formalizing a declaration from the informal question instead of pretending a theorem statement already exists.
+
 That template enables route reuse by default:
 
 ```json

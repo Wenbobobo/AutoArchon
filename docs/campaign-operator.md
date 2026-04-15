@@ -274,6 +274,18 @@ uv run --directory /path/to/AutoArchon autoarchon-materialize-problem-pack \
 
 Then treat `/path/to/benchmarks/Natural-language/fatex-natural-smoke` as the `Source root` for the operator or the `--source-subdir` target under a shared source-roots directory.
 
+If the upstream source is a markdown question table from an open-problem note pack, materialize a declaration-free Lean source root first:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-materialize-markdown-problem-pack \
+  --questions-markdown /path/to/benchmarks/Open-problem/motivic-flag-maps/Questions.md \
+  --output-root /path/to/benchmarks/Open-problem-generated/motivic-flag-maps-q1 \
+  --problem-id 1 \
+  --force
+```
+
+The generated `.lean` files contain comments only and no declarations, so `detect_stage(...)` resolves them to `autoformalize`. This is the honest bridge for note packs that do not yet have formal theorem statements. After materialization, you can use the normal `open-problem-default.json` template or direct operator intake against that generated source root.
+
 For experience-reuse campaigns, the resolved spec can also carry:
 
 ```json

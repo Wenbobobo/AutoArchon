@@ -94,6 +94,23 @@ def test_build_task_pending_markdown_matches_objectives(tmp_path: Path):
     assert "`FATEM/2.lean` — `t2` at line 2; 1 sorry remains." in markdown
 
 
+def test_build_task_pending_markdown_for_autoformalize_file_avoids_fake_sorry(tmp_path: Path):
+    write(tmp_path / "lakefile.lean", "import Lake\n")
+    write(
+        tmp_path / "Open/1.lean",
+        "import Mathlib\n\n/-!\nInformal objective only.\n-/\n",
+    )
+
+    objectives = build_objectives(tmp_path, stage="autoformalize")
+    markdown = build_task_pending_markdown(objectives)
+
+    assert "`Open/1.lean`" in markdown
+    assert "lakefile.lean" not in markdown
+    assert "formalize the first Lean declaration from the informal objective." in markdown
+    assert "sorry remains" not in markdown
+    assert "remaining declaration" not in markdown
+
+
 def test_build_task_done_markdown_defaults_to_empty_scope():
     markdown = build_task_done_markdown()
 

@@ -27,6 +27,8 @@ def iter_lean_files(project_path: Path) -> list[Path]:
     for path in project_path.rglob("*.lean"):
         if any(part in {".archon", ".lake", "lake-packages"} for part in path.parts):
             continue
+        if path.name == "lakefile.lean":
+            continue
         files.append(path)
     return sorted(files, key=natural_key)
 
@@ -40,12 +42,23 @@ class Objective:
     rel_path: str
     theorem_name: str
     line_no: int
+    needs_formalization: bool = False
 
     def to_markdown(self, index: int) -> str:
+        if self.needs_formalization:
+            return (
+                f"{index}. **{self.rel_path}** — "
+                "Formalize the first Lean declaration from the informal objective."
+            )
         theorem = f"`{self.theorem_name}`" if self.theorem_name else "the remaining declaration"
         return f"{index}. **{self.rel_path}** — Fill the remaining sorry in {theorem} (line {self.line_no})."
 
     def to_task_markdown(self) -> str:
+        if self.needs_formalization:
+            return (
+                f"- `{self.rel_path}` — "
+                "formalize the first Lean declaration from the informal objective."
+            )
         theorem = f"`{self.theorem_name}`" if self.theorem_name else "the remaining declaration"
         return f"- `{self.rel_path}` — {theorem} at line {self.line_no}; 1 sorry remains."
 
@@ -72,6 +85,7 @@ def detect_stage(project_path: Path) -> str:
 
 def objective_for_file(project_path: Path, file_path: Path) -> Objective:
     text = file_path.read_text(encoding="utf-8", errors="replace")
+    has_decl = bool(DECL_RE.search(text))
     match = THEOREM_RE.search(text)
     theorem_name = match.group(2) if match else ""
     line_no = 1
@@ -83,6 +97,7 @@ def objective_for_file(project_path: Path, file_path: Path) -> Objective:
         rel_path=str(file_path.relative_to(project_path)),
         theorem_name=theorem_name,
         line_no=line_no,
+        needs_formalization=not has_decl,
     )
 
 
