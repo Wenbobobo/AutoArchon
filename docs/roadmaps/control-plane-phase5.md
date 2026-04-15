@@ -72,7 +72,8 @@ This roadmap records the remaining high-ROI work after the control-plane hardeni
   - prompt quality, trigger heuristics, and note-routing policy can go further even though provider fallback is now present
 - historical blocker/proof route reuse is still reactive rather than proactive
   - `autoarchon-supervised-cycle --preload-historical-routes` now gives an opt-in proactive preload path for experience-reuse runs
-  - the remaining gap is policy integration: benchmark-faithful templates should stay off, while non-benchmark campaigns still need a cleaner operator-level way to opt in
+  - campaign creation, launch specs, generated teacher prompts, and launch assets can now carry the same `preloadHistoricalRoutes` setting
+  - benchmark-faithful templates still keep this off by default
 - benchmark clone retention is now observable, but not deduplicated
   - we still do not have a canonical shared-build strategy across multiple benchmark clones that use the same toolchain/mathlib graph
 
@@ -92,7 +93,7 @@ This roadmap records the remaining high-ROI work after the control-plane hardeni
 ## Next High-ROI Follow-Ups
 
 1. preload historical accepted blocker/proof routes into fresh relaunches before the next planner pass
-   - the opt-in supervisor path now exists; the next step is deciding where the campaign operator or templates should surface it without contaminating benchmark-faithful runs
+   - the opt-in supervisor and campaign/spec surfaces now exist; the next step is deciding whether any non-benchmark templates should adopt it by default
 2. deepen helper-prover prompt policy above the now-stable transport layer
    - focus on bounded invocation heuristics, note routing, and optional external provider mixes such as Gemini or DeepSeek through the existing OpenAI-compatible surface
 3. add a richer operator-facing dashboard without weakening the file-backed source of truth

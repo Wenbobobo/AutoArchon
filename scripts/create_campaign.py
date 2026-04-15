@@ -36,6 +36,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--plan-timeout-seconds", type=int, default=180, help="Default supervised plan timeout")
     parser.add_argument("--prover-timeout-seconds", type=int, default=240, help="Default supervised prover timeout")
     parser.add_argument("--prover-idle-seconds", type=int, default=90, help="Default supervisor idle cutoff")
+    parser.add_argument(
+        "--preload-historical-routes",
+        action="store_true",
+        help="Preload accepted routes from finalized sibling campaigns into each teacher workspace. Not benchmark-faithful.",
+    )
     return parser.parse_args()
 
 
@@ -70,6 +75,7 @@ def main() -> int:
         plan_timeout_seconds=args.plan_timeout_seconds,
         prover_timeout_seconds=args.prover_timeout_seconds,
         prover_idle_seconds=args.prover_idle_seconds,
+        preload_historical_routes=args.preload_historical_routes,
     )
     print(json.dumps(manifest, indent=2, sort_keys=True))
     return 0

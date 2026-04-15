@@ -512,11 +512,10 @@ def _build_teacher_prompt(
     plan_timeout_seconds: int,
     prover_timeout_seconds: int,
     prover_idle_seconds: int,
+    preload_historical_routes: bool,
 ) -> str:
     bootstrap_state_path = run_root / "control" / "bootstrap-state.json"
-    supervised_cycle_cmd = _uv_run_rendered(
-        archon_root,
-        "autoarchon-supervised-cycle",
+    supervised_cycle_args = [
         "--workspace",
         str(workspace_root),
         "--source",
@@ -534,6 +533,13 @@ def _build_teacher_prompt(
         "--prover-idle-seconds",
         str(prover_idle_seconds),
         "--no-review",
+    ]
+    if preload_historical_routes:
+        supervised_cycle_args.append("--preload-historical-routes")
+    supervised_cycle_cmd = _uv_run_rendered(
+        archon_root,
+        "autoarchon-supervised-cycle",
+        *supervised_cycle_args,
     )
     export_cmd = _uv_run_rendered(
         archon_root,
@@ -556,6 +562,12 @@ def _build_teacher_prompt(
             "- supervise repeated plan/prover cycles until the scoped objectives are solved, or a blocker is validated, or an external stop condition is hit",
             f"- read {bootstrap_state_path} first; if it says `freshRun = true`, do one source/workspace fidelity check and launch a supervised cycle instead of spending turns rediscovering missing notes or leases",
             f"- prefer {supervised_cycle_cmd}",
+            (
+                "- historical accepted routes are preloaded for this run; use them as bounded experience-reuse hints, "
+                "not as proof of benchmark-faithful freshness"
+            )
+            if preload_historical_routes
+            else "- historical route preloading is disabled for this run unless the operator explicitly enabled it",
             f"- use model `{teacher_model}` with reasoning effort `{teacher_reasoning_effort}`",
             f"- export milestone artifacts with {export_cmd}",
             "",
@@ -639,6 +651,7 @@ def _build_launch_script(
     scope_hint: str | None,
     allowed_files: list[str],
     prompt_path: Path,
+    preload_historical_routes: bool,
 ) -> str:
     archon_rendered = shlex.quote(str(archon_root))
     workspace_rendered = shlex.quote(str(workspace_root))
@@ -804,6 +817,11 @@ def _build_launch_script(
             "",
             'export ARCHON_CODEX_READY_RETRIES="${ARCHON_CODEX_READY_RETRIES:-6}"',
             'export ARCHON_CODEX_READY_RETRY_DELAY_SECONDS="${ARCHON_CODEX_READY_RETRY_DELAY_SECONDS:-10}"',
+            (
+                'export ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES="${ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES:-1}"'
+                if preload_historical_routes
+                else 'export ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES="${ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES:-0}"'
+            ),
             'cd "${ARCHON_ROOT}"',
             "if codex exec \\",
             "  --skip-git-repo-check \\",
@@ -2563,6 +2581,7 @@ def _build_bootstrap_state(
     objective_limit: int,
     allowed_files: list[str],
     prewarm_required: bool,
+    preload_historical_routes: bool,
 ) -> dict[str, Any]:
     expected_first_action = "verify source/workspace fidelity once, then run a single supervised cycle"
     initial_state_summary = "fresh isolated run; no supervisor lease, task results, validation, or iteration logs yet"
@@ -2576,6 +2595,7 @@ def _build_bootstrap_state(
         "objectiveLimit": objective_limit,
         "expectedFirstAction": expected_first_action,
         "prewarmRequired": prewarm_required,
+        "preloadHistoricalRoutes": preload_historical_routes,
         "initialStateSummary": initial_state_summary,
         "createdAt": _utc_now(),
     }
@@ -2594,6 +2614,7 @@ def create_campaign(
     plan_timeout_seconds: int = 180,
     prover_timeout_seconds: int = 240,
     prover_idle_seconds: int = 90,
+    preload_historical_routes: bool = False,
 ) -> dict[str, Any]:
     archon_root = archon_root.resolve()
     source_root = source_root.resolve()
@@ -2622,6 +2643,7 @@ def create_campaign(
             "sourceRoot": str(source_root),
             "teacherModel": teacher_model,
             "teacherReasoningEffort": teacher_reasoning_effort,
+            "preloadHistoricalRoutes": preload_historical_routes,
         },
         mode="campaign_bootstrap",
         entrypoint="autoarchon-create-campaign",
@@ -2656,6 +2678,7 @@ def create_campaign(
             plan_timeout_seconds=plan_timeout_seconds,
             prover_timeout_seconds=prover_timeout_seconds,
             prover_idle_seconds=prover_idle_seconds,
+            preload_historical_routes=preload_historical_routes,
         )
         _write_text(prompt_path, prompt_text)
         _write_json(
@@ -2665,6 +2688,7 @@ def create_campaign(
                 objective_limit=spec["objectiveLimit"],
                 allowed_files=spec["allowedFiles"],
                 prewarm_required=not bool(run_manifest.get("projectBuildReused")),
+                preload_historical_routes=preload_historical_routes,
             ),
         )
         _write_text(
@@ -2681,6 +2705,7 @@ def create_campaign(
                 scope_hint=spec["scopeHint"],
                 allowed_files=spec["allowedFiles"],
                 prompt_path=prompt_path,
+                preload_historical_routes=preload_historical_routes,
             ),
         )
         launch_path.chmod(0o755)
@@ -2698,6 +2723,7 @@ def create_campaign(
             "controlRoot": _relative(control_root, start=campaign_root),
             "teacherPrompt": _relative(prompt_path, start=campaign_root),
             "teacherLaunchScript": _relative(launch_path, start=campaign_root),
+            "preloadHistoricalRoutes": preload_historical_routes,
         }
         _write_json(control_root / "run-config.json", {"schemaVersion": SCHEMA_VERSION, **run_payload})
         manifest_runs.append(run_payload)
@@ -2730,6 +2756,7 @@ def create_campaign(
             "planTimeoutSeconds": plan_timeout_seconds,
             "proverTimeoutSeconds": prover_timeout_seconds,
             "proverIdleSeconds": prover_idle_seconds,
+            "preloadHistoricalRoutes": preload_historical_routes,
         },
         "runs": manifest_runs,
     }
@@ -2784,6 +2811,7 @@ def refresh_campaign_launch_assets(
     plan_timeout_seconds = 180
     prover_timeout_seconds = 240
     prover_idle_seconds = 90
+    preload_historical_routes = False
     if isinstance(teacher_defaults, Mapping):
         if isinstance(teacher_defaults.get("model"), str) and teacher_defaults.get("model"):
             teacher_model = str(teacher_defaults["model"])
@@ -2798,6 +2826,8 @@ def refresh_campaign_launch_assets(
             prover_timeout_seconds = int(teacher_defaults["proverTimeoutSeconds"])
         if isinstance(teacher_defaults.get("proverIdleSeconds"), int):
             prover_idle_seconds = int(teacher_defaults["proverIdleSeconds"])
+        if isinstance(teacher_defaults.get("preloadHistoricalRoutes"), bool):
+            preload_historical_routes = bool(teacher_defaults["preloadHistoricalRoutes"])
 
     selected_run_ids = set(run_ids or [])
     runs = manifest.get("runs")
@@ -2837,6 +2867,7 @@ def refresh_campaign_launch_assets(
                     plan_timeout_seconds=plan_timeout_seconds,
                     prover_timeout_seconds=prover_timeout_seconds,
                     prover_idle_seconds=prover_idle_seconds,
+                    preload_historical_routes=preload_historical_routes,
                 ),
             )
 
@@ -2854,6 +2885,7 @@ def refresh_campaign_launch_assets(
                 scope_hint=str(run["scopeHint"]) if isinstance(run.get("scopeHint"), str) else None,
                 allowed_files=allowed_files,
                 prompt_path=prompt_path,
+                preload_historical_routes=preload_historical_routes,
             ),
         )
         launch_path.chmod(0o755)

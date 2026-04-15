@@ -172,6 +172,16 @@ uv run --directory /path/to/AutoArchon autoarchon-launch-from-spec \
   --spec-file /path/to/runs/campaigns/_run_specs/20260414-nightly-fate-m-full.launch.json
 ```
 
+For experience-reuse campaigns, the resolved spec may also set:
+
+```json
+{
+  "preloadHistoricalRoutes": true
+}
+```
+
+That enables `--preload-historical-routes` in generated teacher assets. Keep it off for benchmark-faithful runs.
+
 For the bundled nightly three-campaign shortcut:
 
 ```bash

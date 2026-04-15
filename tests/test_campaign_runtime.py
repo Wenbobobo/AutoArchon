@@ -834,6 +834,7 @@ def test_create_campaign_builds_isolated_runs_and_teacher_launch_assets(tmp_path
     bootstrap_payload = json.loads((run_root / "control" / "bootstrap-state.json").read_text(encoding="utf-8"))
     assert bootstrap_payload["allowedFiles"] == ["FATEM/1.lean"]
     assert bootstrap_payload["prewarmRequired"] is True
+    assert bootstrap_payload["preloadHistoricalRoutes"] is False
     prompt = (run_root / "control" / "teacher-prompt.txt").read_text(encoding="utf-8")
     launch_script = (run_root / "control" / "launch-teacher.sh").read_text(encoding="utf-8")
     assert "Use $archon-supervisor" in prompt
@@ -841,6 +842,7 @@ def test_create_campaign_builds_isolated_runs_and_teacher_launch_assets(tmp_path
     assert "Bootstrap state:" in prompt
     assert "freshRun = true" in prompt
     assert "autoarchon-supervised-cycle" in prompt
+    assert "--preload-historical-routes" not in prompt
     assert "--tail-scope-objective-threshold 4" in prompt
     assert "--tail-scope-plan-timeout-seconds 300" in prompt
     assert "--tail-scope-prover-timeout-seconds 360" in prompt
@@ -850,7 +852,33 @@ def test_create_campaign_builds_isolated_runs_and_teacher_launch_assets(tmp_path
     assert "teacher-launch-state.json" in launch_script
     assert "autoarchon-prewarm-project" in launch_script
     assert "prewarm.stdout.log" in launch_script
+    assert 'ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES="${ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES:-0}"' in launch_script
     assert "teacher_launch_completed" in launch_script
+
+
+def test_create_campaign_can_enable_historical_route_preload(tmp_path: Path):
+    source = make_source_project(tmp_path, file_count=1)
+    campaign_root = tmp_path / "campaign"
+    manifest = create_campaign(
+        archon_root=ROOT,
+        source_root=source,
+        campaign_root=campaign_root,
+        run_specs=[
+            {"id": "teacher-a", "objective_regex": "^FATEM/1\\.lean$", "objective_limit": 1, "scope_hint": "FATEM/1.lean"},
+        ],
+        preload_historical_routes=True,
+    )
+
+    assert manifest["teacherDefaults"]["preloadHistoricalRoutes"] is True
+    assert manifest["runs"][0]["preloadHistoricalRoutes"] is True
+    run_root = campaign_root / "runs" / "teacher-a"
+    bootstrap_payload = json.loads((run_root / "control" / "bootstrap-state.json").read_text(encoding="utf-8"))
+    assert bootstrap_payload["preloadHistoricalRoutes"] is True
+    prompt = (run_root / "control" / "teacher-prompt.txt").read_text(encoding="utf-8")
+    launch_script = (run_root / "control" / "launch-teacher.sh").read_text(encoding="utf-8")
+    assert "--preload-historical-routes" in prompt
+    assert "historical accepted routes are preloaded for this run" in prompt
+    assert 'ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES="${ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES:-1}"' in launch_script
 
 
 def test_create_campaign_marks_bootstrap_prewarm_optional_when_matching_build_is_reused(tmp_path: Path):
@@ -2687,6 +2715,66 @@ def test_launch_from_spec_cli_bootstraps_campaign_and_starts_watchdog(tmp_path: 
     assert "--prune-workspace-lake" in rendered_watchdog_command
     assert "--prune-broken-prewarm" in rendered_watchdog_command
     assert "--campaign-root" in watchdog_log.read_text(encoding="utf-8")
+
+
+def test_launch_from_spec_can_enable_historical_route_preload_in_campaign_assets(tmp_path: Path):
+    source = make_source_project(tmp_path, file_count=1)
+    campaign_root = tmp_path / "campaign"
+    run_spec_output = tmp_path / "run-specs" / "campaign.json"
+    spec_path = tmp_path / "campaign-spec.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "sourceRoot": str(source),
+                "campaignRoot": str(campaign_root),
+                "reuseLakeFrom": str(source),
+                "runSpecOutput": str(run_spec_output),
+                "teacherModel": "teacher-model",
+                "teacherReasoningEffort": "medium",
+                "preloadHistoricalRoutes": True,
+                "planShards": {
+                    "runIdPrefix": "teacher-preload",
+                    "runIdMode": "index",
+                    "matchRegex": r"^FATEM/1\.lean$",
+                    "shardSize": 1,
+                },
+                "watchdog": {
+                    "enabled": False,
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(LAUNCH_FROM_SPEC),
+            "--spec-file",
+            str(spec_path),
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["campaignCreated"] is True
+    manifest = json.loads((campaign_root / "CAMPAIGN_MANIFEST.json").read_text(encoding="utf-8"))
+    assert manifest["teacherDefaults"]["preloadHistoricalRoutes"] is True
+    run_root = campaign_root / "runs" / "teacher-preload-001"
+    prompt = (run_root / "control" / "teacher-prompt.txt").read_text(encoding="utf-8")
+    launch_script = (run_root / "control" / "launch-teacher.sh").read_text(encoding="utf-8")
+    bootstrap_payload = json.loads((run_root / "control" / "bootstrap-state.json").read_text(encoding="utf-8"))
+    resolved_spec = json.loads((campaign_root / "control" / "launch-spec.resolved.json").read_text(encoding="utf-8"))
+    assert bootstrap_payload["preloadHistoricalRoutes"] is True
+    assert "--preload-historical-routes" in prompt
+    assert 'ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES="${ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES:-1}"' in launch_script
+    assert resolved_spec["preloadHistoricalRoutes"] is True
 
 
 def test_launch_from_spec_cli_dry_run_does_not_write_campaign_or_mutate_spec(tmp_path: Path):

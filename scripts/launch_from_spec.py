@@ -460,6 +460,7 @@ def main() -> int:
                 plan_timeout_seconds=_as_int(spec.get("planTimeoutSeconds") or 180, field="planTimeoutSeconds"),
                 prover_timeout_seconds=_as_int(spec.get("proverTimeoutSeconds") or 240, field="proverTimeoutSeconds"),
                 prover_idle_seconds=_as_int(spec.get("proverIdleSeconds") or 90, field="proverIdleSeconds"),
+                preload_historical_routes=bool(spec.get("preloadHistoricalRoutes")),
             )
             created = True
         elif refresh_requested:
