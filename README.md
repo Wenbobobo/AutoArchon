@@ -150,6 +150,12 @@ The optional web UI is still useful for deep inspection of one run:
 bash ui/start.sh --project /path/to/run-root/workspace
 ```
 
+For a single run without the campaign layer:
+
+```bash
+bash scripts/watch_run.sh /path/to/run-root/workspace
+```
+
 ## Shortcut: Scripted Start
 
 If you already know the exact scope and just want a reproducible shortcut, keep using the spec path.
@@ -174,7 +180,20 @@ uv run --directory /path/to/AutoArchon autoarchon-launch-from-spec \
   --spec-file /path/to/runs/campaigns/_run_specs/20260414-nightly-fate-m-full.launch.json
 ```
 
-For experience-reuse campaigns, the resolved spec may also set:
+For formalization or open-problem style runs, use the generic source-root flag and the non-benchmark template:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-init-campaign-spec \
+  --template /path/to/AutoArchon/campaign_specs/formalization-default.json \
+  --source-roots-root /path/to/source-roots \
+  --campaigns-root /path/to/runs/campaigns \
+  --run-specs-root /path/to/runs/campaigns/_run_specs \
+  --date-tag 20260414-open \
+  --model gpt-5.4 \
+  --reasoning-effort xhigh
+```
+
+That template enables route reuse by default:
 
 ```json
 {
@@ -182,7 +201,8 @@ For experience-reuse campaigns, the resolved spec may also set:
 }
 ```
 
-That enables `--preload-historical-routes` in generated teacher assets. Keep it off for benchmark-faithful runs.
+`preloadHistoricalRoutes` enables `--preload-historical-routes` in generated teacher assets, which seeds accepted proof and blocker routes from older finalized campaigns into the new run. This is useful for non benchmark-faithful formalization, open-problem exploration, and repeated engineering campaigns because the system starts from its own validated prior knowledge instead of a cold start.
+Keep it off for benchmark-faithful evaluation runs, because it intentionally reuses prior accepted `.archon` knowledge and therefore changes the measurement boundary.
 
 For the bundled nightly three-campaign shortcut:
 
@@ -225,7 +245,7 @@ In the exact-route tail-scope case, those files now tell you whether the planner
 - `planFastPathReason = "known_routes"`
 - live `phase`, `planStatus`, `proverStatus`, and active prover rows under `liveRuntime`
 
-## Optional Helper Provider
+## Helper Config
 
 Each initialized workspace now gets:
 
@@ -233,14 +253,26 @@ Each initialized workspace now gets:
 - `.archon/tools/archon-helper-prover-agent.py`
 - `.archon/tools/archon-informal-agent.py`
 
-`runtime-config.toml` is the canonical runtime policy file. The helper is disabled by default. To enable it during `init.sh`, set environment such as:
+`runtime-config.toml` is the canonical runtime policy file. The easiest path is to seed it from env before `init.sh`:
 
 ```bash
-export ARCHON_HELPER_PROVIDER=openai
-export ARCHON_HELPER_MODEL=gpt-5.4
+cp /path/to/AutoArchon/examples/helper.env.example /tmp/autoarchon-helper.env
+$EDITOR /tmp/autoarchon-helper.env
+source /tmp/autoarchon-helper.env
+./init.sh /path/to/lean-project
 ```
 
-The generated file includes helper policy for both the `plan` and `prover` phases, plus observability toggles such as `write_progress_surface`.
+The example env uses:
+
+```bash
+ARCHON_HELPER_ENABLE=1
+ARCHON_HELPER_PROVIDER=openai
+ARCHON_HELPER_MODEL=gpt-5.4
+ARCHON_HELPER_API_KEY_ENV=OPENAI_API_KEY
+ARCHON_HELPER_BASE_URL_ENV=OPENAI_BASE_URL
+```
+
+`init.sh` writes those values into `.archon/runtime-config.toml`, which then becomes the durable per-workspace config surface. The generated file includes helper policy for both the `plan` and `prover` phases, note-reuse heuristics, and observability toggles such as `write_progress_surface`.
 
 OpenAI-compatible providers such as DeepSeek should still use `provider = "openai"` in `.archon/runtime-config.toml`, then point `api_key_env` and `base_url_env` at the compatible endpoint. Legacy `.archon/helper-provider.json` is still accepted as a fallback, but new workspaces should use the TOML file.
 
@@ -274,6 +306,7 @@ When the helper is enabled, use phase-aware auto note routing rather than ad hoc
 ```
 
 Use `--phase plan` for planner-side calls. `--prompt-pack auto` selects a task-class template from the phase and reason, so repeated failures, external-reference gaps, missing infrastructure, and LSP timeouts do not all hit the side model with the same generic wording. In `auto` note mode the wrapper writes a metadata-backed Markdown note into the configured `notes_dir` for that phase. Passing an explicit `--write-note /path/to/file.md` still works and keeps the old bare-text compatibility path.
+By default, repeated calls with the same `phase + file + reason` will reuse the newest matching helper note instead of paying for the same side-model query again. Use `--force-fresh-call` only after the context has materially changed.
 
 ## Where Proofs and Lessons End Up
 

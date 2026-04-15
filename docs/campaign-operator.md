@@ -154,7 +154,20 @@ uv run --directory /path/to/AutoArchon autoarchon-launch-from-spec \
   --spec-file /path/to/runs/campaigns/_run_specs/20260414-nightly-fate-m-full.launch.json
 ```
 
-For non-benchmark experience-reuse campaigns, the resolved spec can also carry:
+For non-benchmark formalization or open-problem campaigns, prefer the generic template:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-init-campaign-spec \
+  --template /path/to/AutoArchon/campaign_specs/formalization-default.json \
+  --source-roots-root /path/to/source-roots \
+  --campaigns-root /path/to/runs/campaigns \
+  --run-specs-root /path/to/runs/campaigns/_run_specs \
+  --date-tag 20260414-open \
+  --model gpt-5.4 \
+  --reasoning-effort xhigh
+```
+
+For experience-reuse campaigns, the resolved spec can also carry:
 
 ```json
 {
@@ -162,7 +175,7 @@ For non-benchmark experience-reuse campaigns, the resolved spec can also carry:
 }
 ```
 
-That makes generated teacher prompts and launch assets enable historical accepted route preloading automatically. Keep this field absent or `false` for benchmark-faithful campaigns.
+That makes generated teacher prompts and launch assets enable historical accepted route preloading automatically. Keep this field absent or `false` for benchmark-faithful campaigns. The bundled `formalization-default.json` template turns it on by default because long-horizon non benchmark work benefits from reusing the system's own accepted blocker and proof routes.
 
 Bundled nightly shortcut:
 

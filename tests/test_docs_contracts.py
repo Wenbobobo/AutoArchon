@@ -24,13 +24,17 @@ def test_readme_centers_interactive_campaign_operator_and_result_paths():
     assert "autoarchon-init-campaign-spec" in readme
     assert "Shortcut: Scripted Start" in readme
     assert "preloadHistoricalRoutes" in readme
+    assert "formalization-default.json" in readme
+    assert "--source-roots-root" in readme
     assert "bash scripts/watch_campaign.sh" in readme
+    assert "bash scripts/watch_run.sh" in readme
     assert "Control-plane commands" in readme
     assert "not the web UI" in readme
     assert "control/progress-summary.md" in readme
     assert "control/progress-summary.json" in readme
     assert "workspace/.archon/supervisor/progress-summary.md" in readme
     assert "runtime-config.toml" in readme
+    assert "examples/helper.env.example" in readme
     assert "Where Proofs and Lessons End Up" in readme
     assert "reports/final/lessons/lesson-records.jsonl" in readme
     assert "reports/postmortem/lessons/lesson-records.jsonl" in readme

@@ -32,6 +32,7 @@ class HelperPlanPolicy:
     trigger_on_missing_infrastructure: bool
     trigger_on_external_reference: bool
     trigger_on_repeated_failure: bool
+    reuse_recent_note_by_reason: bool
     notes_dir: str
 
 
@@ -42,6 +43,7 @@ class HelperProverPolicy:
     trigger_on_missing_infrastructure: bool
     trigger_on_lsp_timeout: bool
     trigger_on_first_stuck_attempt: bool
+    reuse_recent_note_by_reason: bool
     notes_dir: str
 
 
@@ -117,6 +119,7 @@ def _resolve_helper_plan_policy(payload: Mapping[str, Any] | None) -> HelperPlan
         trigger_on_missing_infrastructure=_as_bool(mapping.get("trigger_on_missing_infrastructure"), default=True),
         trigger_on_external_reference=_as_bool(mapping.get("trigger_on_external_reference"), default=True),
         trigger_on_repeated_failure=_as_bool(mapping.get("trigger_on_repeated_failure"), default=True),
+        reuse_recent_note_by_reason=_as_bool(mapping.get("reuse_recent_note_by_reason"), default=True),
         notes_dir=_as_str(mapping.get("notes_dir"), default=".archon/informal/helper"),
     )
 
@@ -129,6 +132,7 @@ def _resolve_helper_prover_policy(payload: Mapping[str, Any] | None) -> HelperPr
         trigger_on_missing_infrastructure=_as_bool(mapping.get("trigger_on_missing_infrastructure"), default=True),
         trigger_on_lsp_timeout=_as_bool(mapping.get("trigger_on_lsp_timeout"), default=True),
         trigger_on_first_stuck_attempt=_as_bool(mapping.get("trigger_on_first_stuck_attempt"), default=True),
+        reuse_recent_note_by_reason=_as_bool(mapping.get("reuse_recent_note_by_reason"), default=True),
         notes_dir=_as_str(mapping.get("notes_dir"), default=".archon/informal/helper"),
     )
 
@@ -242,6 +246,7 @@ def render_default_runtime_config(
         "trigger_on_missing_infrastructure = true\n"
         "trigger_on_external_reference = true\n"
         "trigger_on_repeated_failure = true\n"
+        "reuse_recent_note_by_reason = true\n"
         'notes_dir = ".archon/informal/helper"\n\n'
         "[helper.prover]\n"
         "enabled = true\n"
@@ -249,6 +254,7 @@ def render_default_runtime_config(
         "trigger_on_missing_infrastructure = true\n"
         "trigger_on_lsp_timeout = true\n"
         "trigger_on_first_stuck_attempt = true\n"
+        "reuse_recent_note_by_reason = true\n"
         'notes_dir = ".archon/informal/helper"\n\n'
         "[observability]\n"
         f"write_progress_surface = {observability_literal}\n"

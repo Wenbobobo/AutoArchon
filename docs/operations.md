@@ -98,10 +98,12 @@ tail -f /path/to/run-root/workspace/.archon/supervisor/LEDGER.md
 tail -f /path/to/run-root/workspace/.archon/supervisor/progress-summary.md
 tail -f /path/to/run-root/workspace/.archon/supervisor/violations.jsonl
 watch -n10 'ls -lt /path/to/run-root/workspace/.archon/task_results/'
+bash scripts/watch_run.sh /path/to/run-root/workspace
 ```
 
 `workspace/.archon/supervisor/progress-summary.md` and `progress-summary.json` are the lightweight single-run observability surfaces. They summarize scope completion, new task results, latest iteration, observed helper notes, helper-note phase/reason breakdowns, and task-result kind counts without opening the full campaign layer.
 During a live long-running cycle, the same files now refresh with `liveRuntime` fields such as current phase, prover status, and active prover files, so you do not need to wait for the cycle to finish before seeing whether planning or proving is still moving.
+`bash scripts/watch_run.sh /path/to/run-root/workspace` is the cheap terminal watcher over those same file-backed surfaces plus `HOT_NOTES.md` and `LEDGER.md`.
 If the supervisor detects that every remaining tail-scope objective already has a recorded exact route or prevalidated blocker route, the same surface will show:
 
 - `planFastPathApplied = true`

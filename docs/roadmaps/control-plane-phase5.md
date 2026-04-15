@@ -61,11 +61,19 @@ This roadmap records the remaining high-ROI work after the control-plane hardeni
 - added task-class helper prompt packs on top of the routed helper surface:
   - helper calls can now use `--prompt-pack auto` to select a reason-aware template from the current phase and trigger
   - the helper note metadata now records the selected prompt pack for later observability and debugging
+- added helper note-reuse heuristics on top of the prompt-pack path:
+  - repeated helper calls for the same phase/file/reason now reuse the newest matching note by default instead of re-querying the provider
+  - callers can still force a fresh helper query after a material state change
 - upgraded the campaign summary surface:
   - `control/progress-summary.*` now carries restart count, ETA, recent finalized targets, and direct final-report/export paths instead of only the coarse progress bar
 - upgraded file-backed observability beyond coarse counts:
   - run-level `progress-summary.*` now shows helper-note phase/reason/prompt-pack breakdowns plus task-result kind counts
   - campaign-level running rows now surface live phase, helper note counts, and blocker-note counts from the run summaries
+- added a cheap terminal watcher over the file-backed run surfaces:
+  - `bash scripts/watch_run.sh /path/to/run-root/workspace` now renders the run progress summary plus recent `HOT_NOTES.md` / `LEDGER.md` tails for unattended monitoring without opening the browser UI
+- clarified proactive historical-route reuse for non-benchmark work:
+  - `campaign_specs/formalization-default.json` now enables `preloadHistoricalRoutes = true` by default for non benchmark-faithful formalization and open-problem style campaigns
+  - benchmark-faithful FATE templates still keep it off by default
 - collected fresh multi-run rerun evidence on the hardened path:
   - `20260415-rerun12-fatem-42-45-94` reached a real terminal closeout with `accepted = 2`, `blocked = 1`
   - `teacher-45` and `teacher-94` exported accepted proofs, `teacher-42` exported an accepted blocker note, and `reports/final/final-summary.json` was written cleanly
@@ -77,14 +85,13 @@ This roadmap records the remaining high-ROI work after the control-plane hardeni
 
 ## Current Remaining Gaps
 
-- run-level observability still lags during long inner loops
-  - the file-backed summaries now expose live phase, helper-note breakdowns, and blocker-note counts, but a richer browser UI can still layer on top later
+- run-level observability is now good enough for the current phase through file-backed summaries plus `watch_run.sh`
+  - a richer browser UI can still layer on top later, but it is no longer a blocker for unattended operation
 - helper-prover policy is still intentionally minimal above the transport layer
-  - phase-aware note-routing and task-class prompt packs are now in place, but stronger trigger heuristics are still open
+  - phase-aware note-routing, task-class prompt packs, and same-reason note reuse are now in place, but stronger cross-iteration trigger heuristics are still open
 - historical blocker/proof route reuse is still reactive rather than proactive
-  - `autoarchon-supervised-cycle --preload-historical-routes` now gives an opt-in proactive preload path for experience-reuse runs
-  - campaign creation, launch specs, generated teacher prompts, and launch assets can now carry the same `preloadHistoricalRoutes` setting
-  - benchmark-faithful templates still keep this off by default
+  - `autoarchon-supervised-cycle --preload-historical-routes` now gives a proactive preload path for experience-reuse runs
+  - benchmark-faithful templates keep this off by default, while the generic formalization template turns it on by default
 - benchmark clone retention is now observable, but not deduplicated
   - we still do not have a canonical shared-build strategy across multiple benchmark clones that use the same toolchain/mathlib graph
 
@@ -96,8 +103,8 @@ This roadmap records the remaining high-ROI work after the control-plane hardeni
    - `20260415-prewarm-validate-fatem5` proved the wide-run planning surface selects `scoped_verify_sample`, and the sampled prewarm finished successfully on a real workspace without falling back to full-project `lake build`
 3. Helper-prover deepening without changing acceptance ownership: completed for the current phase
    - fallback transports now live in `.archon/runtime-config.toml`, helper failures can roll to the next provider, and the prover prompt now prioritizes durable `task_results` over optional cleanup
-   - phase-aware helper note routing, metadata-backed notes, effective-config policy visibility, and task-class prompt packs are now covered too
-   - stronger trigger heuristics remain next-phase quality tasks, not phase-5 blockers
+   - phase-aware helper note routing, metadata-backed notes, effective-config policy visibility, task-class prompt packs, and same-reason note reuse are now covered too
+   - stronger cross-iteration trigger heuristics remain next-phase quality tasks, not phase-5 blockers
 4. Shared-build substrate decision: completed for the current phase
    - keep one warmed benchmark clone under `benchmarks/` and reuse it via `--reuse-lake-from`
    - do not deduplicate clone `.lake` directories until a documented rehydrate workflow exists
@@ -105,11 +112,11 @@ This roadmap records the remaining high-ROI work after the control-plane hardeni
 ## Next High-ROI Follow-Ups
 
 1. preload historical accepted blocker/proof routes into fresh relaunches before the next planner pass
-   - the opt-in supervisor and campaign/spec surfaces now exist; the next step is deciding whether any non-benchmark templates should adopt it by default
+   - benchmark-faithful templates keep this opt-in off, while `formalization-default.json` now adopts it by default for non benchmark-faithful work
 2. deepen helper-prover prompt policy above the now-stable transport layer
-   - focus on bounded invocation heuristics and optional external provider mixes such as Gemini or DeepSeek through the existing OpenAI-compatible surface
+   - focus on stronger cross-iteration invocation heuristics and optional external provider mixes such as Gemini or DeepSeek through the existing OpenAI-compatible surface
 3. add a richer operator-facing dashboard without weakening the file-backed source of truth
-   - campaign and supervisor `progress-summary.*` should remain canonical even if a later web surface or TUI is added
+   - campaign and supervisor `progress-summary.*` should remain canonical even if a later richer web surface is added
 
 ## Non-Goals For This Phase
 

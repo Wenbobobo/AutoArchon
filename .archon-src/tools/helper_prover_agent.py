@@ -136,6 +136,7 @@ def _effective_config(
             "triggerOnMissingInfrastructure": runtime_config.helper_plan.trigger_on_missing_infrastructure,
             "triggerOnExternalReference": runtime_config.helper_plan.trigger_on_external_reference,
             "triggerOnRepeatedFailure": runtime_config.helper_plan.trigger_on_repeated_failure,
+            "reuseRecentNoteByReason": runtime_config.helper_plan.reuse_recent_note_by_reason,
             "notesDir": runtime_config.helper_plan.notes_dir,
         },
         "proverPolicy": {
@@ -144,6 +145,7 @@ def _effective_config(
             "triggerOnMissingInfrastructure": runtime_config.helper_prover.trigger_on_missing_infrastructure,
             "triggerOnLspTimeout": runtime_config.helper_prover.trigger_on_lsp_timeout,
             "triggerOnFirstStuckAttempt": runtime_config.helper_prover.trigger_on_first_stuck_attempt,
+            "reuseRecentNoteByReason": runtime_config.helper_prover.reuse_recent_note_by_reason,
             "notesDir": runtime_config.helper_prover.notes_dir,
         },
         "promptPack": {
@@ -186,6 +188,11 @@ def parse_args() -> argparse.Namespace:
         "--prompt-pack",
         choices=("auto",) + HELPER_PROMPT_PACKS,
         help="Optional structured helper prompt template to apply before transport",
+    )
+    parser.add_argument(
+        "--force-fresh-call",
+        action="store_true",
+        help="Bypass note reuse heuristics and force a new provider call",
     )
     parser.add_argument(
         "--write-note",
@@ -371,6 +378,74 @@ def _render_prompt_with_pack(
     return "\n".join(lines)
 
 
+def _phase_policy(runtime_config: RuntimeConfig, phase: str) -> Any:
+    return runtime_config.helper_plan if phase == "plan" else runtime_config.helper_prover
+
+
+def _parse_note_metadata(path: Path) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    text = path.read_text(encoding="utf-8", errors="replace")
+    for line in text.splitlines()[:16]:
+        if not line.startswith("- "):
+            continue
+        body = line[2:]
+        if ": `" not in body or not body.endswith("`"):
+            continue
+        raw_key, raw_value = body.split(": `", 1)
+        key = raw_key.strip().lower().replace(" ", "")
+        metadata[key] = raw_value[:-1]
+    return metadata
+
+
+def _extract_helper_output(text: str) -> str:
+    marker = "\n## Helper Output\n"
+    if marker not in text:
+        return text.rstrip()
+    return text.split(marker, 1)[1].strip()
+
+
+def _find_reusable_auto_note(
+    *,
+    workspace: Path,
+    runtime_config: RuntimeConfig,
+    phase: str | None,
+    rel_path: str | None,
+    reason: str | None,
+    prompt_pack: str | None,
+    force_fresh_call: bool,
+) -> tuple[Path, str] | None:
+    normalized_reason = _normalize_reason(reason)
+    if force_fresh_call or phase is None or rel_path is None or normalized_reason is None:
+        return None
+    policy = _phase_policy(runtime_config, phase)
+    if getattr(policy, "reuse_recent_note_by_reason", True) is not True:
+        return None
+    note_dir = workspace / _note_dir_for_phase(runtime_config, phase)
+    if not note_dir.exists():
+        return None
+
+    note_files = sorted(
+        [path for path in note_dir.rglob("*.md") if path.is_file()],
+        key=lambda path: path.stat().st_mtime if path.exists() else 0.0,
+        reverse=True,
+    )
+    for path in note_files:
+        metadata = _parse_note_metadata(path)
+        if metadata.get("phase") != phase:
+            continue
+        if metadata.get("target") != rel_path:
+            continue
+        if _normalize_reason(metadata.get("reason")) != normalized_reason:
+            continue
+        if prompt_pack is not None:
+            existing_pack = metadata.get("promptpack")
+            if existing_pack not in {None, prompt_pack}:
+                continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        return path, _extract_helper_output(text)
+    return None
+
+
 def _call_provider(
     informal_agent: Any,
     *,
@@ -534,6 +609,19 @@ def main() -> int:
         if selected_prompt_pack is not None
         else args.prompt
     )
+    reusable_note = (
+        _find_reusable_auto_note(
+            workspace=workspace,
+            runtime_config=runtime_config,
+            phase=args.phase,
+            rel_path=args.rel_path,
+            reason=args.reason,
+            prompt_pack=selected_prompt_pack,
+            force_fresh_call=args.force_fresh_call,
+        )
+        if args.write_note == "auto"
+        else None
+    )
     attempts = _attempt_chain(
         informal_agent,
         provider=provider,
@@ -547,33 +635,38 @@ def main() -> int:
     failures: list[str] = []
     response: str | None = None
     used_config: HelperProviderConfig | None = None
-    for index, attempt in enumerate(attempts):
-        try:
-            response = _call_provider(
-                informal_agent,
-                prompt=provider_prompt,
-                think=args.think,
-                config=attempt,
-            )
-            used_config = attempt
-            if index > 0:
-                sys.stderr.write(
-                    f"[archon-helper] primary provider failed; used fallback {attempt.provider}:{attempt.model}\n"
+    if reusable_note is not None:
+        note_path, response = reusable_note
+        used_config = attempts[0]
+        sys.stderr.write(f"[archon-helper] reused note {note_path}\n")
+    else:
+        for index, attempt in enumerate(attempts):
+            try:
+                response = _call_provider(
+                    informal_agent,
+                    prompt=provider_prompt,
+                    think=args.think,
+                    config=attempt,
                 )
-            break
-        except SystemExit as exc:
-            failures.append(f"{attempt.provider}:{attempt.model}: {exc}")
-            if index + 1 < len(attempts):
-                sys.stderr.write(
-                    f"[archon-helper] helper attempt failed on {attempt.provider}:{attempt.model}; trying next fallback\n"
-                )
-                continue
-            joined = "\n".join(f"- {message}" for message in failures)
-            raise SystemExit(f"Error: helper transport failed across configured providers.\n{joined}") from exc
+                used_config = attempt
+                if index > 0:
+                    sys.stderr.write(
+                        f"[archon-helper] primary provider failed; used fallback {attempt.provider}:{attempt.model}\n"
+                    )
+                break
+            except SystemExit as exc:
+                failures.append(f"{attempt.provider}:{attempt.model}: {exc}")
+                if index + 1 < len(attempts):
+                    sys.stderr.write(
+                        f"[archon-helper] helper attempt failed on {attempt.provider}:{attempt.model}; trying next fallback\n"
+                    )
+                    continue
+                joined = "\n".join(f"- {message}" for message in failures)
+                raise SystemExit(f"Error: helper transport failed across configured providers.\n{joined}") from exc
     assert response is not None
     assert used_config is not None
     if args.write_note:
-        if args.write_note == "auto":
+        if args.write_note == "auto" and reusable_note is None:
             note_path = _auto_note_path(
                 workspace=workspace,
                 runtime_config=runtime_config,
@@ -593,10 +686,11 @@ def main() -> int:
         else:
             note_path = Path(args.write_note).resolve()
             note_text = response + ("\n" if not response.endswith("\n") else "")
-        note_path.parent.mkdir(parents=True, exist_ok=True)
-        note_path.write_text(note_text, encoding="utf-8")
-        if args.write_note == "auto":
-            sys.stderr.write(f"[archon-helper] wrote note {note_path}\n")
+        if args.write_note != "auto" or reusable_note is None:
+            note_path.parent.mkdir(parents=True, exist_ok=True)
+            note_path.write_text(note_text, encoding="utf-8")
+            if args.write_note == "auto":
+                sys.stderr.write(f"[archon-helper] wrote note {note_path}\n")
     sys.stdout.write(response)
     if response and not response.endswith("\n"):
         sys.stdout.write("\n")

@@ -83,6 +83,7 @@ notes_dir = ".archon/informal/prover"
         "enabled": True,
         "maxCallsPerIteration": 3,
         "notesDir": ".archon/informal/plan",
+        "reuseRecentNoteByReason": True,
         "triggerOnExternalReference": True,
         "triggerOnMissingInfrastructure": True,
         "triggerOnRepeatedFailure": True,
@@ -91,6 +92,7 @@ notes_dir = ".archon/informal/prover"
         "enabled": True,
         "maxCallsPerSession": 4,
         "notesDir": ".archon/informal/prover",
+        "reuseRecentNoteByReason": True,
         "triggerOnFirstStuckAttempt": True,
         "triggerOnLspTimeout": True,
         "triggerOnMissingInfrastructure": True,
@@ -309,6 +311,7 @@ notes_dir = ".archon/helper/prover"
         call_openrouter=fake_call,
     )
 
+    monkeypatch.chdir(tmp_path)
     module = load_helper_tool()
     monkeypatch.setattr(module, "_load_informal_agent", lambda: fake_agent)
     monkeypatch.setattr(
@@ -385,6 +388,102 @@ notes_dir = ".archon/helper/prover"
             "Need a route that survives missing Lean LSP.",
         ]
     )
+
+
+def test_helper_tool_reuses_recent_auto_note_for_same_reason(monkeypatch, tmp_path: Path, capsys):
+    config_path = tmp_path / "runtime-config.toml"
+    config_path.write_text(
+        """
+[helper]
+enabled = true
+provider = "openai"
+model = "gpt-5.4-mini"
+api_key_env = "ALT_OPENAI_KEY"
+base_url_env = "ALT_OPENAI_BASE_URL"
+
+[helper.plan]
+notes_dir = ".archon/helper/plan"
+
+[helper.prover]
+notes_dir = ".archon/helper/prover"
+reuse_recent_note_by_reason = true
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    note_path = tmp_path / ".archon" / "helper" / "prover" / "FATEM_42.lean__prover__lsp_timeout__20260415T030405Z.md"
+    note_path.parent.mkdir(parents=True, exist_ok=True)
+    note_path.write_text(
+        "\n".join(
+            [
+                "# Helper Note",
+                "",
+                "- Generated at: `2026-04-15T03:04:05+00:00`",
+                "- Phase: `prover`",
+                "- Provider: `openai`",
+                "- Model: `gpt-5.4-mini`",
+                f"- Config path: `{config_path}`",
+                "- Target: `FATEM/42.lean`",
+                "- Reason: `lsp_timeout`",
+                "- Prompt pack: `lsp_timeout`",
+                "",
+                "## Helper Output",
+                "",
+                "reuse this note",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    calls = 0
+
+    def fake_call(prompt: str, model: str, think: bool, *, max_retries: int, initial_backoff_seconds: int, timeout_seconds: int) -> str:
+        nonlocal calls
+        calls += 1
+        return "fresh helper result"
+
+    fake_agent = SimpleNamespace(
+        API_KEY_ENVS={"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "openrouter": "OPENROUTER_API_KEY"},
+        BASE_URL_ENVS={"openai": "OPENAI_BASE_URL", "gemini": "GEMINI_BASE_URL", "openrouter": "OPENROUTER_BASE_URL"},
+        DEFAULTS={"openai": "gpt-5.4", "gemini": "gemini-3.1-pro-preview", "openrouter": "google/gemini-3.1-pro-preview"},
+        MAX_RETRIES=5,
+        INITIAL_BACKOFF_SECONDS=5,
+        TIMEOUT=300,
+        call_openai=fake_call,
+        call_gemini=fake_call,
+        call_openrouter=fake_call,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    module = load_helper_tool()
+    monkeypatch.setattr(module, "_load_informal_agent", lambda: fake_agent)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "archon-helper",
+            "--config",
+            str(config_path),
+            "--phase",
+            "prover",
+            "--rel-path",
+            "FATEM/42.lean",
+            "--reason",
+            "lsp_timeout",
+            "--prompt-pack",
+            "auto",
+            "--write-note",
+            "auto",
+            "Need a route that survives missing Lean LSP.",
+        ],
+    )
+
+    assert module.main() == 0
+    captured = capsys.readouterr()
+    assert captured.out == "reuse this note\n"
+    assert str(note_path) in captured.err
+    assert calls == 0
 
 
 def test_helper_tool_requires_phase_before_auto_note_transport(monkeypatch, tmp_path: Path):

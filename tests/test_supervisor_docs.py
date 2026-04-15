@@ -26,6 +26,7 @@ def test_readme_includes_repo_layout_skill_install_and_supervisor_entrypoint():
     assert "docs/operations.md" in readme
     assert "autoarchon-supervised-cycle" in readme
     assert "workspace/.archon/supervisor/progress-summary.md" in readme
+    assert "scripts/watch_run.sh" in readme
     assert "autoarchon-storage-report" in readme
 
 
@@ -36,6 +37,7 @@ def test_operations_doc_contains_full_supervisor_soak_test_and_monitoring_comman
     assert "codex exec" in operations
     assert "$archon-supervisor" in operations
     assert "tail -f" in operations
+    assert "watch_run.sh" in operations
     assert "violations.jsonl" in operations
     assert "autoarchon-export-run-artifacts" in operations
     assert "progress-summary.md" in operations

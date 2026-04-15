@@ -1,0 +1,34 @@
+{
+  "campaignRoot": "${CAMPAIGNS_ROOT}/${FATE_DATE_TAG}-formalization-default",
+  "sourceRoot": "${SOURCE_ROOTS_ROOT}/formalization-upstream",
+  "reuseLakeFrom": "${SOURCE_ROOTS_ROOT}/formalization-upstream",
+  "runSpecOutput": "${RUN_SPECS_ROOT}/${FATE_DATE_TAG}-formalization-default.json",
+  "teacherModel": "${MODEL}",
+  "teacherReasoningEffort": "${REASONING_EFFORT}",
+  "preloadHistoricalRoutes": true,
+  "planShards": {
+    "matchRegex": "^.*\\.lean$",
+    "shardSize": 4,
+    "runIdPrefix": "teacher-f",
+    "runIdMode": "index"
+  },
+  "watchdog": {
+    "model": "${MODEL}",
+    "reasoningEffort": "${REASONING_EFFORT}",
+    "pollSeconds": 30,
+    "stallSeconds": 300,
+    "bootstrapLaunchAfterSeconds": 45,
+    "maxRestarts": 3,
+    "ownerSilenceSeconds": 1200,
+    "maxActiveLaunches": 2,
+    "launchBatchSize": 1,
+    "launchCooldownSeconds": 90,
+    "finalizeOnTerminal": true,
+    "pruneWorkspaceLake": true,
+    "pruneBrokenPrewarm": true
+  },
+  "environment": {
+    "ARCHON_CODEX_READY_RETRIES": "${ARCHON_CODEX_READY_RETRIES}",
+    "ARCHON_CODEX_READY_RETRY_DELAY_SECONDS": "${ARCHON_CODEX_READY_RETRY_DELAY_SECONDS}"
+  }
+}

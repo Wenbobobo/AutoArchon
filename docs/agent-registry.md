@@ -68,6 +68,7 @@ max_calls_per_iteration = 1
 trigger_on_missing_infrastructure = true
 trigger_on_external_reference = true
 trigger_on_repeated_failure = true
+reuse_recent_note_by_reason = true
 notes_dir = ".archon/informal/helper"
 
 [helper.prover]
@@ -76,6 +77,7 @@ max_calls_per_session = 2
 trigger_on_missing_infrastructure = true
 trigger_on_lsp_timeout = true
 trigger_on_first_stuck_attempt = true
+reuse_recent_note_by_reason = true
 notes_dir = ".archon/informal/helper"
 
 [observability]
@@ -107,6 +109,7 @@ The preferred helper call shape is phase-aware and note-routed:
 ```
 
 `--prompt-pack auto` selects a task-class helper template from the phase and reason, while `--write-note auto` writes a metadata-backed Markdown note into the phase-specific `notes_dir` (`[helper.plan].notes_dir` or `[helper.prover].notes_dir`). An explicit path still keeps the older bare-text compatibility behavior. `--print-effective-config` now exposes both policy blocks plus prompt-pack selection so operators can inspect the resolved helper limits before launch.
+With `reuse_recent_note_by_reason = true`, repeated calls for the same phase/file/reason reuse the newest matching helper note by default. Pass `--force-fresh-call` only when the proof context materially changed and the old route is no longer representative.
 
 ## Boundary With Vendored Lean4 Material
 

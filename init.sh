@@ -143,9 +143,12 @@ provider_defaults = {
 path = Path(sys.argv[1])
 provider = os.environ.get("ARCHON_HELPER_PROVIDER", "").strip() or "openai"
 defaults = provider_defaults.get(provider, provider_defaults["openai"])
+helper_enabled = os.environ.get("ARCHON_HELPER_ENABLE", "").strip().lower() in {"1", "true", "yes", "on"}
+if os.environ.get("ARCHON_HELPER_PROVIDER", "").strip():
+    helper_enabled = True
 path.write_text(
     render_default_runtime_config(
-        helper_enabled=bool(os.environ.get("ARCHON_HELPER_PROVIDER", "").strip()),
+        helper_enabled=helper_enabled,
         helper_provider=provider,
         helper_model=os.environ.get("ARCHON_HELPER_MODEL", "").strip() or defaults["model"],
         helper_api_key_env=os.environ.get("ARCHON_HELPER_API_KEY_ENV", "").strip() or defaults["api_key_env"],

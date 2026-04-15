@@ -25,7 +25,8 @@ def parse_args() -> argparse.Namespace:
         description="Resolve a tracked AutoArchon campaign template into a launchable spec file under the run-spec root."
     )
     parser.add_argument("--template", required=True, help="Tracked template under campaign_specs/ or an explicit JSON path")
-    parser.add_argument("--benchmark-root", required=True, help="Benchmark root that contains dataset clones such as FATE-M-upstream")
+    parser.add_argument("--benchmark-root", help="Compatibility name for the root that contains dataset or source clones")
+    parser.add_argument("--source-roots-root", help="Generic root that contains source clones for formalization or benchmark campaigns")
     parser.add_argument("--campaigns-root", required=True, help="Root directory for campaign outputs")
     parser.add_argument("--run-specs-root", required=True, help="Root directory for generated run specs and resolved launch specs")
     parser.add_argument("--date-tag", required=True, help="Stable date or run tag used in campaign and spec naming")
@@ -98,10 +99,14 @@ def _default_output_path(template_path: Path, *, run_specs_root: Path, date_tag:
 def _resolve_spec(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
     template_path = _template_path(args.template)
     template = _load_template(template_path)
+    source_roots_root = args.source_roots_root or args.benchmark_root
+    if not source_roots_root:
+        raise ValueError("either --source-roots-root or --benchmark-root is required")
     mapping = dict(os.environ)
     mapping.update(
         {
-            "BENCHMARK_ROOT": str(Path(args.benchmark_root).resolve()),
+            "BENCHMARK_ROOT": str(Path(source_roots_root).resolve()),
+            "SOURCE_ROOTS_ROOT": str(Path(source_roots_root).resolve()),
             "CAMPAIGNS_ROOT": str(Path(args.campaigns_root).resolve()),
             "RUN_SPECS_ROOT": str(Path(args.run_specs_root).resolve()),
             "FATE_DATE_TAG": args.date_tag,
