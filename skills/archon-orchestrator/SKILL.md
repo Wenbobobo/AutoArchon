@@ -52,7 +52,7 @@ The orchestrator does not directly edit `.lean` files. If proof work is needed, 
 8. If the campaign already exists, do not regenerate run specs unless the user changes scope.
 9. For each run, inspect `runs/<id>/control/run-config.json`, `teacher-prompt.txt`, and `launch-teacher.sh`.
 10. Launch teachers from the generated control assets; do not handwrite divergent prompts unless you also update the stored control files and record the change in `operator-journal.md`.
-11. Recompute truth with `uv run --directory <repo-root> autoarchon-campaign-status --campaign-root <campaign-root>` before making recovery decisions.
+11. Recompute truth with `uv run --directory <repo-root> autoarchon-campaign-status --campaign-root <campaign-root>` before making recovery decisions, then refresh `autoarchon-campaign-overview` if you want the canonical `control/progress-summary.json` plus its Markdown and HTML mirrors.
 12. If a run is `needs_relaunch`, `unverified`, or `contaminated`, inspect `recommendedRecovery` and prefer `uv run --directory <repo-root> autoarchon-campaign-recover --campaign-root <campaign-root> --run-id <run-id>` over hand-written recovery commands.
 13. If a run still needs human judgment after the deterministic recovery plan, then shrink the shard, quarantine the run, or dispatch a helper session, and record the decision in `operator-journal.md`.
 14. Build or refresh the nightly-facing summary with `uv run --directory <repo-root> autoarchon-campaign-compare --campaign-root <campaign-root>` when you need a compact benchmark report before final closeout.

@@ -22,6 +22,7 @@ First checks:
 8. if every run is still `queued`, prefer `uv run --directory <repo-root> autoarchon-campaign-recover --campaign-root <campaign-root> --all-recoverable --execute` for the first fan-out instead of hand-launching each script one by one
 9. if the user already gave a `Campaign root`, do not inspect other campaigns unless that root is corrupt and you are explicitly debugging why
 10. run `uv run --directory <repo-root> autoarchon-validate-launch-contract --campaign-root <campaign-root>` before the watchdog when possible
+11. when checking live progress, prefer `control/progress-summary.json` plus its `progress-summary.md` and `progress-summary.html` mirrors over terminal noise
 
 Status meanings:
 

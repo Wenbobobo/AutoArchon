@@ -6,6 +6,14 @@ The outer owner must maintain three campaign-level control files:
 - `control/launch-spec.resolved.json`
 - `control/operator-journal.md`
 
+The outer owner should also keep reading these campaign-level observability files after launch:
+
+- `control/progress-summary.json`
+- `control/progress-summary.md`
+- `control/progress-summary.html`
+
+`control/progress-summary.json` is canonical. The Markdown and HTML files are generated mirrors for terminal and browser inspection.
+
 ## Mission Brief
 
 `mission-brief.md` is the human-readable contract for the campaign.

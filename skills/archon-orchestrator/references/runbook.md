@@ -66,12 +66,23 @@ This writes `control/teacher-launch-state.json` before detached launch so anothe
 uv run --directory /path/to/AutoArchon autoarchon-campaign-status --campaign-root /path/to/campaign-root
 ```
 
+For the cheapest human-facing snapshot, also refresh:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-campaign-overview --campaign-root /path/to/campaign-root --markdown
+```
+
 Inspect:
 
 - `campaign-status.json`
+- `control/progress-summary.json`
+- `control/progress-summary.md`
+- `control/progress-summary.html`
 - `runs/*/workspace/.archon/supervisor/HOT_NOTES.md`
 - `runs/*/workspace/.archon/supervisor/LEDGER.md`
 - `runs/*/workspace/.archon/validation/*.json`
+
+Treat `control/progress-summary.json` as canonical. The Markdown and HTML files are mirrors generated from the same overview payload.
 
 ## Recover A Run
 

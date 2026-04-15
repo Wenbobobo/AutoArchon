@@ -169,6 +169,22 @@ def test_campaign_operator_prompt_template_exists_and_matches_direct_codex_flow(
     assert "ask intake questions" in template
 
 
+def test_archon_orchestrator_skill_references_canonical_progress_surfaces():
+    skill = read("skills/archon-orchestrator/SKILL.md")
+    runbook = read("skills/archon-orchestrator/references/runbook.md")
+    layout = read("skills/archon-orchestrator/references/campaign-layout.md")
+    startup = read("skills/archon-orchestrator/references/startup-brief.md")
+    surfaces = read("skills/archon-orchestrator/references/operator-surfaces.md")
+
+    assert "control/progress-summary.json" in skill
+    assert "autoarchon-campaign-overview" in skill
+    assert "control/progress-summary.json" in runbook
+    assert "control/progress-summary.html" in runbook
+    assert "progress-summary.html" in layout
+    assert "progress-summary.json" in startup
+    assert "progress-summary.html" in surfaces
+
+
 def test_benchmarking_doc_still_explains_contamination_and_faithful_runs():
     benchmarking = read("docs/benchmarking.md")
 
