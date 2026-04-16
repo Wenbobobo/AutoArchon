@@ -49,6 +49,24 @@ Read `.archon/runtime-config.toml` before deciding whether to call helper tools.
 - Write helper output to the notes directory from `[helper.plan].notes_dir` and point to that file in `PROGRESS.md`.
 - If helper is disabled or the runtime config is missing, fall back to `.archon/tools/archon-informal-agent.py`.
 
+## Comment-Only Autoformalize Contract
+
+When a scoped `.lean` file still has no Lean declarations and only carries an informal objective in comments, treat it as a **comment-only formalization target**, not as a free-form invitation to simplify the mathematics.
+
+- Write a machine-readable contract to `.archon/formalization/<file>.json` before handing the file to the prover.
+- The contract must record:
+  - `sourceKind = comment_only`
+  - the source bundle paths you relied on, including any nearby `Extra*.md` notes
+  - the concrete required items from the informal objective
+  - any allowed proof deferrals
+- If the informal objective explicitly names structures or constraints, do **not** defer them out of the declaration layer. In particular, do not drop `R_d`, `monic`, exact-degree constraints, asymmetry between components, or stated special cases just to get a compiling first pass.
+- If helper is enabled, use up to three bounded helper passes when the source comments are mathematically rich enough to deserve a cross-check:
+  1. `formalization_extract`
+  2. `formalization_critic`
+  3. `formalization_repair`
+- Record the helper note paths in the contract and in `PROGRESS.md`.
+- The goal of the first autoformalize pass is an honest first declaration set, not a cosmetically plausible but weaker surrogate problem.
+
 ## Providing Informal Content to the Prover
 
 The prover performs significantly better when given rich informal mathematical guidance. Before assigning a task, you must ensure the prover has access to the relevant informal proof or proof sketch.

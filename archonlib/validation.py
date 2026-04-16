@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from archonlib.formalization import assess_formalization
 from archonlib.supervisor import HeaderDrift
 
 
@@ -86,6 +87,8 @@ def _should_preserve_previous_acceptance(
     drift: HeaderDrift | None,
     workspace_changed: bool,
     durable_task_result: bool,
+    task_result_kind: str | None,
+    formalization_fidelity: str,
     prover_error: bool,
 ) -> bool:
     if not isinstance(previous_payload, dict):
@@ -96,10 +99,22 @@ def _should_preserve_previous_acceptance(
         return False
     if drift is not None or prover_error:
         return False
+    if task_result_kind == "blocker":
+        return False
+    if formalization_fidelity in {"partial", "violated"}:
+        return False
     if workspace_changed or durable_task_result:
         return True
     blocker_notes = previous_payload.get("blockerNotes")
     return isinstance(blocker_notes, list) and bool(blocker_notes)
+
+
+def _accepted_kind(*, acceptance_status: str, task_result_kind: str | None) -> str:
+    if acceptance_status != "accepted":
+        return "none"
+    if task_result_kind == "blocker":
+        return "blocker"
+    return "proof"
 
 
 def write_validation_artifacts(
@@ -133,6 +148,8 @@ def write_validation_artifacts(
         workspace_changed = rel_path in changed_files
         task_result_name = task_result_path.name if task_result_path.exists() else None
         prover_error = rel_path in prover_failures
+        formalization = assess_formalization(workspace, rel_path)
+        formalization_fidelity = str(formalization.get("fidelity") or "not_applicable")
         acceptance_status = _acceptance_status(
             overall_status=status,
             drift=drift,
@@ -162,6 +179,8 @@ def write_validation_artifacts(
             drift=drift,
             workspace_changed=workspace_changed,
             durable_task_result=durable_task_result,
+            task_result_kind=task_result_kind,
+            formalization_fidelity=formalization_fidelity,
             prover_error=prover_error,
         ):
             acceptance_status = "accepted"
@@ -184,13 +203,21 @@ def write_validation_artifacts(
                 if isinstance(previous_task_result, dict) and not task_result_payload["present"]:
                     task_result_payload = dict(previous_task_result)
 
+        if formalization_fidelity in {"partial", "violated"} and acceptance_status == "accepted":
+            acceptance_status = "pending"
+            validation_status = "attention" if status != "no_progress" else "no_progress"
+
+        accepted_kind = _accepted_kind(acceptance_status=acceptance_status, task_result_kind=task_result_kind)
         payload = {
             "schemaVersion": SCHEMA_VERSION,
             "relPath": rel_path,
             "status": status,
             "acceptanceStatus": acceptance_status,
+            "acceptedKind": accepted_kind,
             "validationStatus": validation_status,
             "statementFidelity": "violated" if drift is not None else "preserved",
+            "formalizationFidelity": formalization_fidelity,
+            "formalizationContract": formalization.get("contract"),
             "iteration": iteration,
             "overallStatus": status,
             "loopExitCode": loop_exit_code,

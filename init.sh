@@ -79,6 +79,7 @@ mkdir -p \
     "${STATE_DIR}/logs" \
     "${STATE_DIR}/informal" \
     "${STATE_DIR}/informal/helper" \
+    "${STATE_DIR}/formalization" \
     "${STATE_DIR}/prompts" \
     "${STATE_DIR}/proof-journal/sessions" \
     "${STATE_DIR}/proof-journal/current_session" \

@@ -28,6 +28,18 @@ def test_plan_prompt_specifies_phase_aware_helper_note_routing():
     assert "reuse the existing helper note" in plan_prompt
 
 
+def test_plan_prompt_requires_comment_only_formalization_contracts():
+    plan_prompt = read(".archon-src/prompts/plan.md")
+
+    assert ".archon/formalization/<file>.json" in plan_prompt
+    assert "sourceKind = comment_only" in plan_prompt
+    assert "Extra*.md" in plan_prompt
+    assert "do not drop `R_d`, `monic`, exact-degree constraints" in plan_prompt
+    assert "formalization_extract" in plan_prompt
+    assert "formalization_critic" in plan_prompt
+    assert "formalization_repair" in plan_prompt
+
+
 def test_plan_prompt_keeps_heavy_proof_search_out_of_default_path():
     plan_prompt = read(".archon-src/prompts/plan.md")
 

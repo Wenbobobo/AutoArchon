@@ -2,6 +2,8 @@
 
 AutoArchon is a Codex-first Lean 4 proving system for long-running benchmark and formalization campaigns. It keeps the inner `plan -> prover -> review` loop, then adds an outer control plane for operator guidance, watchdog recovery, proof export, postmortem archiving, and lesson accumulation.
 
+For comment-only formalization and open-problem inputs, acceptance is no longer based on "it compiles and changed a file" alone. The `autoformalize` stage now has to preserve the stated mathematical objects and constraints through a formalization contract, so a weaker surrogate definition will stay in `attention/needs_relaunch` instead of being finalized as a proof.
+
 ## Default Path
 
 The recommended outer path is now interactive:
@@ -239,6 +241,7 @@ That command also refreshes these lightweight observability surfaces by default:
 - `control/progress-summary.html`
 
 The campaign summary is the canonical observability surface: `control/progress-summary.json` is the source of truth, `control/progress-summary.md` is the terminal-friendly mirror, and `control/progress-summary.html` is a browser-friendly supplementary inspection page generated from the same payload. `autoarchon-campaign-observe` only refreshes and serves those same files; it does not create a second state store. Together they show ETA, restart count, active runs, and recent finalized targets. Each run also keeps `workspace/.archon/supervisor/progress-summary.{md,json}` with live phase, active prover rows, helper-note breakdowns, and task-result kind counts.
+Each run also writes `runs/<id>/control/helper-effective-config.json` at launch time so helper provider/model/env binding mismatches can be diagnosed without opening the shell wrapper.
 
 The optional web UI remains useful for supplementary inspection of one run:
 
@@ -251,6 +254,16 @@ For a single run without the campaign layer:
 ```bash
 bash scripts/watch_run.sh /path/to/run-root/workspace
 ```
+
+## Accepted Outputs
+
+After `autoarchon-finalize-campaign`, use these paths:
+
+- Final accepted proofs: `reports/final/proofs/<run-id>/<rel-path>.lean`
+- Final accepted blocker notes: `reports/final/blockers/<run-id>/<file>.md`
+- Final validation payloads: `reports/final/validation/<run-id>/<rel-path_escaped>.json`
+
+Run-level `artifacts/proofs/` may still contain intermediate edited files from partial-progress or blocker runs. Treat `reports/final/` as the acceptance boundary.
 
 ## Shortcut: Scripted Start
 

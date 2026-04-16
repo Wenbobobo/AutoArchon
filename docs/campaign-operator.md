@@ -90,6 +90,8 @@ uv run --directory /path/to/AutoArchon autoarchon-init-operator-intake \
 
 That command writes the three operator-owned control files immediately, but the interactive operator should still review and refine them before unattended launch.
 
+For comment-only/open-problem source files, the operator should now expect the inner `autoformalize` stage to leave behind `.archon/formalization/<file>.json` contracts and matching validation payloads. A run is not accepted merely because the file compiles after introducing some definitions; the formalization still has to preserve the named structures and constraints from the source bundle.
+
 ## Optional Wrapper
 
 If you prefer a thin wrapper that auto-loads `examples/helper.env` and pins the repo defaults, you can still use:
@@ -189,6 +191,7 @@ For the fastest newcomer-facing snapshot, open either of these files after `auto
 - `control/progress-summary.html`
 
 Treat those file-backed summaries as the canonical observability surface. `control/progress-summary.json` stays canonical, `control/progress-summary.md` is the terminal-friendly mirror, and `control/progress-summary.html` is the low-friction browser mirror generated from the same overview payload. `autoarchon-campaign-observe` only refreshes and serves those same files for remote viewing. The browser UI is optional supplementary inspection for one run when you need deeper browsing.
+Each run also writes `runs/<id>/control/helper-effective-config.json` when its launcher starts, which is the quickest way to confirm helper provider/model/env binding drift before debugging prover notes.
 
 Trust these campaign-level files before reacting to terminal noise:
 
@@ -204,6 +207,14 @@ Trust these campaign-level files before reacting to terminal noise:
 - `campaign-status.json`
 - `reports/final/compare-report.json`
 - `reports/postmortem/postmortem-summary.json`
+
+For final acceptance review, use:
+
+- `reports/final/proofs/`
+- `reports/final/blockers/`
+- `reports/final/validation/`
+
+Run-level `artifacts/proofs/` can contain partial-progress edits that were useful during recovery but were not ultimately accepted as final proofs.
 
 ## Shortcut: Scripted Bootstrap
 

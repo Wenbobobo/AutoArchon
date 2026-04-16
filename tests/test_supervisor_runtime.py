@@ -458,6 +458,68 @@ def test_export_run_artifacts_preserves_prior_accepted_validation_snapshot(tmp_p
     assert payload["validationStatus"] == "passed"
 
 
+def test_export_run_artifacts_does_not_preserve_prior_proof_when_current_validation_is_blocker(tmp_path: Path):
+    run_root = tmp_path / "run-root"
+    source = run_root / "source"
+    workspace = run_root / "workspace"
+    artifacts = run_root / "artifacts"
+
+    write(source / "FATEM" / "39.lean", "theorem foo : True := by\n  sorry\n")
+    write(workspace / "FATEM" / "39.lean", "theorem foo : True := by\n  trivial\n")
+    write(
+        workspace / ".archon" / "task_results" / "FATEM_39.lean.md",
+        """
+        # FATEM/39.lean
+
+        - **Concrete blocker:** theorem is false as stated.
+        """,
+    )
+    write(
+        workspace / ".archon" / "validation" / "FATEM_39.lean.json",
+        json.dumps(
+            {
+                "relPath": "FATEM/39.lean",
+                "acceptanceStatus": "accepted",
+                "acceptedKind": "blocker",
+                "validationStatus": "passed",
+                "blockerNotes": ["FATEM_39.lean.md"],
+                "checks": {
+                    "headerDrift": "none",
+                    "proverError": False,
+                    "workspaceChanged": True,
+                    "taskResult": {
+                        "present": True,
+                        "durable": True,
+                        "kind": "blocker",
+                        "path": ".archon/task_results/FATEM_39.lean.md",
+                    },
+                },
+            },
+            indent=2,
+        ),
+    )
+    write(
+        artifacts / "validation" / "FATEM_39.lean.json",
+        json.dumps(
+            {
+                "relPath": "FATEM/39.lean",
+                "acceptanceStatus": "accepted",
+                "acceptedKind": "proof",
+                "validationStatus": "passed",
+                "checks": {"headerDrift": "none", "proverError": False, "workspaceChanged": True},
+            },
+            indent=2,
+        ),
+    )
+    write(artifacts / "proofs" / "FATEM" / "39.lean", "theorem foo : True := by\n  trivial\n")
+
+    export_run_artifacts(run_root)
+
+    payload = json.loads((artifacts / "validation" / "FATEM_39.lean.json").read_text(encoding="utf-8"))
+    assert payload["acceptedKind"] == "blocker"
+    assert payload["blockerNotes"] == ["FATEM_39.lean.md"]
+
+
 def test_shell_runtime_defaults_use_codex_config_flag():
     loop_script = (ROOT / "archon-loop.sh").read_text(encoding="utf-8")
     review_script = (ROOT / "review.sh").read_text(encoding="utf-8")

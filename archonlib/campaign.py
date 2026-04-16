@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from archonlib.formalization import assess_formalization
 from archonlib.operator_surfaces import ensure_operator_surfaces
 from archonlib.lesson_clusters import write_lesson_cluster_artifacts
 from archonlib.run_workspace import export_run_artifacts, create_isolated_run
@@ -690,6 +691,7 @@ def _build_launch_script(
             "LAUNCH_FINALIZED=0",
             'LAUNCH_STATE_FILE="${CONTROL_ROOT}/teacher-launch-state.json"',
             'BOOTSTRAP_STATE_FILE="${CONTROL_ROOT}/bootstrap-state.json"',
+            'HELPER_EFFECTIVE_CONFIG_FILE="${CONTROL_ROOT}/helper-effective-config.json"',
             'HELPER_ENV_FILE="${HELPER_ENV_FILE:-${ARCHON_ROOT}/examples/helper.env}"',
             "",
             'if [[ -n "${HELPER_ENV_FILE}" && -f "${HELPER_ENV_FILE}" ]]; then',
@@ -734,6 +736,52 @@ def _build_launch_script(
             "",
             'normalize_helper_binding "ARCHON_HELPER_API_KEY_ENV" "$(helper_default_api_key_env)"',
             'normalize_helper_binding "ARCHON_HELPER_BASE_URL_ENV" "$(helper_default_base_url_env)"',
+            "",
+            "write_helper_effective_config() {",
+            '  python3 - "$HELPER_EFFECTIVE_CONFIG_FILE" "${HELPER_ENV_FILE:-}" <<'"'"'PY'"'"'',
+            "import hashlib",
+            "import json",
+            "import os",
+            "import sys",
+            "from datetime import datetime, timezone",
+            "from pathlib import Path",
+            "",
+            "path = Path(sys.argv[1])",
+            "helper_env_file = sys.argv[2].strip() if len(sys.argv) > 2 else ''",
+            "provider = os.environ.get('ARCHON_HELPER_PROVIDER', '').strip() or 'openai'",
+            "model = os.environ.get('ARCHON_HELPER_MODEL', '').strip()",
+            "api_key_binding = os.environ.get('ARCHON_HELPER_API_KEY_ENV', '').strip()",
+            "base_url_binding = os.environ.get('ARCHON_HELPER_BASE_URL_ENV', '').strip()",
+            "source = 'helper_env' if helper_env_file and Path(helper_env_file).exists() else 'process_env'",
+            "payload = {",
+            f'    "schemaVersion": {SCHEMA_VERSION},',
+            '    "updatedAt": datetime.now(timezone.utc).isoformat(),',
+            '    "provider": provider,',
+            '    "model": model,',
+            '    "apiKeyBinding": api_key_binding,',
+            '    "baseUrlBinding": base_url_binding,',
+            '    "helperEnvFile": helper_env_file or None,',
+            '    "source": source,',
+            '    "fallbacks": [],',
+            "}",
+            "payload['configHash'] = hashlib.sha256(",
+            "    json.dumps(",
+            "        {",
+            "            'provider': provider,",
+            "            'model': model,",
+            "            'apiKeyBinding': api_key_binding,",
+            "            'baseUrlBinding': base_url_binding,",
+            "            'helperEnvFile': helper_env_file,",
+            "            'source': source,",
+            "        },",
+            "        sort_keys=True,",
+            "    ).encode('utf-8')",
+            ").hexdigest()",
+            "path.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\\n', encoding='utf-8')",
+            "PY",
+            "}",
+            "",
+            "write_helper_effective_config",
             "",
             "write_launch_state() {",
             '  python3 - "$LAUNCH_STATE_FILE" "$1" "$2" "${3:-}" "${4:-}" <<'"'"'PY'"'"'',
@@ -890,11 +938,45 @@ def _build_launch_script(
     )
 
 
-def _load_validation_payloads(validation_root: Path) -> list[dict[str, Any]]:
+def _refresh_validation_payload(payload: dict[str, Any], *, workspace_root: Path) -> dict[str, Any]:
+    refreshed = dict(payload)
+    rel_path = refreshed.get("relPath")
+    if not isinstance(rel_path, str) or not rel_path:
+        return refreshed
+
+    checks = refreshed.get("checks")
+    task_result = checks.get("taskResult") if isinstance(checks, Mapping) else None
+    task_result_kind = task_result.get("kind") if isinstance(task_result, Mapping) else None
+    blocker_notes = refreshed.get("blockerNotes")
+    blocker_present = isinstance(blocker_notes, list) and bool(blocker_notes)
+    acceptance_status = refreshed.get("acceptanceStatus")
+    validation_status = refreshed.get("validationStatus")
+
+    formalization = assess_formalization(workspace_root, rel_path)
+    formalization_fidelity = str(formalization.get("fidelity") or "not_applicable")
+    refreshed["formalizationFidelity"] = formalization_fidelity
+    refreshed["formalizationContract"] = formalization.get("contract")
+
+    if formalization_fidelity in {"partial", "violated"} and acceptance_status == "accepted":
+        acceptance_status = "pending"
+        validation_status = "attention"
+        refreshed["acceptanceStatus"] = acceptance_status
+        refreshed["validationStatus"] = validation_status
+
+    if acceptance_status == "accepted":
+        refreshed["acceptedKind"] = "blocker" if task_result_kind == "blocker" or blocker_present else "proof"
+    else:
+        refreshed["acceptedKind"] = "none"
+    return refreshed
+
+
+def _load_validation_payloads(validation_root: Path, *, workspace_root: Path | None = None) -> list[dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
     for path in sorted(validation_root.glob("*.json")):
         payload = _read_json(path)
         if payload is not None:
+            if workspace_root is not None:
+                payload = _refresh_validation_payload(payload, workspace_root=workspace_root)
             payloads.append(payload)
     return payloads
 
@@ -971,6 +1053,14 @@ def _merge_sticky_artifact_acceptance(
     for rel_path in accepted_from_events:
         if rel_path in accepted_proofs or rel_path in rejected_targets:
             continue
+        current_payload = validation_summary.get("validationByPath", {}).get(rel_path)
+        if isinstance(current_payload, Mapping):
+            if current_payload.get("acceptedKind") == "blocker":
+                continue
+            if current_payload.get("formalizationFidelity") in {"partial", "violated"}:
+                continue
+            if current_payload.get("validationStatus") in {"attention", "failed"}:
+                continue
         if not (artifacts_root / "proofs" / rel_path).exists():
             continue
         accepted_proofs.add(rel_path)
@@ -1315,15 +1405,21 @@ def _validation_summary(payloads: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         validation_by_path[rel_path] = payload
         acceptance_status = payload.get("acceptanceStatus")
+        accepted_kind = payload.get("acceptedKind")
         blocker_notes = payload.get("blockerNotes")
-        blocker_present = isinstance(blocker_notes, list) and bool(blocker_notes)
-        checks = payload.get("checks")
-        workspace_changed = isinstance(checks, dict) and checks.get("workspaceChanged") is True
         if acceptance_status == "accepted":
-            if blocker_present and not workspace_changed:
+            if accepted_kind == "blocker":
                 accepted_blockers.append(rel_path)
-            else:
+            elif accepted_kind == "proof":
                 accepted_proofs.append(rel_path)
+            else:
+                blocker_present = isinstance(blocker_notes, list) and bool(blocker_notes)
+                checks = payload.get("checks")
+                workspace_changed = isinstance(checks, dict) and checks.get("workspaceChanged") is True
+                if blocker_present and not workspace_changed:
+                    accepted_blockers.append(rel_path)
+                else:
+                    accepted_proofs.append(rel_path)
             continue
         if acceptance_status == "rejected":
             rejected.append(rel_path)
@@ -3582,8 +3678,8 @@ def collect_campaign_status(campaign_root: Path, *, heartbeat_seconds: int = DEF
             project_build_reused=project_build_reused,
         )
         changed_files = collect_changed_files(source_root, workspace_root, allowed_files=allowed_files or None)
-        workspace_validation_payloads = _load_validation_payloads(validation_root)
-        artifact_validation_payloads = _load_validation_payloads(artifact_validation_root)
+        workspace_validation_payloads = _load_validation_payloads(validation_root, workspace_root=workspace_root)
+        artifact_validation_payloads = _load_validation_payloads(artifact_validation_root, workspace_root=workspace_root)
         validation_summary = _combine_validation_summaries(
             _validation_summary(workspace_validation_payloads),
             _validation_summary(artifact_validation_payloads),

@@ -211,6 +211,8 @@ def _should_preserve_exported_validation(
         return False
     if current_payload.get("acceptanceStatus") == "rejected":
         return False
+    if current_payload.get("acceptedKind") == "blocker":
+        return False
     if current_payload.get("validationStatus") in {"failed", "attention"}:
         return False
     checks = current_payload.get("checks")

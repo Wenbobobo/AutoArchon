@@ -162,6 +162,9 @@ def test_refresh_campaign_launch_assets_regenerates_launch_script_without_overwr
     assert 'source "${HELPER_ENV_FILE}"' in refreshed_launch
     assert 'normalize_helper_binding "ARCHON_HELPER_API_KEY_ENV" "$(helper_default_api_key_env)"' in refreshed_launch
     assert 'normalize_helper_binding "ARCHON_HELPER_BASE_URL_ENV" "$(helper_default_base_url_env)"' in refreshed_launch
+    assert 'HELPER_EFFECTIVE_CONFIG_FILE="${CONTROL_ROOT}/helper-effective-config.json"' in refreshed_launch
+    assert "write_helper_effective_config() {" in refreshed_launch
+    assert "write_helper_effective_config" in refreshed_launch
     assert 'write_launch_state "bootstrap" "true" "" "$$"' in refreshed_launch
     assert "custom prompt\n" == refreshed_prompt
 
@@ -622,13 +625,22 @@ def write_validation(
     statement_fidelity: str = "preserved",
     blocker_notes: list[str] | None = None,
     workspace_changed: bool = False,
+    accepted_kind: str | None = None,
 ) -> None:
     validation_name = rel_path.replace("/", "_") + ".json"
+    if accepted_kind is None:
+        if acceptance_status != "accepted":
+            accepted_kind = "none"
+        elif blocker_notes:
+            accepted_kind = "blocker"
+        else:
+            accepted_kind = "proof"
     payload = {
         "schemaVersion": 1,
         "relPath": rel_path,
         "status": "clean" if acceptance_status == "accepted" else "attention",
         "acceptanceStatus": acceptance_status,
+        "acceptedKind": accepted_kind,
         "validationStatus": validation_status,
         "statementFidelity": statement_fidelity,
         "blockerNotes": blocker_notes or [],
@@ -860,6 +872,8 @@ def test_create_campaign_builds_isolated_runs_and_teacher_launch_assets(tmp_path
     assert 'source "${HELPER_ENV_FILE}"' in launch_script
     assert 'normalize_helper_binding "ARCHON_HELPER_API_KEY_ENV" "$(helper_default_api_key_env)"' in launch_script
     assert 'normalize_helper_binding "ARCHON_HELPER_BASE_URL_ENV" "$(helper_default_base_url_env)"' in launch_script
+    assert 'HELPER_EFFECTIVE_CONFIG_FILE="${CONTROL_ROOT}/helper-effective-config.json"' in launch_script
+    assert "write_helper_effective_config() {" in launch_script
     assert 'ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES="${ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES:-0}"' in launch_script
     assert "teacher_launch_completed" in launch_script
 
@@ -890,6 +904,7 @@ def test_create_campaign_can_enable_historical_route_preload(tmp_path: Path):
     assert 'source "${HELPER_ENV_FILE}"' in launch_script
     assert 'normalize_helper_binding "ARCHON_HELPER_API_KEY_ENV" "$(helper_default_api_key_env)"' in launch_script
     assert 'normalize_helper_binding "ARCHON_HELPER_BASE_URL_ENV" "$(helper_default_base_url_env)"' in launch_script
+    assert 'HELPER_EFFECTIVE_CONFIG_FILE="${CONTROL_ROOT}/helper-effective-config.json"' in launch_script
     assert 'ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES="${ARCHON_SUPERVISOR_PRELOAD_HISTORICAL_ROUTES:-1}"' in launch_script
 
 
@@ -1055,6 +1070,10 @@ def test_generated_launch_teacher_script_records_terminal_state_and_event_order(
     assert launch_state["exitCode"] == exit_code
     assert isinstance(launch_state["pid"], int)
     assert launch_state["pid"] > 0
+    helper_config = json.loads((control_root / "helper-effective-config.json").read_text(encoding="utf-8"))
+    assert helper_config["provider"] == "openai"
+    assert "configHash" in helper_config
+    assert helper_config["source"] in {"helper_env", "process_env"}
 
     events = [json.loads(line) for line in (campaign_root / "events.jsonl").read_text(encoding="utf-8").splitlines()]
     suffix = events[-2:]
@@ -1116,6 +1135,9 @@ def test_generated_launch_teacher_script_respects_bootstrap_prewarm_flag(
     assert launch_state["active"] is False
     assert isinstance(launch_state["pid"], int)
     assert launch_state["pid"] > 0
+    helper_config = json.loads((control_root / "helper-effective-config.json").read_text(encoding="utf-8"))
+    assert helper_config["provider"] == "openai"
+    assert "configHash" in helper_config
     assert (run_root / "workspace" / ".archon" / "RUN_SCOPE.md").exists()
 
     uv_lines = uv_log.read_text(encoding="utf-8").splitlines() if uv_log.exists() else []
@@ -1318,6 +1340,175 @@ def test_collect_campaign_status_records_transition_events_for_blocker_acceptanc
     assert suffix[1]["blockerNotes"] == ["FATEM_1.lean.md"]
     assert suffix[2]["changedRunIds"] == ["blocked-run"]
     assert suffix[2]["acceptedEvents"] == 1
+
+
+def test_collect_campaign_status_uses_accepted_kind_for_blocker_even_with_workspace_change(tmp_path: Path):
+    source = make_source_project(tmp_path, file_count=1)
+    campaign_root = tmp_path / "campaign"
+    create_campaign(
+        archon_root=ROOT,
+        source_root=source,
+        campaign_root=campaign_root,
+        run_specs=[
+            {"id": "blocked-run", "objective_regex": "^FATEM/1\\.lean$", "objective_limit": 1, "scope_hint": "FATEM/1.lean"},
+        ],
+    )
+    workspace = campaign_root / "runs" / "blocked-run" / "workspace"
+    write(workspace / ".archon" / "RUN_SCOPE.md", run_scope_markdown("FATEM/1.lean"))
+    write(workspace / "FATEM" / "1.lean", "theorem file_1 : True := by\n  trivial\n")
+    write(
+        workspace / ".archon" / "task_results" / "FATEM_1.lean.md",
+        """
+        # FATEM/1.lean
+
+        - **Concrete blocker:** theorem is false as stated.
+        """,
+    )
+    write_validation(
+        workspace,
+        rel_path="FATEM/1.lean",
+        acceptance_status="accepted",
+        accepted_kind="blocker",
+        validation_status="passed",
+        blocker_notes=["FATEM_1.lean.md"],
+        workspace_changed=True,
+    )
+
+    status = collect_campaign_status(campaign_root, heartbeat_seconds=1)
+
+    assert status["runs"][0]["status"] == "blocked"
+    assert status["runs"][0]["acceptedProofs"] == []
+    assert status["runs"][0]["acceptedBlockers"] == ["FATEM/1.lean"]
+
+
+def test_collect_campaign_status_backfills_blocker_acceptance_from_legacy_validation_payload(tmp_path: Path):
+    source = make_source_project(tmp_path, file_count=1)
+    campaign_root = tmp_path / "campaign"
+    create_campaign(
+        archon_root=ROOT,
+        source_root=source,
+        campaign_root=campaign_root,
+        run_specs=[
+            {"id": "blocked-run", "objective_regex": "^FATEM/1\\.lean$", "objective_limit": 1, "scope_hint": "FATEM/1.lean"},
+        ],
+    )
+    workspace = campaign_root / "runs" / "blocked-run" / "workspace"
+    write(workspace / ".archon" / "RUN_SCOPE.md", run_scope_markdown("FATEM/1.lean"))
+    write(workspace / "FATEM" / "1.lean", "theorem file_1 : True := by\n  trivial\n")
+    write(
+        workspace / ".archon" / "task_results" / "FATEM_1.lean.md",
+        """
+        # FATEM/1.lean
+
+        - **Concrete blocker:** theorem is false as stated.
+        """,
+    )
+    write(
+        workspace / ".archon" / "validation" / "FATEM_1.lean.json",
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "relPath": "FATEM/1.lean",
+                "status": "clean",
+                "acceptanceStatus": "accepted",
+                "validationStatus": "passed",
+                "statementFidelity": "preserved",
+                "blockerNotes": ["FATEM_1.lean.md"],
+                "checks": {
+                    "workspaceChanged": True,
+                    "taskResult": {
+                        "present": True,
+                        "durable": True,
+                        "kind": "blocker",
+                        "path": ".archon/task_results/FATEM_1.lean.md",
+                    },
+                },
+            },
+            indent=2,
+        ),
+    )
+
+    status = collect_campaign_status(campaign_root, heartbeat_seconds=1)
+
+    assert status["runs"][0]["status"] == "blocked"
+    assert status["runs"][0]["acceptedProofs"] == []
+    assert status["runs"][0]["acceptedBlockers"] == ["FATEM/1.lean"]
+
+
+def test_collect_campaign_status_backfills_comment_only_formalization_drift_from_legacy_validation_payload(tmp_path: Path):
+    source = tmp_path / "source-project"
+    write(source / "lakefile.lean", "import Lake\n")
+    write(source / "lean-toolchain", "leanprover/lean4:v4.28.0\n")
+    write(
+        source / "motivicflagmaps" / "1.lean",
+        """
+        import Mathlib
+
+        /-!
+        Informal objective:
+        定义满足特定次数和首一条件的多项式三元组集合 \\mathcal{Q}_d 和 \\mathcal{R}_d。
+        q_0 is monic of degree d.
+
+        Notes:
+        先做定义与计数。
+        -/
+        """,
+    )
+    write(source / "Extra-fixed.md", "q_0 is monic of degree d and R_d is also required.\n")
+
+    campaign_root = tmp_path / "campaign"
+    create_campaign(
+        archon_root=ROOT,
+        source_root=source,
+        campaign_root=campaign_root,
+        run_specs=[
+            {"id": "open-run", "objective_regex": "^motivicflagmaps/1\\.lean$", "objective_limit": 1, "scope_hint": "motivicflagmaps/1.lean"},
+        ],
+    )
+    workspace = campaign_root / "runs" / "open-run" / "workspace"
+    write(workspace / ".archon" / "RUN_SCOPE.md", run_scope_markdown("motivicflagmaps/1.lean"))
+    write(
+        workspace / "motivicflagmaps" / "1.lean",
+        """
+        import Mathlib
+
+        abbrev BoundedPoly (F : Type*) [Semiring F] (d : Nat) : Type _ :=
+          (Polynomial.degreeLT F d)
+
+        abbrev Qd (F : Type*) [Semiring F] (d : Nat) : Type _ :=
+          Fin 3 -> BoundedPoly F d
+        """,
+    )
+    write(
+        workspace / ".archon" / "validation" / "motivicflagmaps_1.lean.json",
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "relPath": "motivicflagmaps/1.lean",
+                "status": "clean",
+                "acceptanceStatus": "accepted",
+                "validationStatus": "passed",
+                "statementFidelity": "preserved",
+                "blockerNotes": [],
+                "checks": {
+                    "workspaceChanged": True,
+                    "taskResult": {
+                        "present": False,
+                        "durable": False,
+                        "kind": None,
+                        "path": None,
+                    },
+                },
+            },
+            indent=2,
+        ),
+    )
+
+    status = collect_campaign_status(campaign_root, heartbeat_seconds=1)
+
+    assert status["runs"][0]["status"] == "needs_relaunch"
+    assert status["runs"][0]["acceptedProofs"] == []
+    assert status["runs"][0]["pendingTargets"] == ["motivicflagmaps/1.lean"]
 
 
 def test_append_campaign_status_events_deduplicates_acceptance_events_under_stale_previous_snapshot(tmp_path: Path):
