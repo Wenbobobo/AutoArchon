@@ -38,9 +38,13 @@ Read `.archon/runtime-config.toml` before deciding whether to call helper tools.
 - If `[helper].enabled = true` and `[helper.prover].enabled = true`, prefer `.archon/tools/archon-helper-prover-agent.py`.
 - Respect `[helper.prover].max_calls_per_session`.
 - Use the helper after a real obstruction, not immediately: missing infrastructure, first stuck formal route, or LSP timeout are the default trigger points.
+- If helper is enabled and you hit one of those trigger points, your next substantive action before stopping must be either:
+  - one bounded helper wrapper call that creates or reuses a helper note, or
+  - a durable `task_results/<your_file>.md` note explaining why helper was unavailable, disabled, or intentionally skipped for the current obstruction.
 - When using the helper wrapper, prefer `.archon/tools/archon-helper-prover-agent.py --phase prover --rel-path <file> --reason <trigger> --prompt-pack auto --write-note auto "<prompt>"` so the note lands in `[helper.prover].notes_dir` with metadata and the helper gets the right task-class template.
 - Before calling the helper again for the same file and reason, check `[helper.prover].notes_dir` and reuse the existing helper note unless the local proof state changed materially. Only force a fresh helper call after a real new obstruction or edit path.
 - Write helper output to the notes directory from `[helper.prover].notes_dir` and mention that path in `task_results/<file>.md`.
+- Do not end the session with a trigger-class obstruction and no helper evidence unless the durable note explicitly records that helper transport was unavailable or disabled.
 - If helper is disabled or the runtime config is missing, fall back to `.archon/tools/archon-informal-agent.py`.
 
 ## Avoid Early Termination

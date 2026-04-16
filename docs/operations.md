@@ -139,6 +139,9 @@ uv run --directory /path/to/AutoArchon autoarchon-helper-analysis \
   --campaign-root /path/to/campaign-root \
   --markdown
 
+uv run --directory /path/to/AutoArchon autoarchon-helper-healthcheck \
+  --env-file /path/to/AutoArchon/examples/helper.env
+
 uv run --directory /path/to/AutoArchon autoarchon-campaign-archive \
   --campaign-root /path/to/campaign-root \
   --prune-workspace-lake \
@@ -146,6 +149,8 @@ uv run --directory /path/to/AutoArchon autoarchon-campaign-archive \
 ```
 
 `autoarchon-helper-analysis` is the offline evidence pass for helper-policy tuning. It reads the existing file-backed surfaces, combines run-level `progress-summary.json`, any `helper-index.json` files, and final/postmortem lesson records, then summarizes helper reason families, repeated-attempt clusters, and lesson context without starting any long-running process. Add `--write-default-files` when you want `helper-analysis.json` and `helper-analysis.md` emitted under the campaign's default diagnostics root.
+
+`autoarchon-helper-healthcheck` is the bounded preflight probe for `examples/helper.env`. Run it before a long unattended launch, or use `autoarchon-validate-launch-contract --probe-helper` when you want the operator preflight to include the same transport check.
 
 Before starting another teacher on an existing run, inspect `workspace/.archon/supervisor/run-lease.json`.
 

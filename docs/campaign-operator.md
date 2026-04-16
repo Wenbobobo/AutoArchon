@@ -42,6 +42,12 @@ $EDITOR /path/to/AutoArchon/examples/helper.env
 
 `scripts/start_campaign_operator.sh` auto-loads `examples/helper.env` when present, so the operator session inherits helper and observability defaults before it launches any campaign.
 For `ARCHON_HELPER_API_KEY_ENV` and `ARCHON_HELPER_BASE_URL_ENV`, you can use either env-var names or direct inline values. Generated teacher launchers normalize inline values into provider-default env vars before `init.sh` and `codex exec`, so new runs do not need secrets copied into workspace config files.
+Before an unattended run, probe the helper transport once:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-helper-healthcheck \
+  --env-file /path/to/AutoArchon/examples/helper.env
+```
 
 Start Codex:
 
@@ -71,7 +77,8 @@ The operator should translate that intake into `control/mission-brief.md`, `cont
 
 ```bash
 uv run --directory /path/to/AutoArchon autoarchon-validate-launch-contract \
-  --campaign-root /path/to/runs/campaigns/20260414-fate-m-full
+  --campaign-root /path/to/runs/campaigns/20260414-fate-m-full \
+  --probe-helper
 ```
 
 If you want a deterministic intake scaffold before the interactive review step, use:

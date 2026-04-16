@@ -68,6 +68,14 @@ $EDITOR /path/to/AutoArchon/examples/helper.env
 `scripts/start_campaign_operator.sh` and `scripts/start_fate_overnight_watchdogs.sh` will auto-load `examples/helper.env` when it exists, so later launches inherit helper and progress-surface defaults without extra shell setup.
 For the direct interactive Codex path below, load it yourself with `source examples/helper.env`.
 For `ARCHON_HELPER_API_KEY_ENV` and `ARCHON_HELPER_BASE_URL_ENV`, you may provide either existing environment-variable names such as `OPENAI_API_KEY` / `OPENAI_BASE_URL`, or direct inline values. Generated teacher launchers normalize inline values back into provider-default env vars before `init.sh` and `codex exec`, so future run workspaces avoid storing secrets as literal runtime-config values.
+Run a bounded probe once after editing it so helper failures surface before a long campaign:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-helper-healthcheck \
+  --env-file /path/to/AutoArchon/examples/helper.env
+```
+
+If your provider is intentionally OpenAI-compatible but serves non-OpenAI models, that can be fine, but `autoarchon-validate-launch-contract --probe-helper` will still tell you whether the transport actually works.
 
 2. Prepare benchmark clones under one root, for example:
 
@@ -138,7 +146,8 @@ The interactive operator should still review and refine that intake bundle befor
 
 ```bash
 uv run --directory /path/to/AutoArchon autoarchon-validate-launch-contract \
-  --campaign-root /path/to/runs/campaigns/20260414-fate-m-full
+  --campaign-root /path/to/runs/campaigns/20260414-fate-m-full \
+  --probe-helper
 ```
 
 8. The operator should leave behind these three files before the watchdog starts:

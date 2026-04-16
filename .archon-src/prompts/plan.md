@@ -44,9 +44,13 @@ Read `.archon/runtime-config.toml` before deciding whether to call helper tools.
 - If `[helper].enabled = true` and `[helper.plan].enabled = true`, prefer `.archon/tools/archon-helper-prover-agent.py`.
 - Respect `[helper.plan].max_calls_per_iteration`.
 - Use the helper only when at least one configured trigger applies: repeated failure, missing infrastructure, or an external reference gap.
+- If one of those trigger classes applies and there is no reusable helper note yet, your plan phase is not complete until you either:
+  - create or reuse a helper note via `.archon/tools/archon-helper-prover-agent.py`, or
+  - write an explicit unavailability/skip reason in `PROGRESS.md` describing why helper transport is unavailable, disabled, or intentionally unnecessary for this file and trigger.
 - When using the helper wrapper, prefer `.archon/tools/archon-helper-prover-agent.py --phase plan --rel-path <file> --reason <trigger> --prompt-pack auto --write-note auto "<prompt>"` so the note lands in `[helper.plan].notes_dir` with metadata and the helper gets the right task-class template.
 - Before calling the helper again for the same file and reason, check `[helper.plan].notes_dir` and reuse the existing helper note unless the route is stale or the context materially changed. Only force a fresh helper call after a real state change.
 - Write helper output to the notes directory from `[helper.plan].notes_dir` and point to that file in `PROGRESS.md`.
+- Do not classify a file as missing infrastructure, repeated failure, or external-reference blocked without either helper evidence or an explicit note that helper transport was unavailable.
 - If helper is disabled or the runtime config is missing, fall back to `.archon/tools/archon-informal-agent.py`.
 
 ## Comment-Only Autoformalize Contract

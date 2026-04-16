@@ -26,6 +26,8 @@ def test_plan_prompt_specifies_phase_aware_helper_note_routing():
     assert "--prompt-pack auto" in plan_prompt
     assert "--write-note auto" in plan_prompt
     assert "reuse the existing helper note" in plan_prompt
+    assert "your plan phase is not complete until you either" in plan_prompt
+    assert "Do not classify a file as missing infrastructure" in plan_prompt
 
 
 def test_plan_prompt_requires_comment_only_formalization_contracts():
@@ -118,6 +120,8 @@ def test_prover_prompt_specifies_phase_aware_helper_note_routing():
     assert "--prompt-pack auto" in prover_prompt
     assert "--write-note auto" in prover_prompt
     assert "reuse the existing helper note" in prover_prompt
+    assert "your next substantive action before stopping must be either" in prover_prompt
+    assert "Do not end the session with a trigger-class obstruction and no helper evidence" in prover_prompt
 
 
 def test_prover_prompt_falls_back_after_lsp_timeout_or_start_failure():

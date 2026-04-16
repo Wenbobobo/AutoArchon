@@ -55,6 +55,7 @@ def test_readme_centers_interactive_campaign_operator_and_result_paths():
     assert "autoarchon-storage-report" in readme
     assert "autoarchon-campaign-observe" in readme
     assert "autoarchon-helper-analysis" in readme
+    assert "autoarchon-helper-healthcheck" in readme
     assert "reports/final/helper-analysis/" in readme
     assert "docs/roadmaps/control-plane-phase7.md" in readme
 
@@ -81,6 +82,7 @@ def test_operations_doc_covers_single_run_prewarm_supervisor_and_export_flow():
     assert "control/progress-summary.html" in operations
     assert "autoarchon-campaign-observe" in operations
     assert "autoarchon-helper-analysis" in operations
+    assert "autoarchon-helper-healthcheck" in operations
 
 
 def test_teacher_agents_doc_covers_launch_monitoring_and_results():
@@ -124,6 +126,7 @@ def test_campaign_operator_doc_covers_default_and_interactive_owner_paths():
     assert "$archon-orchestrator" in operator_doc
     assert "autoarchon-render-operator-prompt" in operator_doc
     assert "examples/helper.env" in operator_doc
+    assert "autoarchon-helper-healthcheck" in operator_doc
     assert "autoarchon-validate-launch-contract" in operator_doc
     assert "autoarchon-campaign-overview" in operator_doc
     assert "autoarchon-campaign-observe" in operator_doc

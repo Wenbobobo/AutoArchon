@@ -6,6 +6,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from archonlib.helper_health import (
+    helper_model,
+    helper_model_provider_mismatch,
+    helper_provider,
+    load_helper_env_file,
+    probe_helper_transport,
+)
+
 
 SCHEMA_VERSION = 1
 PLACEHOLDER_MARKERS = (
@@ -114,6 +122,8 @@ def validate_launch_contract(
     *,
     repo_root: Path,
     strict: bool = False,
+    probe_helper: bool = False,
+    helper_probe_timeout_seconds: int = 20,
 ) -> dict[str, Any]:
     campaign_root = campaign_root.resolve()
     repo_root = repo_root.resolve()
@@ -126,6 +136,7 @@ def validate_launch_contract(
     errors: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
     suggested_fixes: list[str] = []
+    helper_probe_payload: dict[str, Any] | None = None
 
     spec = _load_json(spec_path)
     mission_brief = _load_text(mission_brief_path)
@@ -273,7 +284,8 @@ def validate_launch_contract(
             )
             suggested_fixes.append("Disable preloadHistoricalRoutes for benchmark-faithful runs.")
 
-        if not _helper_env_disabled(spec) and not helper_env_path.exists():
+        helper_disabled = _helper_env_disabled(spec)
+        if not helper_disabled and not helper_env_path.exists():
             warnings.append(
                 _issue(
                     level="warning",
@@ -284,6 +296,43 @@ def validate_launch_contract(
                 )
             )
             suggested_fixes.append("Create examples/helper.env or disable helper explicitly for this campaign.")
+        elif not helper_disabled and helper_env_path.exists():
+            helper_env_values = load_helper_env_file(helper_env_path)
+            configured_provider = helper_provider(helper_env_values)
+            configured_model = helper_model(helper_env_values)
+            if helper_model_provider_mismatch(configured_provider, configured_model):
+                warnings.append(
+                    _issue(
+                        level="warning",
+                        code="helper_model_provider_mismatch",
+                        message=(
+                            "examples/helper.env uses a helper model name that looks mismatched with the selected provider."
+                        ),
+                        path=str(helper_env_path),
+                        hint=(
+                            "If this is not an intentional OpenAI-compatible relay setup, align "
+                            "ARCHON_HELPER_PROVIDER and ARCHON_HELPER_MODEL before launch."
+                        ),
+                    )
+                )
+                suggested_fixes.append("Align ARCHON_HELPER_PROVIDER and ARCHON_HELPER_MODEL in examples/helper.env.")
+            if probe_helper:
+                helper_probe_payload = probe_helper_transport(
+                    repo_root=repo_root,
+                    env_file=helper_env_path,
+                    timeout_seconds=helper_probe_timeout_seconds,
+                )
+                if helper_probe_payload.get("status") != "ok":
+                    warnings.append(
+                        _issue(
+                            level="warning",
+                            code="helper_probe_failed",
+                            message="Helper transport probe failed before launch.",
+                            path=str(helper_env_path),
+                            hint="Fix helper credentials/provider config or disable helper explicitly for this campaign.",
+                        )
+                    )
+                    suggested_fixes.append("Repair helper credentials/provider config or disable helper for this campaign.")
 
     all_warnings_are_errors = strict and warnings
     valid = not errors and not all_warnings_are_errors
@@ -318,4 +367,5 @@ def validate_launch_contract(
             "resolvedSpec": str(spec_path),
             "helperEnv": str(helper_env_path),
         },
+        "helperProbe": helper_probe_payload,
     }

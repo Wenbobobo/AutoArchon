@@ -19,6 +19,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--campaign-root", required=True, help="Existing or scaffolded campaign root")
     parser.add_argument("--repo-root", default=str(ROOT), help="AutoArchon repository root used for helper env checks")
     parser.add_argument("--strict", action="store_true", help="Treat warnings as launch-blocking errors")
+    parser.add_argument("--probe-helper", action="store_true", help="Run a bounded helper transport probe against examples/helper.env")
+    parser.add_argument(
+        "--helper-probe-timeout-seconds",
+        type=int,
+        default=20,
+        help="Timeout budget for --probe-helper",
+    )
     parser.add_argument("--output", help="Optional JSON output path")
     return parser.parse_args()
 
@@ -29,6 +36,8 @@ def main() -> int:
         Path(args.campaign_root),
         repo_root=Path(args.repo_root),
         strict=args.strict,
+        probe_helper=args.probe_helper,
+        helper_probe_timeout_seconds=args.helper_probe_timeout_seconds,
     )
     rendered = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     if args.output:
