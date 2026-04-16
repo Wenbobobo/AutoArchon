@@ -260,10 +260,11 @@ bash scripts/watch_run.sh /path/to/run-root/workspace
 After `autoarchon-finalize-campaign`, use these paths:
 
 - Final accepted proofs: `reports/final/proofs/<run-id>/<rel-path>.lean`
+- Final accepted formalization scaffolds: `reports/final/formalizations/<run-id>/<rel-path>.lean`
 - Final accepted blocker notes: `reports/final/blockers/<run-id>/<file>.md`
 - Final validation payloads: `reports/final/validation/<run-id>/<rel-path_escaped>.json`
 
-Run-level `artifacts/proofs/` may still contain intermediate edited files from partial-progress or blocker runs. Treat `reports/final/` as the acceptance boundary.
+`acceptedFormalizations` means the run preserved the source object faithfully and landed a validated declaration scaffold, but it is not counted as a completed mathematical proof. Run-level `artifacts/proofs/` may still contain intermediate edited files from partial-progress or blocker runs. Treat `reports/final/` as the acceptance boundary.
 For comment-only/open-problem autoformalization, the live declaration contract now lives at `runs/<id>/workspace/.archon/formalization/<rel-path-with-slashes-replaced>.json`, and the matching live route note lives at `runs/<id>/workspace/.archon/informal/<rel-path-with-slashes-replaced-and-.lean-removed>-autoformalize.md`. If a run weakens the mathematical object, the control plane reopens the run and reroutes from those live assets instead of treating the compileable surrogate as accepted.
 
 ## Shortcut: Scripted Start
@@ -469,6 +470,7 @@ When the helper is enabled, use phase-aware auto note routing rather than ad hoc
 
 Use `--phase plan` for planner-side calls. `--prompt-pack auto` selects a task-class template from the phase and reason, so repeated failures, external-reference gaps, missing infrastructure, and LSP timeouts do not all hit the side model with the same generic wording. In `auto` note mode the wrapper writes a metadata-backed Markdown note into the configured `notes_dir` for that phase. Passing an explicit `--write-note /path/to/file.md` still works and keeps the old bare-text compatibility path.
 By default, repeated calls with the same `phase + file + reason` will reuse the newest matching helper note instead of paying for the same side-model query again. Use `--force-fresh-call` only after the context has materially changed.
+If the helper transport already failed for the same `phase + file + reason + config`, the wrapper now skips the repeated call until credentials, endpoint, or model change. This prevents plan/prover loops from burning cycles on identical provider-side outages.
 
 ## Where Proofs and Lessons End Up
 
@@ -486,7 +488,9 @@ Concrete paths:
 - live formalization contract: `runs/<id>/workspace/.archon/formalization/<rel-path-with-slashes-replaced>.json`
 - live autoformalize route note: `runs/<id>/workspace/.archon/informal/<rel-path-with-slashes-replaced-and-.lean-removed>-autoformalize.md`
 - exported per-run proof bundle: `runs/<id>/artifacts/proofs/<rel-path>`
+- exported per-run accepted formalization bundle: `runs/<id>/artifacts/proofs/<rel-path>` with validation `acceptedKind = formalization`
 - `reports/final/proofs/<run>/`
+- `reports/final/formalizations/<run>/`
 - `reports/final/blockers/<run>/`
 - `reports/final/validation/<run>/`
 - `reports/final/lessons/lesson-records.jsonl`

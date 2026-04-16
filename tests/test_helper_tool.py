@@ -704,6 +704,88 @@ model = "gemini-3.1-pro-preview"
     assert attempts == [("openai", "deepseek-reasoner"), ("gemini", "gemini-3.1-pro-preview")]
 
 
+def test_helper_tool_records_transport_failure_and_skips_same_config_retry(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "runtime-config.toml"
+    config_path.write_text(
+        """
+[helper]
+enabled = true
+provider = "openai"
+model = "gpt-5.4-mini"
+
+[helper.prover]
+reuse_recent_note_by_reason = false
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    calls = 0
+
+    def fail_openai(prompt: str, model: str, think: bool, *, max_retries: int, initial_backoff_seconds: int, timeout_seconds: int) -> str:
+        nonlocal calls
+        calls += 1
+        raise SystemExit("Transport error: provider unavailable")
+
+    fake_agent = SimpleNamespace(
+        API_KEY_ENVS={"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "openrouter": "OPENROUTER_API_KEY"},
+        BASE_URL_ENVS={"openai": "OPENAI_BASE_URL", "gemini": "GEMINI_BASE_URL", "openrouter": "OPENROUTER_BASE_URL"},
+        DEFAULTS={"openai": "gpt-5.4", "gemini": "gemini-3.1-pro-preview", "openrouter": "google/gemini-3.1-pro-preview"},
+        MAX_RETRIES=5,
+        INITIAL_BACKOFF_SECONDS=5,
+        TIMEOUT=300,
+        call_openai=fail_openai,
+        call_gemini=fail_openai,
+        call_openrouter=fail_openai,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    module = load_helper_tool()
+    monkeypatch.setattr(module, "_load_informal_agent", lambda: fake_agent)
+    argv = [
+        "archon-helper",
+        "--config",
+        str(config_path),
+        "--phase",
+        "prover",
+        "--rel-path",
+        "FATEM/42.lean",
+        "--reason",
+        "missing_infrastructure",
+        "Need a route around missing infrastructure.",
+    ]
+    monkeypatch.setattr(module.sys, "argv", argv)
+
+    with pytest.raises(SystemExit, match="helper transport failed across configured providers"):
+        module.main()
+    assert calls == 1
+
+    index_path = tmp_path / ".archon" / "informal" / "helper" / "helper-index.json"
+    index_payload = json.loads(index_path.read_text(encoding="utf-8"))
+    assert index_payload["entries"][-1]["event"] == "provider_call_failed"
+    assert index_payload["entries"][-1]["reason"] == "missing_infrastructure"
+    assert index_payload["entries"][-1]["failureMessage"] == "Transport error: provider unavailable"
+    assert "configSignature" in index_payload["entries"][-1]
+
+    module = load_helper_tool()
+    monkeypatch.setattr(module, "_load_informal_agent", lambda: fake_agent)
+    monkeypatch.setattr(module.sys, "argv", argv)
+    with pytest.raises(SystemExit, match="already failed for the same config"):
+        module.main()
+    assert calls == 1
+
+    index_payload = json.loads(index_path.read_text(encoding="utf-8"))
+    assert index_payload["entries"][-1]["event"] == "skipped_by_cooldown"
+    assert index_payload["entries"][-1]["cooldownKind"] == "config_signature_failure"
+
+    module = load_helper_tool()
+    monkeypatch.setattr(module, "_load_informal_agent", lambda: fake_agent)
+    monkeypatch.setattr(module.sys, "argv", argv[:-1] + ["--force-fresh-call", argv[-1]])
+    with pytest.raises(SystemExit, match="helper transport failed across configured providers"):
+        module.main()
+    assert calls == 2
+
+
 def test_helper_tool_blocks_fresh_call_after_reason_budget_and_requires_reuse(monkeypatch, tmp_path: Path):
     config_path = tmp_path / "runtime-config.toml"
     config_path.write_text(

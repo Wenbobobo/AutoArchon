@@ -114,6 +114,7 @@ def summarize_helper_index(entries: Iterable[Mapping[str, Any]]) -> dict[str, An
     materialized = [dict(entry) for entry in entries if isinstance(entry, Mapping)]
     count_by_event = Counter()
     fresh_calls_by_reason = Counter()
+    failed_calls_by_reason = Counter()
     reuse_by_reason = Counter()
     blocked_by_budget_by_reason = Counter()
     blocked_by_cooldown_by_reason = Counter()
@@ -132,6 +133,8 @@ def summarize_helper_index(entries: Iterable[Mapping[str, Any]]) -> dict[str, An
             continue
         if event == "provider_call":
             fresh_calls_by_reason[reason] += 1
+        elif event == "provider_call_failed":
+            failed_calls_by_reason[reason] += 1
         elif event == "note_reuse":
             reuse_by_reason[reason] += 1
         elif event == "skipped_by_budget":
@@ -149,10 +152,12 @@ def summarize_helper_index(entries: Iterable[Mapping[str, Any]]) -> dict[str, An
         "entryCount": len(materialized),
         "eventCounts": dict(sorted(count_by_event.items())),
         "freshCallCount": int(count_by_event.get("provider_call", 0)),
+        "failedCallCount": int(count_by_event.get("provider_call_failed", 0)),
         "noteReuseCount": int(count_by_event.get("note_reuse", 0)),
         "blockedByBudgetCount": int(count_by_event.get("skipped_by_budget", 0)),
         "blockedByCooldownCount": int(count_by_event.get("skipped_by_cooldown", 0)),
         "freshCallsByReason": dict(sorted(fresh_calls_by_reason.items())),
+        "failedCallsByReason": dict(sorted(failed_calls_by_reason.items())),
         "reuseByReason": dict(sorted(reuse_by_reason.items())),
         "blockedByBudgetByReason": dict(sorted(blocked_by_budget_by_reason.items())),
         "blockedByCooldownByReason": dict(sorted(blocked_by_cooldown_by_reason.items())),

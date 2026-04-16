@@ -2376,6 +2376,7 @@ def build_campaign_overview(
             "compareReportPath": str(campaign_root / "reports" / "final" / "compare-report.json"),
             "finalSummaryPath": str(campaign_root / "reports" / "final" / "final-summary.json"),
             "finalProofsRoot": str(campaign_root / "reports" / "final" / "proofs"),
+            "finalFormalizationsRoot": str(campaign_root / "reports" / "final" / "formalizations"),
             "finalBlockersRoot": str(campaign_root / "reports" / "final" / "blockers"),
             "watchdogStatePath": str(campaign_root / "control" / "orchestrator-watchdog.json"),
             "progressSummaryPath": str(campaign_root / "control" / "progress-summary.md"),

@@ -15,6 +15,7 @@ providers and API behavior stay aligned.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -419,21 +420,35 @@ def _render_prompt_with_pack(
     return "\n".join(lines)
 
 
+def _attempt_signature(config: HelperProviderConfig) -> str:
+    payload = {
+        "provider": config.provider,
+        "model": config.model,
+        "apiKeyEnv": config.api_key_env,
+        "baseUrlEnv": config.base_url_env,
+        "maxRetries": config.max_retries,
+        "initialBackoffSeconds": config.initial_backoff_seconds,
+        "timeoutSeconds": config.timeout_seconds,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
 def _phase_policy(runtime_config: RuntimeConfig, phase: str) -> Any:
     return runtime_config.helper_plan if phase == "plan" else runtime_config.helper_prover
 
 
-def _matching_provider_call_entries(
+def _matching_provider_attempt_entries(
     workspace: Path,
     *,
     phase: str,
     rel_path: str | None,
     reason: str,
+    config_signature: str | None,
 ) -> list[dict[str, Any]]:
     normalized_reason = _normalize_reason(reason)
     matches: list[dict[str, Any]] = []
     for entry in helper_index_entries(workspace):
-        if entry.get("event") != "provider_call":
+        if entry.get("event") not in {"provider_call", "provider_call_failed"}:
             continue
         if entry.get("phase") != phase:
             continue
@@ -441,8 +456,72 @@ def _matching_provider_call_entries(
             continue
         if rel_path is not None and entry.get("relPath") != rel_path:
             continue
+        entry_signature = entry.get("configSignature")
+        if (
+            config_signature is not None
+            and isinstance(entry_signature, str)
+            and entry_signature
+            and entry_signature != config_signature
+        ):
+            continue
         matches.append(entry)
     return matches
+
+
+def _maybe_skip_repeated_transport_failure(
+    *,
+    workspace: Path,
+    phase: str | None,
+    rel_path: str | None,
+    reason: str | None,
+    prompt_pack: str | None,
+    provider: str,
+    model: str,
+    config_signature: str,
+    iteration: int | None,
+    attempt: int | None,
+    force_fresh_call: bool,
+) -> None:
+    normalized_reason = _normalize_reason(reason)
+    if force_fresh_call or phase is None or normalized_reason is None:
+        return
+    attempts = _matching_provider_attempt_entries(
+        workspace,
+        phase=phase,
+        rel_path=rel_path,
+        reason=normalized_reason,
+        config_signature=config_signature,
+    )
+    if not attempts:
+        return
+    latest = attempts[-1]
+    if latest.get("event") != "provider_call_failed":
+        return
+    append_helper_index_event(
+        workspace,
+        event="skipped_by_cooldown",
+        phase=phase,
+        rel_path=rel_path,
+        reason=normalized_reason,
+        prompt_pack=prompt_pack,
+        provider=provider,
+        model=model,
+        iteration=iteration,
+        attempt=attempt,
+        metadata={
+            "cooldownKind": "config_signature_failure",
+            "configSignature": config_signature,
+            "previousFailureMessage": latest.get("failureMessage"),
+        },
+    )
+    failure_message = latest.get("failureMessage")
+    detail = f" Last failure: {failure_message}" if isinstance(failure_message, str) and failure_message else ""
+    raise SystemExit(
+        f"Error: helper transport already failed for the same config on {phase}:{normalized_reason}"
+        + (f" for {rel_path}" if rel_path else "")
+        + ". Use --force-fresh-call after changing credentials or endpoint."
+        + detail
+    )
 
 
 def _enforce_fresh_call_policy(
@@ -455,6 +534,7 @@ def _enforce_fresh_call_policy(
     prompt_pack: str | None,
     provider: str,
     model: str,
+    config_signature: str,
     iteration: int | None,
     attempt: int | None,
 ) -> None:
@@ -462,11 +542,12 @@ def _enforce_fresh_call_policy(
     if phase is None or normalized_reason is None:
         return
     policy = _phase_policy(runtime_config, phase)
-    provider_calls = _matching_provider_call_entries(
+    provider_calls = _matching_provider_attempt_entries(
         workspace,
         phase=phase,
         rel_path=rel_path,
         reason=normalized_reason,
+        config_signature=config_signature,
     )
     if phase == "plan":
         cooldown = getattr(policy, "cooldown_iterations_per_reason", 0)
@@ -808,6 +889,7 @@ def main() -> int:
         timeout_seconds=args.timeout_seconds,
         explicit_provider=args.provider is not None,
     )
+    primary_config_signature = _attempt_signature(attempts[0])
     failures: list[str] = []
     response: str | None = None
     used_config: HelperProviderConfig | None = None
@@ -831,6 +913,19 @@ def main() -> int:
             attempt=args.attempt,
         )
     else:
+        _maybe_skip_repeated_transport_failure(
+            workspace=workspace,
+            phase=args.phase,
+            rel_path=args.rel_path,
+            reason=args.reason,
+            prompt_pack=selected_prompt_pack,
+            provider=attempts[0].provider,
+            model=attempts[0].model,
+            config_signature=primary_config_signature,
+            iteration=args.iteration,
+            attempt=args.attempt,
+            force_fresh_call=args.force_fresh_call,
+        )
         _enforce_fresh_call_policy(
             workspace=workspace,
             runtime_config=runtime_config,
@@ -840,6 +935,7 @@ def main() -> int:
             prompt_pack=selected_prompt_pack,
             provider=attempts[0].provider,
             model=attempts[0].model,
+            config_signature=primary_config_signature,
             iteration=args.iteration,
             attempt=args.attempt,
         )
@@ -859,6 +955,22 @@ def main() -> int:
                 break
             except SystemExit as exc:
                 failures.append(f"{attempt.provider}:{attempt.model}: {exc}")
+                append_helper_index_event(
+                    workspace,
+                    event="provider_call_failed",
+                    phase=args.phase,
+                    rel_path=args.rel_path,
+                    reason=args.reason,
+                    prompt_pack=selected_prompt_pack,
+                    provider=attempt.provider,
+                    model=attempt.model,
+                    iteration=args.iteration,
+                    attempt=args.attempt,
+                    metadata={
+                        "configSignature": _attempt_signature(attempt),
+                        "failureMessage": str(exc),
+                    },
+                )
                 if index + 1 < len(attempts):
                     sys.stderr.write(
                         f"[archon-helper] helper attempt failed on {attempt.provider}:{attempt.model}; trying next fallback\n"
@@ -908,6 +1020,7 @@ def main() -> int:
             note_path=event_note_path,
             iteration=args.iteration,
             attempt=args.attempt,
+            metadata={"configSignature": _attempt_signature(used_config)},
         )
     sys.stdout.write(response)
     if response and not response.endswith("\n"):

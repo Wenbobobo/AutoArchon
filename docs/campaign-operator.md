@@ -211,10 +211,11 @@ Trust these campaign-level files before reacting to terminal noise:
 For final acceptance review, use:
 
 - `reports/final/proofs/`
+- `reports/final/formalizations/`
 - `reports/final/blockers/`
 - `reports/final/validation/`
 
-Run-level `artifacts/proofs/` can contain partial-progress edits that were useful during recovery but were not ultimately accepted as final proofs.
+`reports/final/formalizations/` is for validated comment-only/open-problem scaffolds that preserve the source object but still are not completed mathematical proofs. Run-level `artifacts/proofs/` can contain partial-progress edits that were useful during recovery but were not ultimately accepted as final proofs.
 For comment-only/open-problem runs, also inspect `runs/<id>/workspace/.archon/formalization/` and `runs/<id>/workspace/.archon/informal/*-autoformalize.md`. If the live workspace weakened the source object, relaunch now resets the stale live state and restarts from the formalization contract plus regenerated route note instead of inheriting the fake proof closure.
 
 ## Shortcut: Scripted Bootstrap
