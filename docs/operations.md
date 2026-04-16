@@ -135,11 +135,17 @@ uv run --directory /path/to/AutoArchon autoarchon-campaign-observe \
   --bind 0.0.0.0 \
   --port 8765
 
+uv run --directory /path/to/AutoArchon autoarchon-helper-analysis \
+  --campaign-root /path/to/campaign-root \
+  --markdown
+
 uv run --directory /path/to/AutoArchon autoarchon-campaign-archive \
   --campaign-root /path/to/campaign-root \
   --prune-workspace-lake \
   --prune-broken-prewarm
 ```
+
+`autoarchon-helper-analysis` is the offline evidence pass for helper-policy tuning. It reads the existing file-backed surfaces, combines run-level `progress-summary.json`, any `helper-index.json` files, and final/postmortem lesson records, then summarizes helper reason families, repeated-attempt clusters, and lesson context without starting any long-running process. Add `--write-default-files` when you want `helper-analysis.json` and `helper-analysis.md` emitted under the campaign's default diagnostics root.
 
 Before starting another teacher on an existing run, inspect `workspace/.archon/supervisor/run-lease.json`.
 

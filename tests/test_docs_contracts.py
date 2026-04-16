@@ -54,6 +54,8 @@ def test_readme_centers_interactive_campaign_operator_and_result_paths():
     assert "docs/campaign-operator.md" in readme
     assert "autoarchon-storage-report" in readme
     assert "autoarchon-campaign-observe" in readme
+    assert "autoarchon-helper-analysis" in readme
+    assert "reports/final/helper-analysis/" in readme
     assert "docs/roadmaps/control-plane-phase7.md" in readme
 
 
@@ -78,6 +80,7 @@ def test_operations_doc_covers_single_run_prewarm_supervisor_and_export_flow():
     assert "workspace/.archon/supervisor/progress-summary.md" in operations
     assert "control/progress-summary.html" in operations
     assert "autoarchon-campaign-observe" in operations
+    assert "autoarchon-helper-analysis" in operations
 
 
 def test_teacher_agents_doc_covers_launch_monitoring_and_results():

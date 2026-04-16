@@ -517,6 +517,17 @@ uv run --directory /path/to/AutoArchon autoarchon-lesson-clusters \
   --markdown
 ```
 
+To audit helper usage, repeated helper failures, and per-campaign lesson context before changing helper policy:
+
+```bash
+uv run --directory /path/to/AutoArchon autoarchon-helper-analysis \
+  --campaign-root /path/to/runs/campaigns/20260415-rerun12-fatem-42-45-94 \
+  --campaign-root /path/to/runs/campaigns/20260415-183503-motivic-flag-maps-q1-fixed-open-problem \
+  --markdown
+```
+
+Add `--write-default-files` to write `helper-analysis.json` and `helper-analysis.md` under the campaign's default diagnostics root, which is `reports/postmortem/helper-analysis/` for archived samples and `reports/final/helper-analysis/` for finalized samples.
+
 ## Storage Hygiene
 
 If the working tree grows very large, the usual culprit is rebuildable Lean caches under `runs/**/workspace/.lake` or older standalone run roots with a top-level `.lake`, not the repo itself.
