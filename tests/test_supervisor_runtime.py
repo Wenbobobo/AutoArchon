@@ -1963,6 +1963,24 @@ def test_supervised_cycle_progress_summary_breaks_down_helper_notes_and_task_res
         """,
     )
     write(
+        workspace / ".archon" / "informal" / "helper" / "helper-index.json",
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "entries": [
+                    {
+                        "createdAt": "2026-04-15T03:05:00+00:00",
+                        "event": "provider_call_failed",
+                        "phase": "prover",
+                        "reason": "lsp_timeout",
+                        "relPath": "FATEM/2.lean",
+                    }
+                ],
+            },
+            sort_keys=True,
+        ),
+    )
+    write(
         workspace / ".archon" / "task_results" / "FATEM_2.lean.md",
         """
         # FATEM/2.lean
@@ -2036,6 +2054,8 @@ def test_supervised_cycle_progress_summary_breaks_down_helper_notes_and_task_res
     assert payload["helper"]["countsByPhase"] == {"prover": 1}
     assert payload["helper"]["countsByReason"] == {"lsp_timeout": 1}
     assert payload["helper"]["countsByPromptPack"] == {"lsp_timeout": 1}
+    assert payload["helper"]["failedCallCount"] == 1
+    assert payload["helper"]["failedCallsByReason"] == {"lsp_timeout": 1}
     assert payload["taskResultsSummary"]["counts"] == {
         "blocker": 1,
         "other": 0,
@@ -2047,6 +2067,8 @@ def test_supervised_cycle_progress_summary_breaks_down_helper_notes_and_task_res
     ]
     assert "Helper note phases:" in markdown
     assert "Helper note reasons:" in markdown
+    assert "Helper failed calls: `1`" in markdown
+    assert 'Helper failed reasons: `{"lsp_timeout": 1}`' in markdown
     assert "Task result kinds:" in markdown
     assert "`FATEM_3.lean.md` — `blocker`" in markdown
 

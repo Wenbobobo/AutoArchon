@@ -3055,8 +3055,10 @@ def test_build_campaign_overview_surfaces_run_progress_summary_signals(tmp_path:
                 },
                 "helper": {
                     "noteCount": 2,
+                    "failedCallCount": 1,
                     "countsByReason": {"lsp_timeout": 1, "missing_infrastructure": 1},
                     "countsByPhase": {"prover": 2},
+                    "failedCallsByReason": {"provider_transport": 1},
                 },
                 "taskResultsSummary": {
                     "counts": {"resolved": 0, "blocker": 1, "other": 0},
@@ -3077,6 +3079,8 @@ def test_build_campaign_overview_surfaces_run_progress_summary_signals(tmp_path:
     assert running["activeProverCount"] == 1
     assert running["helperNoteCount"] == 2
     assert running["helperReasonCounts"] == {"lsp_timeout": 1, "missing_infrastructure": 1}
+    assert running["helperFailedCallCount"] == 1
+    assert running["helperFailedReasonCounts"] == {"provider_transport": 1}
     assert running["taskResultBlockerCount"] == 1
 
     overview_result = subprocess.run(
@@ -3097,12 +3101,16 @@ def test_build_campaign_overview_surfaces_run_progress_summary_signals(tmp_path:
     progress_markdown = (campaign_root / "control" / "progress-summary.md").read_text(encoding="utf-8")
     assert "phase=proving" in progress_markdown
     assert "helper_notes=2" in progress_markdown
+    assert 'helper_failed_calls=1' in progress_markdown
+    assert 'helper_failed_reasons={"provider_transport": 1}' in progress_markdown
     assert "blocker_notes=1" in progress_markdown
     progress_payload = json.loads((campaign_root / "control" / "progress-summary.json").read_text(encoding="utf-8"))
     assert "statusBuckets" in progress_payload
     assert "recommendedCommands" in progress_payload
     assert "recentTransitions" in progress_payload
     assert "cooldownState" in progress_payload
+    assert progress_payload["runningRuns"][0]["helperFailedCallCount"] == 1
+    assert progress_payload["runningRuns"][0]["helperFailedReasonCounts"] == {"provider_transport": 1}
     assert progress_payload["paths"]["progressSummaryHtmlPath"].endswith("control/progress-summary.html")
     recommended_commands = [row["command"] for row in progress_payload["recommendedCommands"]]
     assert any("autoarchon-campaign-observe" in command for command in recommended_commands)

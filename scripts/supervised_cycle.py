@@ -931,6 +931,8 @@ def _render_run_progress_markdown(payload: dict[str, Any]) -> str:
         f"- Helper note reasons: `{json.dumps(helper.get('countsByReason', {}), sort_keys=True)}`",
         f"- Helper prompt packs: `{json.dumps(helper.get('countsByPromptPack', {}), sort_keys=True)}`",
         f"- Helper fresh calls: `{helper.get('freshCallCount', 0)}`",
+        f"- Helper failed calls: `{helper.get('failedCallCount', 0)}`",
+        f"- Helper failed reasons: `{json.dumps(helper.get('failedCallsByReason', {}), sort_keys=True)}`",
         f"- Helper note reuses: `{helper.get('noteReuseCount', 0)}`",
         f"- Helper blocked by budget: `{helper.get('blockedByBudgetCount', 0)}`",
         f"- Helper blocked by cooldown: `{helper.get('blockedByCooldownCount', 0)}`",
