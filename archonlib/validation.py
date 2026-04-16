@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, Mapping
 
-from archonlib.formalization import assess_formalization
+from archonlib.formalization import assess_formalization, materialize_formalization_contract
 from archonlib.supervisor import HeaderDrift
 
 
 SCHEMA_VERSION = 1
+ACCEPTED_KIND_NONE = "none"
+ACCEPTED_KIND_BLOCKER = "blocker"
+ACCEPTED_KIND_PROOF = "proof"
+ACCEPTED_KIND_FORMALIZATION = "formalization"
 
 
 def _task_result_name(rel_path: str) -> str:
@@ -109,12 +114,20 @@ def _should_preserve_previous_acceptance(
     return isinstance(blocker_notes, list) and bool(blocker_notes)
 
 
-def _accepted_kind(*, acceptance_status: str, task_result_kind: str | None) -> str:
+def accepted_kind_for_outcome(
+    *,
+    acceptance_status: str,
+    task_result_kind: str | None,
+    formalization: Mapping[str, Any] | None = None,
+) -> str:
     if acceptance_status != "accepted":
-        return "none"
+        return ACCEPTED_KIND_NONE
     if task_result_kind == "blocker":
-        return "blocker"
-    return "proof"
+        return ACCEPTED_KIND_BLOCKER
+    source_kind = formalization.get("sourceKind") if isinstance(formalization, Mapping) else None
+    if source_kind == "comment_only":
+        return ACCEPTED_KIND_FORMALIZATION
+    return ACCEPTED_KIND_PROOF
 
 
 def write_validation_artifacts(
@@ -148,6 +161,7 @@ def write_validation_artifacts(
         workspace_changed = rel_path in changed_files
         task_result_name = task_result_path.name if task_result_path.exists() else None
         prover_error = rel_path in prover_failures
+        materialize_formalization_contract(workspace, rel_path)
         formalization = assess_formalization(workspace, rel_path)
         formalization_fidelity = str(formalization.get("fidelity") or "not_applicable")
         acceptance_status = _acceptance_status(
@@ -207,7 +221,11 @@ def write_validation_artifacts(
             acceptance_status = "pending"
             validation_status = "attention" if status != "no_progress" else "no_progress"
 
-        accepted_kind = _accepted_kind(acceptance_status=acceptance_status, task_result_kind=task_result_kind)
+        accepted_kind = accepted_kind_for_outcome(
+            acceptance_status=acceptance_status,
+            task_result_kind=task_result_kind,
+            formalization=formalization,
+        )
         payload = {
             "schemaVersion": SCHEMA_VERSION,
             "relPath": rel_path,

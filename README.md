@@ -264,6 +264,7 @@ After `autoarchon-finalize-campaign`, use these paths:
 - Final validation payloads: `reports/final/validation/<run-id>/<rel-path_escaped>.json`
 
 Run-level `artifacts/proofs/` may still contain intermediate edited files from partial-progress or blocker runs. Treat `reports/final/` as the acceptance boundary.
+For comment-only/open-problem autoformalization, the live declaration contract now lives at `runs/<id>/workspace/.archon/formalization/<rel-path-with-slashes-replaced>.json`, and the matching live route note lives at `runs/<id>/workspace/.archon/informal/<rel-path-with-slashes-replaced-and-.lean-removed>-autoformalize.md`. If a run weakens the mathematical object, the control plane reopens the run and reroutes from those live assets instead of treating the compileable surrogate as accepted.
 
 ## Shortcut: Scripted Start
 
@@ -433,6 +434,8 @@ ARCHON_HELPER_BASE_URL_ENV=OPENAI_BASE_URL
 
 `init.sh` writes those values into `.archon/runtime-config.toml`, which then becomes the durable per-workspace config surface. The generated file includes helper policy for both the `plan` and `prover` phases, note-reuse heuristics, and observability toggles such as `write_progress_surface`.
 
+`ARCHON_HELPER_API_KEY_ENV` and `ARCHON_HELPER_BASE_URL_ENV` normally hold environment-variable names such as `OPENAI_API_KEY` and `OPENAI_BASE_URL`. If a local ignored `examples/helper.env` file stores literal values instead, the generated launcher normalizes them back into the provider-default bindings before it writes `helper-effective-config.json`.
+
 OpenAI-compatible providers such as DeepSeek should still use `provider = "openai"` in `.archon/runtime-config.toml`, then point `api_key_env` and `base_url_env` at the compatible endpoint. Legacy `.archon/helper-provider.json` is still accepted as a fallback, but new workspaces should use the TOML file.
 
 If you want bounded helper failover, add fallback transports explicitly:
@@ -480,6 +483,8 @@ Concrete paths:
 - live edited theorem file: `runs/<id>/workspace/<rel-path>.lean`
 - live task report: `runs/<id>/workspace/.archon/task_results/<rel-path-with-slashes-replaced>.md`
 - live validation record: `runs/<id>/workspace/.archon/validation/<rel-path-with-slashes-replaced>.json`
+- live formalization contract: `runs/<id>/workspace/.archon/formalization/<rel-path-with-slashes-replaced>.json`
+- live autoformalize route note: `runs/<id>/workspace/.archon/informal/<rel-path-with-slashes-replaced-and-.lean-removed>-autoformalize.md`
 - exported per-run proof bundle: `runs/<id>/artifacts/proofs/<rel-path>`
 - `reports/final/proofs/<run>/`
 - `reports/final/blockers/<run>/`

@@ -168,3 +168,14 @@ def test_prover_prompt_makes_written_blocker_note_the_primary_completion_path():
     assert "write `task_results/<file>.md` immediately before any optional edits to the `.lean` file" in prover_prompt
     assert "only after that note exists may you add separately named helper/counterexample declarations" in prover_prompt
     assert "once the note exists, you may stop the session" in prover_prompt
+
+
+def test_autoformalize_prover_prompt_forces_early_scaffold_or_durable_note():
+    prover_prompt = read(".archon-src/prompts/prover-autoformalize.md")
+
+    assert "Land the smallest faithful scaffold edit first" in prover_prompt
+    assert "your first durable action must be either a scaffold edit or a blocker/task-result note" in prover_prompt
+    assert "a concrete `.lean` edit" in prover_prompt
+    assert "a durable `task_results/<your_file>.md` note" in prover_prompt
+    assert "a faithful declaration skeleton with `by sorry` outranks perfect API polish" in prover_prompt
+    assert "Once you have identified the key local Mathlib APIs you need, stop searching and start editing." in prover_prompt

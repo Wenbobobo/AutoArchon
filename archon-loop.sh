@@ -249,6 +249,23 @@ can_fallback_to_existing_objectives() {
     [[ -n "$objective_files" ]]
 }
 
+planning_surface_changed_since_backup() {
+    local backup_path="$1"
+    local live_path="$2"
+    [[ -n "$backup_path" && -f "$backup_path" && -f "$live_path" ]] || return 1
+    ! cmp -s "$backup_path" "$live_path"
+}
+
+can_fallback_to_recovered_autoformalize_objective() {
+    [[ "$STAGE" == "autoformalize" ]] || return 1
+    has_live_task_results && return 1
+    [[ "${PLAN_SURFACE_RECOVERED:-0}" == "1" ]] || return 1
+
+    local objective_files
+    objective_files="$(parse_objective_files)"
+    [[ -n "$objective_files" ]]
+}
+
 check_codex_ready() {
     local max_attempts=$(( CODEX_READY_RETRIES + 1 ))
     local attempt=1
@@ -803,10 +820,21 @@ for (( i=0; i<MAX_ITERATIONS; i++ )); do
 	    PLAN_START=$SECONDS
 	    PLAN_PROMPT=$(build_prompt "plan" "$STAGE")
 	    RUN_SCOPE_BACKUP=""
+        PROGRESS_BACKUP=""
+        TASK_PENDING_BACKUP=""
+        PLAN_SURFACE_RECOVERED=0
 	    if [[ "$DRY_RUN" != true && -f "$RUN_SCOPE_FILE" ]]; then
 	        RUN_SCOPE_BACKUP="${ITER_DIR}/run_scope.before-plan.md"
 	        cp "$RUN_SCOPE_FILE" "$RUN_SCOPE_BACKUP"
 	    fi
+        if [[ "$DRY_RUN" != true && -f "$PROGRESS_FILE" ]]; then
+            PROGRESS_BACKUP="${ITER_DIR}/progress.before-plan.md"
+            cp "$PROGRESS_FILE" "$PROGRESS_BACKUP"
+        fi
+        if [[ "$DRY_RUN" != true && -f "${STATE_DIR}/task_pending.md" ]]; then
+            TASK_PENDING_BACKUP="${ITER_DIR}/task_pending.before-plan.md"
+            cp "${STATE_DIR}/task_pending.md" "$TASK_PENDING_BACKUP"
+        fi
 	    if [[ "$DRY_RUN" == true ]]; then
 	        echo "$PLAN_PROMPT"
 	        PLAN_STATUS="done"
@@ -829,6 +857,14 @@ for (( i=0; i<MAX_ITERATIONS; i++ )); do
 	            fi
 	        fi
 	    fi
+        if [[ "$DRY_RUN" != true ]]; then
+            if planning_surface_changed_since_backup "$PROGRESS_BACKUP" "$PROGRESS_FILE"; then
+                PLAN_SURFACE_RECOVERED=1
+            fi
+            if planning_surface_changed_since_backup "$TASK_PENDING_BACKUP" "${STATE_DIR}/task_pending.md"; then
+                PLAN_SURFACE_RECOVERED=1
+            fi
+        fi
 
 	    PLAN_SECS=$(( SECONDS - PLAN_START ))
 	    info "Plan phase finished. (${PLAN_SECS}s)"
@@ -841,6 +877,11 @@ for (( i=0; i<MAX_ITERATIONS; i++ )); do
 	            warn "Continuing to prover with the current PROGRESS.md."
 	            PLAN_STATUS="fallback"
 	            [[ "$DRY_RUN" != true ]] && write_meta "$ITER_META" "plan.status=${PLAN_STATUS}"
+            elif [[ "$PLAN_STATUS" == "error" ]] && can_fallback_to_recovered_autoformalize_objective; then
+                warn "Plan agent failed after updating the scoped autoformalize planning files."
+                warn "Continuing to prover with the recovered autoformalize objective."
+                PLAN_STATUS="fallback_recovered_autoformalize"
+                [[ "$DRY_RUN" != true ]] && write_meta "$ITER_META" "plan.status=${PLAN_STATUS}"
 	        else
 	            warn "Skipping prover phase because the plan phase did not complete successfully."
 	            break

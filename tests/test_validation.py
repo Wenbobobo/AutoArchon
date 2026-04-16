@@ -4,6 +4,7 @@ import json
 import textwrap
 from pathlib import Path
 
+from archonlib.formalization import materialize_formalization_contract
 from archonlib.validation import write_validation_artifacts
 
 
@@ -145,3 +146,166 @@ def test_write_validation_artifacts_rejects_comment_only_surrogate_formalization
     assert "define_rd" in payload["formalizationContract"]["unresolvedItems"]
     assert "drop_monic_constraint" in payload["formalizationContract"]["forbiddenSimplifications"]
     assert "replace_exact_degree_with_lt" in payload["formalizationContract"]["forbiddenSimplifications"]
+    contract_path = workspace / ".archon" / "formalization" / "motivicflagmaps_1.lean.json"
+    assert contract_path.exists()
+    contract_payload = json.loads(contract_path.read_text(encoding="utf-8"))
+    assert contract_payload["sourceKind"] == "comment_only"
+    assert "define_qd" in contract_payload["requiredItems"]
+    assert "define_rd" in contract_payload["requiredItems"]
+    route_note_path = workspace / ".archon" / "informal" / "motivicflagmaps-1-autoformalize.md"
+    assert route_note_path.exists()
+    route_note = route_note_path.read_text(encoding="utf-8")
+    assert "Autoformalization Route For `motivicflagmaps/1.lean`" in route_note
+    assert "R_d" in route_note
+    assert "Q_0" in route_note or "Q0" in route_note
+    assert "## First Lean Edit" in route_note
+    assert "## Starter Skeleton" in route_note
+    assert "def Qd" in route_note
+    assert "def Rd" in route_note
+
+
+def test_write_validation_artifacts_accepts_faithful_comment_only_formalization_as_formalization_kind(tmp_path: Path):
+    run_root = tmp_path / "run"
+    source = run_root / "source"
+    workspace = run_root / "workspace"
+    rel_path = "motivicflagmaps/1.lean"
+    write(
+        source / rel_path,
+        """
+        import Mathlib
+
+        /-!
+        Informal objective:
+        Define faithful Q_d and R_d over a finite field, preserve Q_0, and state finiteness/cardinality theorems.
+
+        Notes:
+        q_0 is monic of degree d, r_2 is monic of degree d, and Q_0 is a special case.
+        -/
+        """,
+    )
+    write(source / "Extra-fixed.md", "R_d is required and the construction is asymmetric.\n")
+    write(
+        workspace / rel_path,
+        """
+        import Mathlib
+
+        namespace MotivicFlagMaps
+
+        variable (F : Type*) [Field F]
+
+        abbrev BoundedPoly (d : Nat) := Polynomial.degreeLT F d
+        abbrev MonicDegreePoly (d : Nat) := { p : F[X] // p.Monic ∧ p.natDegree = d }
+        /-- The explicit source-level `Q_0` singleton. -/
+        def Q0 : Set (F[X] × F[X] × F[X]) := {(1, 0, 0)}
+        abbrev Qd (d : Nat) := MonicDegreePoly F d × BoundedPoly F d × BoundedPoly F d
+        abbrev Rd (d : Nat) := BoundedPoly F d × BoundedPoly F d × MonicDegreePoly F d
+
+        theorem finite_Q0 : (Q0 F).Finite := by
+          simp [Q0]
+
+        theorem card_Q0 : Fintype.card (Q0 F) = 1 := by
+          classical
+          simp [Q0]
+
+        theorem finite_Qd [Fintype F] (d : Nat) : Finite (Qd F d) := by
+          infer_instance
+
+        theorem finite_Rd [Fintype F] (d : Nat) : Finite (Rd F d) := by
+          infer_instance
+
+        theorem card_Qd [Fintype F] (d : Nat) :
+            Fintype.card (Qd F d) = Fintype.card F ^ (3 * d) := by
+          sorry
+
+        theorem card_Rd [Fintype F] (d : Nat) :
+            Fintype.card (Rd F d) = Fintype.card F ^ (3 * d) := by
+          sorry
+
+        end MotivicFlagMaps
+        """,
+    )
+
+    written = write_validation_artifacts(
+        workspace,
+        status="clean",
+        allowed_files=[rel_path],
+        changed_files=[rel_path],
+        drifts=[],
+        prover_failures=[],
+        iteration="iter-001",
+        loop_exit_code=0,
+    )
+
+    assert written == ["motivicflagmaps_1.lean.json"]
+    payload = json.loads((workspace / ".archon" / "validation" / "motivicflagmaps_1.lean.json").read_text(encoding="utf-8"))
+    assert payload["acceptanceStatus"] == "accepted"
+    assert payload["acceptedKind"] == "formalization"
+    assert payload["formalizationFidelity"] == "preserved"
+
+
+def test_materialize_formalization_contract_backfills_missing_route_note(tmp_path: Path):
+    run_root = tmp_path / "run"
+    source = run_root / "source"
+    workspace = run_root / "workspace"
+    rel_path = "motivicflagmaps/1.lean"
+    write(
+        source / rel_path,
+        """
+        import Mathlib
+
+        /-!
+        Informal objective:
+        Define faithful Q_d and R_d over a finite field.
+
+        Notes:
+        q_0 is monic of degree d, r_2 is monic of degree d, and Q_0 is a special case.
+        -/
+        """,
+    )
+    write(source / "Extra-fixed.md", "R_d is required and the construction is asymmetric.\n")
+
+    payload = materialize_formalization_contract(workspace, rel_path)
+    assert payload is not None
+    assert payload["routeNotePath"] == ".archon/informal/motivicflagmaps-1-autoformalize.md"
+
+    route_note_path = workspace / ".archon" / "informal" / "motivicflagmaps-1-autoformalize.md"
+    assert route_note_path.exists()
+    route_note_path.unlink()
+
+    payload = materialize_formalization_contract(workspace, rel_path)
+    assert payload is not None
+    assert route_note_path.exists()
+    route_note = route_note_path.read_text(encoding="utf-8")
+    assert "Acceptance Rule" in route_note
+    assert "Keep the source object faithful." in route_note
+
+
+def test_materialize_formalization_contract_derives_finiteness_cardinality_requirement(tmp_path: Path):
+    run_root = tmp_path / "run"
+    source = run_root / "source"
+    workspace = run_root / "workspace"
+    rel_path = "motivicflagmaps/1.lean"
+    write(
+        source / rel_path,
+        """
+        import Mathlib
+
+        /-!
+        Informal objective:
+        定义有限域上的 Q_d 和 R_d，并证明它们是有限集并计算其基数。
+
+        Notes:
+        q_0 is monic of degree d and Q_0 is a special case.
+        -/
+        """,
+    )
+    write(source / "Extra-fixed.md", "R_d is asymmetric and the counting theorem matters.\n")
+
+    payload = materialize_formalization_contract(workspace, rel_path)
+    assert payload is not None
+    assert "state_finiteness_and_cardinality" in payload["requiredItems"]
+
+    route_note_path = workspace / ".archon" / "informal" / "motivicflagmaps-1-autoformalize.md"
+    route_note = route_note_path.read_text(encoding="utf-8")
+    assert "finiteness/Fintype and cardinality" in route_note
+    assert "theorem card_Qd" in route_note

@@ -279,6 +279,31 @@ PY
 printf '%s\n' "$RUN_SCOPE_CONTENT" > "${STATE_DIR}/RUN_SCOPE.md"
 ok "RUN_SCOPE.md initialized"
 
+FORMALIZATION_CONTRACT_COUNT="$(
+    PYTHONPATH="${ARCHON_DIR}" python3 - <<PY
+from pathlib import Path
+from archonlib.formalization import materialize_formalization_contracts
+from archonlib.project_state import build_objectives, detect_stage
+
+project = Path(${PROJECT_PATH@Q})
+limit_raw = ${OBJECTIVE_LIMIT@Q}
+regex_raw = ${OBJECTIVE_REGEX@Q}
+limit = int(limit_raw) if limit_raw else None
+include_regex = regex_raw or None
+stage = detect_stage(project)
+objectives = build_objectives(project, stage=stage, limit=limit, include_regex=include_regex)
+written = materialize_formalization_contracts(
+    project,
+    [obj.rel_path for obj in objectives if obj.needs_formalization],
+)
+print(len(written))
+PY
+)"
+
+if [[ "${FORMALIZATION_CONTRACT_COUNT}" != "0" ]]; then
+    ok "formalization contracts initialized (${FORMALIZATION_CONTRACT_COUNT})"
+fi
+
 STAGE="$(awk '/^## Current Stage/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; exit}' "${STATE_DIR}/PROGRESS.md")"
 ok "Init complete. Current stage: ${STAGE}"
 ok "Next step: ./archon-loop.sh ${PROJECT_PATH}"

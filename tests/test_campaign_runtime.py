@@ -29,6 +29,7 @@ from archonlib.campaign import (
     refresh_owner_lease,
     release_owner_lease,
 )
+from archonlib.validation import write_validation_artifacts
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1841,6 +1842,100 @@ def test_collect_campaign_status_restores_accepted_artifact_proofs_from_event_hi
     assert run["recommendedRecovery"]["action"] == "none"
 
 
+def test_collect_campaign_status_tracks_comment_only_acceptance_as_formalization(tmp_path: Path):
+    source = tmp_path / "source-project"
+    write(source / "lakefile.lean", "import Lake\n")
+    write(source / "lean-toolchain", "leanprover/lean4:v4.28.0\n")
+    write(
+        source / "motivicflagmaps" / "1.lean",
+        """
+        import Mathlib
+
+        /-!
+        Informal objective:
+        Define faithful Q_d and R_d over a finite field, preserve Q_0, and state finiteness/cardinality theorems.
+
+        Notes:
+        q_0 is monic of degree d, r_2 is monic of degree d, and Q_0 is a special case.
+        -/
+        """,
+    )
+    write(source / "Extra-fixed.md", "R_d is required and the construction is asymmetric.\n")
+    campaign_root = tmp_path / "campaign"
+    create_campaign(
+        archon_root=ROOT,
+        source_root=source,
+        campaign_root=campaign_root,
+        run_specs=[
+            {
+                "id": "formalize-run",
+                "objective_regex": "^motivicflagmaps/1\\.lean$",
+                "objective_limit": 1,
+                "scope_hint": "motivicflagmaps/1.lean",
+            },
+        ],
+    )
+    workspace = campaign_root / "runs" / "formalize-run" / "workspace"
+    write(
+        workspace / "motivicflagmaps" / "1.lean",
+        """
+        import Mathlib
+
+        namespace MotivicFlagMaps
+
+        variable (F : Type*) [Field F]
+
+        abbrev BoundedPoly (d : Nat) := Polynomial.degreeLT F d
+        abbrev MonicDegreePoly (d : Nat) := { p : F[X] // p.Monic ∧ p.natDegree = d }
+        /-- The explicit source-level `Q_0` singleton. -/
+        def Q0 : Set (F[X] × F[X] × F[X]) := {(1, 0, 0)}
+        abbrev Qd (d : Nat) := MonicDegreePoly F d × BoundedPoly F d × BoundedPoly F d
+        abbrev Rd (d : Nat) := BoundedPoly F d × BoundedPoly F d × MonicDegreePoly F d
+
+        theorem finite_Q0 : (Q0 F).Finite := by
+          simp [Q0]
+
+        theorem card_Q0 : Fintype.card (Q0 F) = 1 := by
+          classical
+          simp [Q0]
+
+        theorem finite_Qd [Fintype F] (d : Nat) : Finite (Qd F d) := by
+          infer_instance
+
+        theorem finite_Rd [Fintype F] (d : Nat) : Finite (Rd F d) := by
+          infer_instance
+
+        theorem card_Qd [Fintype F] (d : Nat) :
+            Fintype.card (Qd F d) = Fintype.card F ^ (3 * d) := by
+          sorry
+
+        theorem card_Rd [Fintype F] (d : Nat) :
+            Fintype.card (Rd F d) = Fintype.card F ^ (3 * d) := by
+          sorry
+
+        end MotivicFlagMaps
+        """,
+    )
+    write_validation_artifacts(
+        workspace,
+        status="clean",
+        allowed_files=["motivicflagmaps/1.lean"],
+        changed_files=["motivicflagmaps/1.lean"],
+        drifts=[],
+        prover_failures=[],
+        iteration="iter-001",
+        loop_exit_code=0,
+    )
+
+    status = collect_campaign_status(campaign_root, heartbeat_seconds=60)
+    run = status["runs"][0]
+
+    assert run["status"] == "accepted"
+    assert run["acceptedFormalizations"] == ["motivicflagmaps/1.lean"]
+    assert run["acceptedProofs"] == []
+    assert run["remainingTargets"] == []
+
+
 def test_collect_campaign_status_marks_stale_launch_as_needs_relaunch(tmp_path: Path):
     source = make_source_project(tmp_path, file_count=1)
     campaign_root = tmp_path / "campaign"
@@ -2489,6 +2584,123 @@ def test_execute_run_recovery_relaunches_teacher_in_foreground(tmp_path: Path):
     assert result["teacherLaunch"]["detached"] is False
     assert result["teacherLaunch"]["returncode"] == 0
     assert marker.exists()
+
+
+def test_execute_run_recovery_resets_comment_only_formalization_drift_before_relaunch(tmp_path: Path):
+    source = tmp_path / "source-project"
+    write(source / "lakefile.lean", "import Lake\n")
+    write(source / "lean-toolchain", "leanprover/lean4:v4.28.0\n")
+    write(
+        source / "motivicflagmaps" / "1.lean",
+        """
+        import Mathlib
+
+        /-!
+        Informal objective:
+        定义满足特定次数和首一条件的多项式三元组集合 \\mathcal{Q}_d 和 \\mathcal{R}_d。
+        q_0 is monic of degree d and Q_0 is a special case.
+
+        Notes:
+        先做定义与计数。
+        -/
+        """,
+    )
+    write(source / "Extra-fixed.md", "q_0 is monic of degree d and R_d is also required.\n")
+
+    campaign_root = tmp_path / "campaign"
+    create_campaign(
+        archon_root=ROOT,
+        source_root=source,
+        campaign_root=campaign_root,
+        run_specs=[
+            {
+                "id": "open-run",
+                "objective_regex": "^motivicflagmaps/1\\.lean$",
+                "objective_limit": 1,
+                "scope_hint": "motivicflagmaps/1.lean",
+            },
+        ],
+    )
+
+    run_root = campaign_root / "runs" / "open-run"
+    workspace = run_root / "workspace"
+    control_root = run_root / "control"
+    marker = control_root / "launch-marker.txt"
+
+    write(workspace / ".archon" / "RUN_SCOPE.md", run_scope_markdown("motivicflagmaps/1.lean"))
+    write(workspace / ".archon" / "PROGRESS.md", "# Project Progress\n\n## Current Stage\nCOMPLETE\n")
+    write(workspace / ".archon" / "task_pending.md", "# Pending Tasks\n\n- No pending tasks.\n")
+    write(workspace / ".archon" / "task_done.md", "# Completed Tasks\n\n- legacy\n")
+    write(workspace / ".archon" / "task_results" / "motivicflagmaps_1.lean.md", "legacy accepted note\n")
+    write(
+        workspace / "motivicflagmaps" / "1.lean",
+        """
+        import Mathlib
+
+        abbrev BoundedPoly (F : Type*) [Semiring F] (d : Nat) : Type _ :=
+          (Polynomial.degreeLT F d)
+
+        abbrev Qd (F : Type*) [Semiring F] (d : Nat) : Type _ :=
+          Fin 3 -> BoundedPoly F d
+        """,
+    )
+    write_validation(
+        workspace,
+        rel_path="motivicflagmaps/1.lean",
+        acceptance_status="accepted",
+        validation_status="passed",
+        workspace_changed=True,
+    )
+    validation_path = workspace / ".archon" / "validation" / "motivicflagmaps_1.lean.json"
+    validation_payload = json.loads(validation_path.read_text(encoding="utf-8"))
+    validation_payload["checks"]["taskResult"] = {
+        "present": True,
+        "durable": True,
+        "kind": "other",
+        "path": ".archon/task_results/motivicflagmaps_1.lean.md",
+    }
+    validation_path.write_text(json.dumps(validation_payload, indent=2), encoding="utf-8")
+    write(run_root / "artifacts" / "proofs" / "motivicflagmaps" / "1.lean", "legacy proof\n")
+    write(run_root / "artifacts" / "task-results" / "motivicflagmaps_1.lean.md", "legacy accepted note\n")
+    write(run_root / "artifacts" / "validation" / "motivicflagmaps_1.lean.json", "{}\n")
+
+    write(
+        control_root / "launch-teacher.sh",
+        f"""
+        #!/usr/bin/env bash
+        set -euo pipefail
+        test ! -e {workspace / ".archon" / "RUN_SCOPE.md"}
+        test ! -e {workspace / ".archon" / "task_results" / "motivicflagmaps_1.lean.md"}
+        echo relaunched > {marker}
+        """,
+    )
+    (control_root / "launch-teacher.sh").chmod(0o755)
+
+    status_before = collect_campaign_status(campaign_root, heartbeat_seconds=0)
+    assert status_before["runs"][0]["status"] == "needs_relaunch"
+
+    result = execute_run_recovery(
+        campaign_root,
+        "open-run",
+        execute=True,
+        heartbeat_seconds=0,
+        detach_launch=False,
+    )
+
+    assert result["resolvedAction"] == "relaunch_teacher"
+    assert result["executed"] is True
+    assert result["teacherLaunch"]["returncode"] == 0
+    assert result["preLaunchReset"]["applied"] is True
+    assert result["preLaunchReset"]["reason"] == "comment_only_formalization_drift"
+    assert result["preLaunchReset"]["restoredFiles"] == ["motivicflagmaps/1.lean"]
+    assert marker.exists()
+    assert (workspace / "motivicflagmaps" / "1.lean").read_text(encoding="utf-8") == (
+        source / "motivicflagmaps" / "1.lean"
+    ).read_text(encoding="utf-8")
+    assert not (workspace / ".archon" / "RUN_SCOPE.md").exists()
+    assert not (workspace / ".archon" / "task_results" / "motivicflagmaps_1.lean.md").exists()
+    assert any(path.endswith("task_results") for path in result["preLaunchReset"]["archivedWorkspacePaths"])
+    assert any(path.endswith("proofs/motivicflagmaps/1.lean") for path in result["preLaunchReset"]["archivedArtifactPaths"])
 
 
 def test_execute_run_recovery_detached_launch_writes_inflight_state_and_blocks_duplicate_launch(tmp_path: Path):

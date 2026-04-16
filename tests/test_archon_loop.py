@@ -74,6 +74,71 @@ def make_project(tmp_path: Path) -> Path:
     return project
 
 
+def make_autoformalize_project(tmp_path: Path) -> Path:
+    project = tmp_path / "project"
+    state = project / ".archon"
+    (state / "logs").mkdir(parents=True, exist_ok=True)
+    (state / "task_results").mkdir(parents=True, exist_ok=True)
+    (state / "proof-journal" / "sessions").mkdir(parents=True, exist_ok=True)
+    (state / "informal").mkdir(parents=True, exist_ok=True)
+    (state / "formalization").mkdir(parents=True, exist_ok=True)
+
+    write(
+        project / "Foo.lean",
+        """
+        import Mathlib
+
+        /-!
+        Informal objective:
+        Define a faithful object before proof search.
+        -/
+        """,
+    )
+    write(
+        state / "PROGRESS.md",
+        """
+        # Project Progress
+
+        ## Current Stage
+        autoformalize
+
+        ## Stages
+        - [x] init
+        - [ ] autoformalize
+        - [ ] prover
+        - [ ] polish
+
+        ## Current Objectives
+
+        1. **Foo.lean** — Recover the faithful declaration layer from the live contract and route note.
+        """,
+    )
+    write(
+        state / "RUN_SCOPE.md",
+        """
+        # Run Scope
+
+        Treat this file as a hard constraint.
+        Plan and prover agents must stay within the allowed files listed below.
+
+        - Include regex: `Foo`
+        - Objective limit: `1`
+
+        ## Allowed Files
+
+        1. `Foo.lean`
+        """,
+    )
+    write(state / "AGENTS.md", "# Test agents\n")
+    write(state / "USER_HINTS.md", "# User Hints\n\n- Runtime recovery retry.\n")
+    write(state / "task_pending.md", "# Pending Tasks\n\n- `Foo.lean` — queued.\n")
+    write(state / "task_done.md", "# Completed Tasks\n\n- None.\n")
+    write(state / "informal" / "Foo-autoformalize.md", "# Route\n\n- Keep the source object faithful.\n")
+    write(state / "formalization" / "Foo.lean.json", '{"sourceKind":"comment_only","requiredItems":["define_qd"]}\n')
+
+    return project
+
+
 def make_fake_codex(tmp_path: Path) -> Path:
     bin_dir = tmp_path / "bin"
     script = bin_dir / "codex"
@@ -125,6 +190,14 @@ def make_fake_codex(tmp_path: Path) -> Path:
             run_scope_content = os.environ.get("FAKE_PLAN_RUN_SCOPE_CONTENT")
             if run_scope_path and run_scope_content is not None:
                 pathlib.Path(run_scope_path).write_text(run_scope_content, encoding="utf-8")
+            progress_path = os.environ.get("FAKE_PLAN_PROGRESS_PATH")
+            progress_content = os.environ.get("FAKE_PLAN_PROGRESS_CONTENT")
+            if progress_path and progress_content is not None:
+                pathlib.Path(progress_path).write_text(progress_content, encoding="utf-8")
+            task_pending_path = os.environ.get("FAKE_PLAN_TASK_PENDING_PATH")
+            task_pending_content = os.environ.get("FAKE_PLAN_TASK_PENDING_CONTENT")
+            if task_pending_path and task_pending_content is not None:
+                pathlib.Path(task_pending_path).write_text(task_pending_content, encoding="utf-8")
 
         print(json.dumps({"type": "thread.started", "thread_id": "test-thread"}))
         print(
@@ -283,6 +356,46 @@ def test_plan_failure_with_live_task_results_still_blocks_prover(tmp_path: Path)
     assert "Continuing to prover with the current PROGRESS.md." not in combined_output
     assert "Skipping prover phase because the plan phase did not complete successfully." in combined_output
     assert calls_log.read_text(encoding="utf-8").splitlines() == ["other", "plan"]
+
+
+def test_autoformalize_plan_failure_after_state_update_falls_back_to_prover(tmp_path: Path) -> None:
+    project = make_autoformalize_project(tmp_path)
+    fake_bin_dir = make_fake_codex(tmp_path)
+    calls_log = tmp_path / "codex-calls.log"
+
+    progress_path = project / ".archon" / "PROGRESS.md"
+    task_pending_path = project / ".archon" / "task_pending.md"
+    updated_progress = progress_path.read_text(encoding="utf-8").replace(
+        "Recover the faithful declaration layer from the live contract and route note.",
+        "Recover the faithful declaration layer from the live contract and route note. Write task_results/Foo.lean.md even on a narrow blocker.",
+    )
+    updated_task_pending = (
+        "# Pending Tasks\n\n"
+        "- `Foo.lean` — Recover the faithful declaration layer and write task_results/Foo.lean.md.\n"
+    )
+
+    result = run_archon(
+        project,
+        fake_bin_dir,
+        "--max-iterations",
+        "1",
+        env_extra={
+            "FAKE_CODEX_CALLS_LOG": str(calls_log),
+            "FAKE_PLAN_EXIT_CODE": "1",
+            "FAKE_PLAN_PROGRESS_PATH": str(progress_path),
+            "FAKE_PLAN_PROGRESS_CONTENT": updated_progress,
+            "FAKE_PLAN_TASK_PENDING_PATH": str(task_pending_path),
+            "FAKE_PLAN_TASK_PENDING_CONTENT": updated_task_pending,
+        },
+    )
+
+    combined_output = f"{result.stdout}\n{result.stderr}"
+
+    assert result.returncode == 0
+    assert "Plan agent exited with an error" in combined_output
+    assert "Continuing to prover with the recovered autoformalize objective." in combined_output
+    assert "Skipping prover phase because the plan phase did not complete successfully." not in combined_output
+    assert calls_log.read_text(encoding="utf-8").splitlines() == ["other", "plan", "prover"]
 
 
 def test_preflight_retries_transient_codex_failure(tmp_path: Path) -> None:

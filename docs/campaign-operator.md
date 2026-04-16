@@ -215,6 +215,7 @@ For final acceptance review, use:
 - `reports/final/validation/`
 
 Run-level `artifacts/proofs/` can contain partial-progress edits that were useful during recovery but were not ultimately accepted as final proofs.
+For comment-only/open-problem runs, also inspect `runs/<id>/workspace/.archon/formalization/` and `runs/<id>/workspace/.archon/informal/*-autoformalize.md`. If the live workspace weakened the source object, relaunch now resets the stale live state and restarts from the formalization contract plus regenerated route note instead of inheriting the fake proof closure.
 
 ## Shortcut: Scripted Bootstrap
 

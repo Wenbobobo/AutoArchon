@@ -12,12 +12,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from archonlib.formalization import assess_formalization
+from archonlib.formalization import assess_formalization, materialize_formalization_contract
 from archonlib.operator_surfaces import ensure_operator_surfaces
 from archonlib.lesson_clusters import write_lesson_cluster_artifacts
 from archonlib.run_workspace import export_run_artifacts, create_isolated_run
 from archonlib.storage import prune_storage_candidates
 from archonlib.supervisor import collect_changed_files, latest_iteration_meta, read_allowed_files
+from archonlib.validation import accepted_kind_for_outcome
 
 
 SCHEMA_VERSION = 1
@@ -963,10 +964,11 @@ def _refresh_validation_payload(payload: dict[str, Any], *, workspace_root: Path
         refreshed["acceptanceStatus"] = acceptance_status
         refreshed["validationStatus"] = validation_status
 
-    if acceptance_status == "accepted":
-        refreshed["acceptedKind"] = "blocker" if task_result_kind == "blocker" or blocker_present else "proof"
-    else:
-        refreshed["acceptedKind"] = "none"
+    refreshed["acceptedKind"] = accepted_kind_for_outcome(
+        acceptance_status=str(acceptance_status or "none"),
+        task_result_kind=str(task_result_kind) if isinstance(task_result_kind, str) else None,
+        formalization=formalization,
+    )
     return refreshed
 
 
@@ -985,12 +987,18 @@ def _combine_validation_summaries(
     workspace_summary: Mapping[str, Any],
     artifact_summary: Mapping[str, Any],
 ) -> dict[str, Any]:
-    artifact_closed = set(artifact_summary.get("acceptedProofs", [])) | set(artifact_summary.get("acceptedBlockers", [])) | set(
-        artifact_summary.get("rejectedTargets", [])
+    artifact_closed = (
+        set(artifact_summary.get("acceptedProofs", []))
+        | set(artifact_summary.get("acceptedFormalizations", []))
+        | set(artifact_summary.get("acceptedBlockers", []))
+        | set(artifact_summary.get("rejectedTargets", []))
     )
-    workspace_closed = set(workspace_summary.get("acceptedProofs", [])) | set(
-        workspace_summary.get("acceptedBlockers", [])
-    ) | set(workspace_summary.get("rejectedTargets", []))
+    workspace_closed = (
+        set(workspace_summary.get("acceptedProofs", []))
+        | set(workspace_summary.get("acceptedFormalizations", []))
+        | set(workspace_summary.get("acceptedBlockers", []))
+        | set(workspace_summary.get("rejectedTargets", []))
+    )
     closed_targets = workspace_closed | artifact_closed
 
     validation_by_path: dict[str, dict[str, Any]] = {}
@@ -1010,6 +1018,9 @@ def _combine_validation_summaries(
 
     return {
         "acceptedProofs": sorted(set(workspace_summary.get("acceptedProofs", [])) | set(artifact_summary.get("acceptedProofs", []))),
+        "acceptedFormalizations": sorted(
+            set(workspace_summary.get("acceptedFormalizations", [])) | set(artifact_summary.get("acceptedFormalizations", []))
+        ),
         "acceptedBlockers": sorted(
             set(workspace_summary.get("acceptedBlockers", [])) | set(artifact_summary.get("acceptedBlockers", []))
         ),
@@ -1045,13 +1056,14 @@ def _merge_sticky_artifact_acceptance(
         return validation_summary
 
     accepted_proofs = set(validation_summary.get("acceptedProofs", []))
+    accepted_formalizations = set(validation_summary.get("acceptedFormalizations", []))
     rejected_targets = set(validation_summary.get("rejectedTargets", []))
     pending_targets = set(validation_summary.get("pendingTargets", []))
     attention_targets = set(validation_summary.get("attentionTargets", []))
 
     changed = False
     for rel_path in accepted_from_events:
-        if rel_path in accepted_proofs or rel_path in rejected_targets:
+        if rel_path in accepted_proofs or rel_path in accepted_formalizations or rel_path in rejected_targets:
             continue
         current_payload = validation_summary.get("validationByPath", {}).get(rel_path)
         if isinstance(current_payload, Mapping):
@@ -1063,7 +1075,10 @@ def _merge_sticky_artifact_acceptance(
                 continue
         if not (artifacts_root / "proofs" / rel_path).exists():
             continue
-        accepted_proofs.add(rel_path)
+        if isinstance(current_payload, Mapping) and current_payload.get("acceptedKind") == "formalization":
+            accepted_formalizations.add(rel_path)
+        else:
+            accepted_proofs.add(rel_path)
         pending_targets.discard(rel_path)
         attention_targets.discard(rel_path)
         changed = True
@@ -1074,6 +1089,7 @@ def _merge_sticky_artifact_acceptance(
     return {
         **validation_summary,
         "acceptedProofs": sorted(accepted_proofs),
+        "acceptedFormalizations": sorted(accepted_formalizations),
         "pendingTargets": sorted(pending_targets),
         "attentionTargets": sorted(attention_targets),
     }
@@ -1393,6 +1409,7 @@ def _is_running_signal(
 
 def _validation_summary(payloads: list[dict[str, Any]]) -> dict[str, Any]:
     accepted_proofs: list[str] = []
+    accepted_formalizations: list[str] = []
     accepted_blockers: list[str] = []
     rejected: list[str] = []
     pending: list[str] = []
@@ -1410,6 +1427,8 @@ def _validation_summary(payloads: list[dict[str, Any]]) -> dict[str, Any]:
         if acceptance_status == "accepted":
             if accepted_kind == "blocker":
                 accepted_blockers.append(rel_path)
+            elif accepted_kind == "formalization":
+                accepted_formalizations.append(rel_path)
             elif accepted_kind == "proof":
                 accepted_proofs.append(rel_path)
             else:
@@ -1432,6 +1451,7 @@ def _validation_summary(payloads: list[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         "acceptedProofs": sorted(set(accepted_proofs)),
+        "acceptedFormalizations": sorted(set(accepted_formalizations)),
         "acceptedBlockers": sorted(set(accepted_blockers)),
         "rejectedTargets": sorted(set(rejected)),
         "pendingTargets": sorted(set(pending)),
@@ -1475,11 +1495,12 @@ def _remaining_targets(
     unverified_rel_paths: list[str],
 ) -> list[str]:
     accepted_proofs = validation_summary.get("acceptedProofs", [])
+    accepted_formalizations = validation_summary.get("acceptedFormalizations", [])
     accepted_blockers = validation_summary.get("acceptedBlockers", [])
     rejected_targets = validation_summary.get("rejectedTargets", [])
     pending_targets = validation_summary.get("pendingTargets", [])
     attention_targets = validation_summary.get("attentionTargets", [])
-    closed_targets = set(accepted_proofs) | set(accepted_blockers) | set(rejected_targets)
+    closed_targets = set(accepted_proofs) | set(accepted_formalizations) | set(accepted_blockers) | set(rejected_targets)
     objective_targets = set(allowed_files or configured_allowed_files or changed_files)
     unverified_targets = {item for item in unverified_rel_paths if item != "task_results"}
     remaining_targets = (objective_targets | set(pending_targets) | set(attention_targets) | unverified_targets) - closed_targets
@@ -1498,11 +1519,12 @@ def _classify_run_status(
     has_launch_state: bool,
 ) -> str:
     accepted_proofs = validation_summary["acceptedProofs"]
+    accepted_formalizations = validation_summary["acceptedFormalizations"]
     accepted_blockers = validation_summary["acceptedBlockers"]
     rejected_targets = validation_summary["rejectedTargets"]
     pending_targets = validation_summary["pendingTargets"]
     attention_targets = validation_summary["attentionTargets"]
-    closed_targets = set(accepted_proofs) | set(accepted_blockers) | set(rejected_targets)
+    closed_targets = set(accepted_proofs) | set(accepted_formalizations) | set(accepted_blockers) | set(rejected_targets)
     expected_targets = set(allowed_files) if allowed_files else set(closed_targets) | set(changed_files)
 
     if rejected_targets:
@@ -1718,6 +1740,7 @@ def _recovery_class(
     changed_files: list[str],
     task_results: list[str],
     accepted_proofs: list[str],
+    accepted_formalizations: list[str],
     accepted_blockers: list[str],
     pending_targets: list[str],
     attention_targets: list[str],
@@ -1742,6 +1765,7 @@ def _recovery_class(
         changed_files
         or task_results
         or accepted_proofs
+        or accepted_formalizations
         or accepted_blockers
         or pending_targets
         or attention_targets
@@ -2021,6 +2045,7 @@ def _timeline_markdown_lines(run_timelines: list[dict[str, Any]]) -> list[str]:
 
 def _campaign_target_counts(status_payload: Mapping[str, Any]) -> dict[str, int]:
     accepted_proofs = 0
+    accepted_formalizations = 0
     accepted_blockers = 0
     unverified_artifacts = 0
     pending_targets = 0
@@ -2035,6 +2060,7 @@ def _campaign_target_counts(status_payload: Mapping[str, Any]) -> dict[str, int]
             if not isinstance(run, dict):
                 continue
             accepted_proofs += len(run.get("acceptedProofs", [])) if isinstance(run.get("acceptedProofs"), list) else 0
+            accepted_formalizations += len(run.get("acceptedFormalizations", [])) if isinstance(run.get("acceptedFormalizations"), list) else 0
             accepted_blockers += len(run.get("acceptedBlockers", [])) if isinstance(run.get("acceptedBlockers"), list) else 0
             unverified_artifacts += len(run.get("unverifiedArtifacts", [])) if isinstance(run.get("unverifiedArtifacts"), list) else 0
             pending_targets += len(run.get("pendingTargets", [])) if isinstance(run.get("pendingTargets"), list) else 0
@@ -2045,6 +2071,7 @@ def _campaign_target_counts(status_payload: Mapping[str, Any]) -> dict[str, int]
             task_results += len(run.get("taskResults", [])) if isinstance(run.get("taskResults"), list) else 0
     return {
         "acceptedProofs": accepted_proofs,
+        "acceptedFormalizations": accepted_formalizations,
         "acceptedBlockers": accepted_blockers,
         "unverifiedArtifacts": unverified_artifacts,
         "pendingTargets": pending_targets,
@@ -2364,10 +2391,11 @@ def build_campaign_progress_payload(
     run_counts: Mapping[str, Any],
 ) -> dict[str, Any]:
     accepted_proofs = int(target_counts.get("acceptedProofs", 0) or 0)
+    accepted_formalizations = int(target_counts.get("acceptedFormalizations", 0) or 0)
     accepted_blockers = int(target_counts.get("acceptedBlockers", 0) or 0)
     remaining_targets = int(target_counts.get("remainingTargets", 0) or 0)
     unverified_artifacts = int(target_counts.get("unverifiedArtifacts", 0) or 0)
-    finalized_targets = accepted_proofs + accepted_blockers
+    finalized_targets = accepted_proofs + accepted_formalizations + accepted_blockers
     total_targets = finalized_targets + remaining_targets + unverified_artifacts
 
     if total_targets > 0:
@@ -2568,6 +2596,7 @@ def render_campaign_overview_markdown(overview: Mapping[str, Any]) -> str:
                 f"- `{row.get('runId')}` iter={row.get('latestIteration')} pending={row.get('pendingTargetCount')} "
                 f"phase={row.get('livePhase') or 'unknown'} active_provers={row.get('activeProverCount')} "
                 f"remaining={row.get('remainingTargetCount')} accepted_proofs={row.get('acceptedProofCount')} "
+                f"accepted_formalizations={row.get('acceptedFormalizationCount')} "
                 f"accepted_blockers={row.get('acceptedBlockerCount')} helper_notes={row.get('helperNoteCount')} "
                 f"blocker_notes={row.get('taskResultBlockerCount')}"
             )
@@ -2622,6 +2651,7 @@ def render_campaign_progress_markdown(overview: Mapping[str, Any]) -> str:
         f"- Active work runs: `{', '.join(overview.get('activeWorkRunIds', [])) if isinstance(overview.get('activeWorkRunIds'), list) and overview.get('activeWorkRunIds') else 'none'}`",
         f"- Remaining targets: `{target_counts.get('remainingTargets', 0)}`",
         f"- Accepted proofs: `{target_counts.get('acceptedProofs', 0)}`",
+        f"- Accepted formalizations: `{target_counts.get('acceptedFormalizations', 0)}`",
         f"- Accepted blockers: `{target_counts.get('acceptedBlockers', 0)}`",
         f"- Watchdog status: `{overview.get('watchdogStatus') or 'unknown'}`",
         f"- Likely cause: `{watchdog_runtime.get('likelyCause') or 'unknown'}`",
@@ -2640,7 +2670,8 @@ def render_campaign_progress_markdown(overview: Mapping[str, Any]) -> str:
             lines.append(
                 f"- `{row.get('runId')}` scope={row.get('scopeHint') or 'unknown'} iter={row.get('latestIteration')} "
                 f"phase={row.get('livePhase') or 'unknown'} remaining={row.get('remainingTargetCount')} "
-                f"accepted_proofs={row.get('acceptedProofCount')} accepted_blockers={row.get('acceptedBlockerCount')} "
+                f"accepted_proofs={row.get('acceptedProofCount')} accepted_formalizations={row.get('acceptedFormalizationCount')} "
+                f"accepted_blockers={row.get('acceptedBlockerCount')} "
                 f"helper_notes={row.get('helperNoteCount')} blocker_notes={row.get('taskResultBlockerCount')}"
             )
     else:
@@ -2928,6 +2959,7 @@ def render_campaign_progress_html(overview: Mapping[str, Any]) -> str:
       <div class="metric-grid">
         <div class="card"><div class="eyebrow">Remaining Targets</div><div class="metric">{_html_text(target_counts.get('remainingTargets', 0))}</div></div>
         <div class="card"><div class="eyebrow">Accepted Proofs</div><div class="metric">{_html_text(target_counts.get('acceptedProofs', 0))}</div></div>
+        <div class="card"><div class="eyebrow">Accepted Formalizations</div><div class="metric">{_html_text(target_counts.get('acceptedFormalizations', 0))}</div></div>
         <div class="card"><div class="eyebrow">Accepted Blockers</div><div class="metric">{_html_text(target_counts.get('acceptedBlockers', 0))}</div></div>
         <div class="card"><div class="eyebrow">ETA</div><div class="metric">{_html_text(eta.get('etaText', 'unknown'))}</div></div>
       </div>
@@ -3145,7 +3177,9 @@ def archive_campaign_postmortem(
         for row in overview["runningRuns"]:
             lines.append(
                 f"- `{row['runId']}` iter={row['latestIteration']} pending={row['pendingTargetCount']} "
-                f"accepted_proofs={row['acceptedProofCount']} accepted_blockers={row['acceptedBlockerCount']}"
+                f"accepted_proofs={row['acceptedProofCount']} "
+                f"accepted_formalizations={row['acceptedFormalizationCount']} "
+                f"accepted_blockers={row['acceptedBlockerCount']}"
             )
     else:
         lines.append("- none")
@@ -3736,12 +3770,14 @@ def collect_campaign_status(campaign_root: Path, *, heartbeat_seconds: int = DEF
         artifact_index = _read_json(artifacts_root / "artifact-index.json")
         launch_failure = _launch_failure_summary(control_root, launch_state)
         accepted_proofs = validation_summary["acceptedProofs"]
+        accepted_formalizations = validation_summary["acceptedFormalizations"]
         accepted_blockers = validation_summary["acceptedBlockers"]
         recovery_class = _recovery_class(
             status=status,
             changed_files=changed_files,
             task_results=task_results,
             accepted_proofs=accepted_proofs,
+            accepted_formalizations=accepted_formalizations,
             accepted_blockers=accepted_blockers,
             pending_targets=validation_summary["pendingTargets"],
             attention_targets=validation_summary["attentionTargets"],
@@ -3767,6 +3803,7 @@ def collect_campaign_status(campaign_root: Path, *, heartbeat_seconds: int = DEF
             "changedFiles": changed_files,
             "taskResults": task_results,
             "acceptedProofs": accepted_proofs,
+            "acceptedFormalizations": accepted_formalizations,
             "acceptedBlockers": accepted_blockers,
             "pendingTargets": validation_summary["pendingTargets"],
             "attentionTargets": validation_summary["attentionTargets"],
@@ -3883,6 +3920,167 @@ def collect_campaign_status(campaign_root: Path, *, heartbeat_seconds: int = DEF
     return payload
 
 
+def _archive_path(path: Path, archive_root: Path, *, relative_to: Path) -> str | None:
+    if not path.exists():
+        return None
+    destination = archive_root / path.relative_to(relative_to)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        if destination.is_dir():
+            shutil.rmtree(destination)
+        else:
+            destination.unlink()
+    shutil.move(str(path), str(destination))
+    return destination.relative_to(relative_to).as_posix()
+
+
+def _task_result_name_for_rel_path(rel_path: str) -> str:
+    return rel_path.replace("/", "_") + ".md"
+
+
+def _validation_name_for_rel_path(rel_path: str) -> str:
+    return rel_path.replace("/", "_") + ".json"
+
+
+def _comment_only_relaunch_reset_plan(run_root: Path, allowed_files: list[str]) -> dict[str, Any] | None:
+    workspace_root = run_root / "workspace"
+    source_root = run_root / "source"
+    artifacts_root = run_root / "artifacts"
+    reset_targets: list[dict[str, Any]] = []
+    for rel_path in allowed_files:
+        contract = materialize_formalization_contract(workspace_root, rel_path)
+        formalization = assess_formalization(workspace_root, rel_path)
+        source_kind = str(formalization.get("sourceKind") or "theorem_header")
+        fidelity = str(formalization.get("fidelity") or "not_applicable")
+        if source_kind != "comment_only" or fidelity not in {"partial", "violated"}:
+            continue
+        source_path = source_root / rel_path
+        workspace_path = workspace_root / rel_path
+        source_text = source_path.read_text(encoding="utf-8") if source_path.exists() else ""
+        workspace_text = workspace_path.read_text(encoding="utf-8") if workspace_path.exists() else ""
+        stale_state_present = source_text != workspace_text
+        stale_state_present = stale_state_present or (workspace_root / ".archon" / "task_results" / _task_result_name_for_rel_path(rel_path)).exists()
+        stale_state_present = stale_state_present or (workspace_root / ".archon" / "validation" / _validation_name_for_rel_path(rel_path)).exists()
+        stale_state_present = stale_state_present or (artifacts_root / "proofs" / rel_path).exists()
+        stale_state_present = stale_state_present or (artifacts_root / "task-results" / _task_result_name_for_rel_path(rel_path)).exists()
+        stale_state_present = stale_state_present or (artifacts_root / "validation" / _validation_name_for_rel_path(rel_path)).exists()
+        if not stale_state_present:
+            continue
+        contract_payload = formalization.get("contract") if isinstance(formalization.get("contract"), Mapping) else {}
+        reset_targets.append(
+            {
+                "relPath": rel_path,
+                "formalizationFidelity": fidelity,
+                "contractPath": (
+                    contract.get("path") if isinstance(contract, Mapping) and isinstance(contract.get("path"), str) else None
+                ),
+                "requiredItems": contract_payload.get("requiredItems", []),
+                "unresolvedItems": contract_payload.get("unresolvedItems", []),
+                "forbiddenSimplifications": contract_payload.get("forbiddenSimplifications", []),
+            }
+        )
+    if not reset_targets:
+        return None
+    return {
+        "reason": "comment_only_formalization_drift",
+        "targets": reset_targets,
+    }
+
+
+def _prepare_comment_only_relaunch_reset(run_root: Path, allowed_files: list[str], *, execute: bool) -> dict[str, Any] | None:
+    plan = _comment_only_relaunch_reset_plan(run_root, allowed_files)
+    if plan is None:
+        return None
+
+    workspace_root = run_root / "workspace"
+    source_root = run_root / "source"
+    archon_root = workspace_root / ".archon"
+    artifacts_root = run_root / "artifacts"
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    workspace_archive_root = archon_root / "relaunch_archived" / timestamp
+    artifacts_archive_root = artifacts_root / "relaunch_archived" / timestamp
+    payload: dict[str, Any] = {
+        "applied": False,
+        "reason": plan["reason"],
+        "targets": plan["targets"],
+        "workspaceArchiveRoot": workspace_archive_root.relative_to(workspace_root).as_posix(),
+        "artifactsArchiveRoot": artifacts_archive_root.relative_to(run_root).as_posix(),
+        "archivedWorkspacePaths": [],
+        "archivedArtifactPaths": [],
+        "restoredFiles": [],
+    }
+    if not execute:
+        return payload
+
+    workspace_paths_to_archive = [
+        archon_root / "RUN_SCOPE.md",
+        archon_root / "PROGRESS.md",
+        archon_root / "task_pending.md",
+        archon_root / "task_done.md",
+        archon_root / "USER_HINTS.md",
+        archon_root / "PROJECT_STATUS.md",
+        archon_root / "logs",
+        archon_root / "task_results",
+        archon_root / "validation",
+        archon_root / "supervisor",
+        archon_root / "informal",
+        archon_root / "formalization",
+        archon_root / "proof-journal",
+    ]
+    archived_workspace_paths: list[str] = []
+    for path in workspace_paths_to_archive:
+        archived = _archive_path(path, workspace_archive_root, relative_to=archon_root)
+        if archived is not None:
+            archived_workspace_paths.append(archived)
+
+    archived_artifact_paths: list[str] = []
+    artifact_paths_to_archive: list[Path] = []
+    artifact_paths_to_archive.extend(artifacts_root / name for name in ("artifact-index.json", "lessons", "supervisor"))
+    for target in plan["targets"]:
+        rel_path = str(target["relPath"])
+        artifact_paths_to_archive.extend(
+            [
+                artifacts_root / "proofs" / rel_path,
+                artifacts_root / "diffs" / f"{rel_path}.diff",
+                artifacts_root / "task-results" / _task_result_name_for_rel_path(rel_path),
+                artifacts_root / "validation" / _validation_name_for_rel_path(rel_path),
+            ]
+        )
+    seen_artifact_paths: set[Path] = set()
+    for path in artifact_paths_to_archive:
+        if path in seen_artifact_paths:
+            continue
+        seen_artifact_paths.add(path)
+        archived = _archive_path(path, artifacts_archive_root, relative_to=artifacts_root)
+        if archived is not None:
+            archived_artifact_paths.append(archived)
+
+    restored_files: list[str] = []
+    for target in plan["targets"]:
+        rel_path = str(target["relPath"])
+        source_path = source_root / rel_path
+        workspace_path = workspace_root / rel_path
+        if not source_path.exists():
+            continue
+        workspace_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, workspace_path)
+        restored_files.append(rel_path)
+
+    bootstrap_path = run_root / "control" / "bootstrap-state.json"
+    bootstrap_payload = _read_json(bootstrap_path) or {}
+    bootstrap_payload["freshRun"] = True
+    bootstrap_payload["resetAt"] = _utc_now()
+    bootstrap_payload["resetReason"] = plan["reason"]
+    bootstrap_payload["resetTargets"] = [target["relPath"] for target in plan["targets"]]
+    _write_json(bootstrap_path, bootstrap_payload)
+
+    payload["applied"] = True
+    payload["archivedWorkspacePaths"] = archived_workspace_paths
+    payload["archivedArtifactPaths"] = archived_artifact_paths
+    payload["restoredFiles"] = restored_files
+    return payload
+
+
 def execute_run_recovery(
     campaign_root: Path,
     run_id: str,
@@ -3960,6 +4158,14 @@ def execute_run_recovery(
         raise ValueError(f"unsupported recovery action: {resolved_action}")
 
     if not execute or resolved_action in {"none", "manual_rebuild"}:
+        if resolved_action in {"launch_teacher", "relaunch_teacher"}:
+            prelaunch_reset = _prepare_comment_only_relaunch_reset(
+                run_root,
+                run_entry.get("allowedFiles", []) if isinstance(run_entry.get("allowedFiles"), list) else [],
+                execute=False,
+            )
+            if prelaunch_reset is not None:
+                payload["preLaunchReset"] = prelaunch_reset
         payload["executed"] = False
         payload["statusAfter"] = run_status["status"]
         return payload
@@ -4019,6 +4225,13 @@ def execute_run_recovery(
             ),
         )
     else:
+        prelaunch_reset = _prepare_comment_only_relaunch_reset(
+            run_root,
+            run_entry.get("allowedFiles", []) if isinstance(run_entry.get("allowedFiles"), list) else [],
+            execute=True,
+        )
+        if prelaunch_reset is not None:
+            payload["preLaunchReset"] = prelaunch_reset
         if detach_launch:
             stdout_log = control_root / "teacher-launch.stdout.log"
             stderr_log = control_root / "teacher-launch.stderr.log"
@@ -4106,6 +4319,7 @@ def build_campaign_compare_report(
 
     run_rows: list[dict[str, Any]] = []
     accepted_proof_count = 0
+    accepted_formalization_count = 0
     accepted_blocker_count = 0
     unverified_artifact_count = 0
     pending_target_count = 0
@@ -4121,6 +4335,7 @@ def build_campaign_compare_report(
         if not isinstance(run, dict):
             continue
         accepted_proofs = run.get("acceptedProofs", [])
+        accepted_formalizations = run.get("acceptedFormalizations", [])
         accepted_blockers = run.get("acceptedBlockers", [])
         unverified_artifacts = run.get("unverifiedArtifacts", [])
         pending_targets = run.get("pendingTargets", [])
@@ -4130,6 +4345,7 @@ def build_campaign_compare_report(
         changed_files = run.get("changedFiles", [])
         task_results = run.get("taskResults", [])
         accepted_proof_count += len(accepted_proofs) if isinstance(accepted_proofs, list) else 0
+        accepted_formalization_count += len(accepted_formalizations) if isinstance(accepted_formalizations, list) else 0
         accepted_blocker_count += len(accepted_blockers) if isinstance(accepted_blockers, list) else 0
         unverified_artifact_count += len(unverified_artifacts) if isinstance(unverified_artifacts, list) else 0
         pending_target_count += len(pending_targets) if isinstance(pending_targets, list) else 0
@@ -4151,6 +4367,7 @@ def build_campaign_compare_report(
             "retryAfter": run.get("retryAfter"),
             "lastLaunchExitCode": run.get("lastLaunchExitCode"),
             "acceptedProofCount": len(accepted_proofs) if isinstance(accepted_proofs, list) else 0,
+            "acceptedFormalizationCount": len(accepted_formalizations) if isinstance(accepted_formalizations, list) else 0,
             "acceptedBlockerCount": len(accepted_blockers) if isinstance(accepted_blockers, list) else 0,
             "unverifiedArtifactCount": len(unverified_artifacts) if isinstance(unverified_artifacts, list) else 0,
             "pendingTargetCount": len(pending_targets) if isinstance(pending_targets, list) else 0,
@@ -4214,6 +4431,7 @@ def build_campaign_compare_report(
         },
         "targetCounts": {
             "acceptedProofs": accepted_proof_count,
+            "acceptedFormalizations": accepted_formalization_count,
             "acceptedBlockers": accepted_blocker_count,
             "unverifiedArtifacts": unverified_artifact_count,
             "pendingTargets": pending_target_count,
@@ -4331,7 +4549,7 @@ def _lesson_theorem_id(
         for rel_path in allowed_files:
             if isinstance(rel_path, str) and rel_path:
                 return rel_path
-    for key in ("acceptedProofs", "acceptedBlockers"):
+    for key in ("acceptedProofs", "acceptedFormalizations", "acceptedBlockers"):
         values = run_status.get(key)
         if isinstance(values, list):
             for rel_path in values:
@@ -4546,6 +4764,7 @@ def finalize_campaign(
     status_payload = collect_campaign_status(campaign_root, heartbeat_seconds=heartbeat_seconds)
     final_root = campaign_root / "reports" / "final"
     proofs_root = final_root / "proofs"
+    formalizations_root = final_root / "formalizations"
     diffs_root = final_root / "diffs"
     blockers_root = final_root / "blockers"
     validation_root = final_root / "validation"
@@ -4555,6 +4774,7 @@ def finalize_campaign(
     final_root.mkdir(parents=True, exist_ok=True)
 
     copied_proofs: list[str] = []
+    copied_formalizations: list[str] = []
     copied_blockers: list[str] = []
     lesson_records: list[dict[str, Any]] = []
     run_reports: list[dict[str, Any]] = []
@@ -4575,6 +4795,15 @@ def finalize_campaign(
             validation_name = rel_path.replace("/", "_") + ".json"
             _copy_if_exists(artifacts_root / "validation" / validation_name, validation_root / run_id / validation_name)
             copied_proofs.append(f"{run_id}:{rel_path}")
+
+        for rel_path in run_status.get("acceptedFormalizations", []):
+            source_formalization = artifacts_root / "proofs" / rel_path
+            source_diff = artifacts_root / "diffs" / f"{rel_path}.diff"
+            _copy_if_exists(source_formalization, formalizations_root / run_id / rel_path)
+            _copy_if_exists(source_diff, diffs_root / run_id / f"{rel_path}.diff")
+            validation_name = rel_path.replace("/", "_") + ".json"
+            _copy_if_exists(artifacts_root / "validation" / validation_name, validation_root / run_id / validation_name)
+            copied_formalizations.append(f"{run_id}:{rel_path}")
 
         for rel_path in run_status.get("acceptedBlockers", []):
             validation_name = rel_path.replace("/", "_") + ".json"
@@ -4599,6 +4828,7 @@ def finalize_campaign(
             "runId": run_id,
             "status": run_status.get("status"),
             "acceptedProofs": run_status.get("acceptedProofs", []),
+            "acceptedFormalizations": run_status.get("acceptedFormalizations", []),
             "acceptedBlockers": run_status.get("acceptedBlockers", []),
             "unverifiedArtifacts": run_status.get("unverifiedArtifacts", []),
             "rejectedTargets": run_status.get("rejectedTargets", []),
@@ -4635,6 +4865,7 @@ def finalize_campaign(
         "finalizedAt": _utc_now(),
         "counts": status_payload["counts"],
         "acceptedProofs": copied_proofs,
+        "acceptedFormalizations": copied_formalizations,
         "acceptedBlockers": copied_blockers,
         "runs": run_reports,
     }
