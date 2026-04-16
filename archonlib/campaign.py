@@ -8,6 +8,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -2294,8 +2295,11 @@ def build_campaign_overview(
                         "remainingTargetCount": len(run.get("remainingTargets", [])) if isinstance(run.get("remainingTargets"), list) else 0,
                     }
                 )
-    running_rows.sort(key=lambda item: str(item["runId"]))
-    recoverable_rows.sort(key=lambda item: str(item["runId"]))
+    operator_queue = _build_operator_queue(
+        running_rows=running_rows,
+        recoverable_rows=recoverable_rows,
+        heartbeat_seconds=heartbeat_seconds,
+    )
     report_freshness = compare_report_freshness(status_payload, compare_report)
     eta = estimate_campaign_eta(
         campaign_root,
@@ -2308,6 +2312,21 @@ def build_campaign_overview(
         target_counts=target_counts,
         run_counts=status_payload.get("counts", {}) if isinstance(status_payload.get("counts"), Mapping) else {},
     )
+    watchdog_runtime = {
+        "watchdogPid": watchdog_pid,
+        "watchdogPidLive": watchdog_pid_live,
+        "ownerLeaseLive": owner_lease_live,
+        "stateLikelyStale": watchdog_state_likely_stale,
+        "effectiveMaxActiveLaunches": watchdog_state.get("effectiveMaxActiveLaunches")
+        if isinstance(watchdog_state, Mapping)
+        else None,
+        "providerCooldownUntil": watchdog_state.get("providerCooldownUntil") if isinstance(watchdog_state, Mapping) else None,
+        "providerCooldownSeconds": watchdog_state.get("providerCooldownSeconds")
+        if isinstance(watchdog_state, Mapping)
+        else None,
+        "likelyCause": watchdog_state.get("likelyCause") if isinstance(watchdog_state, Mapping) else None,
+        "resourceSnapshot": watchdog_state.get("resourceSnapshot") if isinstance(watchdog_state, Mapping) else None,
+    }
     accepted_targets: list[dict[str, Any]] = []
     if isinstance(runs, list):
         for run in runs:
@@ -2318,6 +2337,14 @@ def build_campaign_overview(
                 accepted_targets.append({"kind": "proof", "runId": run_id, "relPath": rel_path})
             for rel_path in run.get("acceptedBlockers", []) if isinstance(run.get("acceptedBlockers"), list) else []:
                 accepted_targets.append({"kind": "blocker", "runId": run_id, "relPath": rel_path})
+
+    risk_summary = _risk_summary(
+        running_rows=running_rows,
+        recoverable_rows=recoverable_rows,
+        operator_queue=operator_queue,
+        watchdog_runtime=watchdog_runtime,
+        heartbeat_seconds=heartbeat_seconds,
+    )
 
     return {
         "schemaVersion": SCHEMA_VERSION,
@@ -2331,6 +2358,8 @@ def build_campaign_overview(
         "liveRunCount": live_run_count,
         "runningRuns": running_rows,
         "recoverableRuns": recoverable_rows,
+        "operatorQueue": operator_queue,
+        "riskSummary": risk_summary,
         "watchdogStatus": watchdog_state.get("watchdogStatus") if isinstance(watchdog_state, Mapping) else None,
         "restartCount": watchdog_state.get("restartCount") if isinstance(watchdog_state, Mapping) else None,
         "activeWorkRunIds": (
@@ -2341,21 +2370,7 @@ def build_campaign_overview(
         "lastProgressAt": watchdog_state.get("lastProgressAt") if isinstance(watchdog_state, Mapping) else None,
         "lastRecoveryAt": watchdog_state.get("lastRecoveryAt") if isinstance(watchdog_state, Mapping) else None,
         "reportFreshness": report_freshness,
-        "watchdogRuntime": {
-            "watchdogPid": watchdog_pid,
-            "watchdogPidLive": watchdog_pid_live,
-            "ownerLeaseLive": owner_lease_live,
-            "stateLikelyStale": watchdog_state_likely_stale,
-            "effectiveMaxActiveLaunches": watchdog_state.get("effectiveMaxActiveLaunches")
-            if isinstance(watchdog_state, Mapping)
-            else None,
-            "providerCooldownUntil": watchdog_state.get("providerCooldownUntil") if isinstance(watchdog_state, Mapping) else None,
-            "providerCooldownSeconds": watchdog_state.get("providerCooldownSeconds")
-            if isinstance(watchdog_state, Mapping)
-            else None,
-            "likelyCause": watchdog_state.get("likelyCause") if isinstance(watchdog_state, Mapping) else None,
-            "resourceSnapshot": watchdog_state.get("resourceSnapshot") if isinstance(watchdog_state, Mapping) else None,
-        },
+        "watchdogRuntime": watchdog_runtime,
         "progress": progress,
         "eta": eta,
         "statusBuckets": _status_buckets(
@@ -2558,6 +2573,244 @@ def _cooldown_state(
     }
 
 
+def _reason_count_rows(reason_counts: Mapping[str, Any], *, top_n: int = 3) -> list[dict[str, int | str]]:
+    counter: dict[str, int] = {}
+    for key, value in reason_counts.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(value, bool):
+            counter[key] = int(value)
+        elif isinstance(value, int):
+            counter[key] = value
+    rows = [{"value": key, "count": value} for key, value in counter.items()]
+    rows.sort(key=lambda row: (-int(row["count"]), str(row["value"])))
+    return rows[:top_n]
+
+
+def _reason_rows_text(rows: list[dict[str, int | str]]) -> str:
+    rendered = [
+        f"{row.get('value')} ({row.get('count')})"
+        for row in rows
+        if isinstance(row, Mapping)
+    ]
+    return ", ".join(rendered) if rendered else "none"
+
+
+def _active_helper_cooldown_reasons(cooldown_state: object) -> list[dict[str, Any]]:
+    if not isinstance(cooldown_state, Mapping):
+        return []
+    active_reasons = cooldown_state.get("activeReasons")
+    if not isinstance(active_reasons, list):
+        return []
+    return [dict(item) for item in active_reasons if isinstance(item, Mapping)]
+
+
+def _activity_age_seconds(latest_activity_at: object) -> int | None:
+    parsed = _parse_iso_datetime(latest_activity_at)
+    if parsed is None:
+        return None
+    now = datetime.now(timezone.utc)
+    return max(0, int(round((now - parsed).total_seconds())))
+
+
+def _running_row_urgency(row: Mapping[str, Any], *, stale_threshold_seconds: int) -> tuple[int, list[str]]:
+    score = 0
+    reasons: list[str] = []
+    helper_failed_calls = int(row.get("helperFailedCallCount", 0) or 0)
+    helper_cooldown_count = int(row.get("helperCooldownCount", 0) or 0)
+    activity_age = row.get("activityAgeSeconds")
+    task_result_blockers = int(row.get("taskResultBlockerCount", 0) or 0)
+    remaining_targets = int(row.get("remainingTargetCount", 0) or 0)
+
+    if helper_failed_calls > 0:
+        score += 40 + min(helper_failed_calls, 20)
+        reasons.append(f"helper_failed_calls:{helper_failed_calls}")
+    if helper_cooldown_count > 0:
+        score += 30 + min(helper_cooldown_count * 2, 10)
+        reasons.append(f"helper_cooldown:{helper_cooldown_count}")
+    if isinstance(activity_age, int) and activity_age >= stale_threshold_seconds:
+        score += 25
+        reasons.append(f"stale_activity:{activity_age}s")
+    if task_result_blockers > 0:
+        score += 8
+        reasons.append(f"blocker_notes:{task_result_blockers}")
+    if 0 < remaining_targets <= 2:
+        score += 3
+        reasons.append(f"near_completion:{remaining_targets}")
+    if not reasons:
+        reasons.append("monitor")
+    return score, reasons
+
+
+def _recoverable_row_urgency(row: Mapping[str, Any]) -> tuple[int, list[str]]:
+    score = 60
+    reasons: list[str] = []
+    action = str(row.get("action") or "none")
+    status = str(row.get("status") or "unknown")
+    remaining_targets = int(row.get("remainingTargetCount", 0) or 0)
+    score += {
+        "resume_run": 20,
+        "relaunch_run": 30,
+        "wait_for_retry": 10,
+        "finalize_campaign": 5,
+        "archive_campaign": 5,
+    }.get(action, 12)
+    reasons.append(f"recovery:{action}")
+    reasons.append(f"status:{status}")
+    if 0 < remaining_targets <= 2:
+        score += 5
+        reasons.append(f"near_completion:{remaining_targets}")
+    return score, reasons
+
+
+def _build_operator_queue(
+    *,
+    running_rows: list[dict[str, Any]],
+    recoverable_rows: list[dict[str, Any]],
+    heartbeat_seconds: int,
+) -> list[dict[str, Any]]:
+    stale_threshold_seconds = heartbeat_seconds if heartbeat_seconds > 0 else DEFAULT_HEARTBEAT_SECONDS
+    queue: list[dict[str, Any]] = []
+
+    for row in running_rows:
+        helper_failed_reason_rows = _reason_count_rows(
+            row.get("helperFailedReasonCounts", {}) if isinstance(row.get("helperFailedReasonCounts"), Mapping) else {},
+            top_n=3,
+        )
+        helper_cooldown_reasons = _active_helper_cooldown_reasons(row.get("helperCooldownState"))
+        row["activityAgeSeconds"] = _activity_age_seconds(row.get("latestActivityAt"))
+        row["helperCooldownCount"] = len(helper_cooldown_reasons)
+        row["helperCooldownReasons"] = helper_cooldown_reasons
+        row["topHelperFailedReasons"] = helper_failed_reason_rows
+        urgency_score, urgency_reasons = _running_row_urgency(row, stale_threshold_seconds=stale_threshold_seconds)
+        row["urgencyScore"] = urgency_score
+        row["urgencyReasons"] = urgency_reasons
+        queue.append(
+            {
+                "runId": row.get("runId"),
+                "priorityKind": "running",
+                "priorityScore": urgency_score,
+                "priorityReasons": urgency_reasons,
+                "scopeHint": row.get("scopeHint"),
+                "phase": row.get("livePhase"),
+                "status": "running",
+                "remainingTargetCount": row.get("remainingTargetCount"),
+                "helperFailedCallCount": row.get("helperFailedCallCount"),
+                "helperCooldownCount": row.get("helperCooldownCount"),
+                "activityAgeSeconds": row.get("activityAgeSeconds"),
+                "topHelperFailedReasons": helper_failed_reason_rows,
+                "nextAction": "watch_run",
+            }
+        )
+
+    for row in recoverable_rows:
+        urgency_score, urgency_reasons = _recoverable_row_urgency(row)
+        row["urgencyScore"] = urgency_score
+        row["urgencyReasons"] = urgency_reasons
+        queue.append(
+            {
+                "runId": row.get("runId"),
+                "priorityKind": "recoverable",
+                "priorityScore": urgency_score,
+                "priorityReasons": urgency_reasons,
+                "scopeHint": row.get("scopeHint"),
+                "phase": None,
+                "status": row.get("status"),
+                "remainingTargetCount": row.get("remainingTargetCount"),
+                "helperFailedCallCount": 0,
+                "helperCooldownCount": 0,
+                "activityAgeSeconds": None,
+                "topHelperFailedReasons": [],
+                "nextAction": row.get("action"),
+            }
+        )
+
+    running_rows.sort(key=lambda item: (-int(item.get("urgencyScore", 0) or 0), str(item.get("runId"))))
+    recoverable_rows.sort(key=lambda item: (-int(item.get("urgencyScore", 0) or 0), str(item.get("runId"))))
+    queue.sort(
+        key=lambda item: (
+            -int(item.get("priorityScore", 0) or 0),
+            0 if item.get("priorityKind") == "recoverable" else 1,
+            str(item.get("runId")),
+        )
+    )
+    return queue
+
+
+def _risk_summary(
+    *,
+    running_rows: list[dict[str, Any]],
+    recoverable_rows: list[dict[str, Any]],
+    operator_queue: list[dict[str, Any]],
+    watchdog_runtime: Mapping[str, Any],
+    heartbeat_seconds: int,
+) -> dict[str, Any]:
+    stale_threshold_seconds = heartbeat_seconds if heartbeat_seconds > 0 else DEFAULT_HEARTBEAT_SECONDS
+    helper_failed_reason_counts: dict[str, int] = {}
+    cooldown_reason_counts: Counter[str] = Counter()
+    helper_failed_call_count = 0
+    helper_failed_run_count = 0
+    helper_cooldown_run_count = 0
+    stale_run_count = 0
+
+    for row in running_rows:
+        failed_calls = int(row.get("helperFailedCallCount", 0) or 0)
+        helper_failed_call_count += failed_calls
+        if failed_calls > 0:
+            helper_failed_run_count += 1
+        if int(row.get("helperCooldownCount", 0) or 0) > 0:
+            helper_cooldown_run_count += 1
+        activity_age = row.get("activityAgeSeconds")
+        if isinstance(activity_age, int) and activity_age >= stale_threshold_seconds:
+            stale_run_count += 1
+        mapping = row.get("helperFailedReasonCounts", {})
+        if isinstance(mapping, Mapping):
+            for key, value in mapping.items():
+                if isinstance(key, str):
+                    helper_failed_reason_counts[key] = helper_failed_reason_counts.get(key, 0) + int(value or 0)
+        for active_reason in row.get("helperCooldownReasons", []):
+            if not isinstance(active_reason, Mapping):
+                continue
+            reason = active_reason.get("reason")
+            if isinstance(reason, str) and reason:
+                cooldown_reason_counts[reason] += 1
+
+    provider_cooldown_active = isinstance(watchdog_runtime.get("providerCooldownUntil"), str) and bool(
+        watchdog_runtime.get("providerCooldownUntil")
+    )
+    top_helper_failed_reasons = _reason_count_rows(helper_failed_reason_counts, top_n=3)
+    top_cooldown_reasons = _reason_count_rows(dict(cooldown_reason_counts), top_n=3)
+    if provider_cooldown_active:
+        likely_bottleneck = "provider_cooldown"
+    elif recoverable_rows:
+        likely_bottleneck = "recovery_backlog"
+    elif helper_failed_call_count > 0:
+        likely_bottleneck = "helper_failures"
+    elif helper_cooldown_run_count > 0:
+        likely_bottleneck = "helper_cooldown"
+    elif stale_run_count > 0:
+        likely_bottleneck = "stalled_active_runs"
+    elif running_rows:
+        likely_bottleneck = "theorem_search"
+    else:
+        likely_bottleneck = "stable_or_idle"
+
+    return {
+        "recoverableRunCount": len(recoverable_rows),
+        "queuedAttentionCount": len(operator_queue),
+        "helperFailedCallCount": helper_failed_call_count,
+        "helperFailedRunCount": helper_failed_run_count,
+        "helperCooldownRunCount": helper_cooldown_run_count,
+        "staleRunCount": stale_run_count,
+        "providerCooldownActive": provider_cooldown_active,
+        "providerCooldownUntil": watchdog_runtime.get("providerCooldownUntil"),
+        "topHelperFailedReasons": top_helper_failed_reasons,
+        "topCooldownReasons": top_cooldown_reasons,
+        "likelyBottleneck": likely_bottleneck,
+        "attentionRunIds": [row.get("runId") for row in operator_queue[:5] if isinstance(row.get("runId"), str)],
+    }
+
+
 def render_campaign_overview_markdown(overview: Mapping[str, Any]) -> str:
     campaign_id = overview.get("campaignId", "unknown")
     generated_at = overview.get("generatedAt", "unknown")
@@ -2575,6 +2828,8 @@ def render_campaign_overview_markdown(overview: Mapping[str, Any]) -> str:
     progress = overview.get("progress") if isinstance(overview.get("progress"), Mapping) else {}
     running_runs = overview.get("runningRuns") if isinstance(overview.get("runningRuns"), list) else []
     recoverable_runs = overview.get("recoverableRuns") if isinstance(overview.get("recoverableRuns"), list) else []
+    risk_summary = overview.get("riskSummary") if isinstance(overview.get("riskSummary"), Mapping) else {}
+    operator_queue = overview.get("operatorQueue") if isinstance(overview.get("operatorQueue"), list) else []
 
     lines = [
         f"# Campaign Overview: {campaign_id}",
@@ -2594,10 +2849,31 @@ def render_campaign_overview_markdown(overview: Mapping[str, Any]) -> str:
         f"- Provider cooldown until: `{watchdog_runtime.get('providerCooldownUntil') or 'none'}`",
         f"- Compare fresh: `{report_freshness.get('compareIsFresh')}`",
         f"- ETA: `{eta.get('etaText', 'unknown')}`",
+        f"- Likely bottleneck: `{risk_summary.get('likelyBottleneck') or 'unknown'}`",
+        f"- Recoverable runs: `{risk_summary.get('recoverableRunCount', 0)}`",
+        f"- Helper failed calls: `{risk_summary.get('helperFailedCallCount', 0)}`",
+        f"- Helper cooldown runs: `{risk_summary.get('helperCooldownRunCount', 0)}`",
+        f"- Stale active runs: `{risk_summary.get('staleRunCount', 0)}`",
+        "",
+        "## Operator Queue",
+        "",
+    ]
+    if operator_queue:
+        for row in operator_queue[:12]:
+            if not isinstance(row, Mapping):
+                continue
+            lines.append(
+                f"- `{row.get('runId')}` kind={row.get('priorityKind')} score={row.get('priorityScore')} "
+                f"status={row.get('status') or 'unknown'} next={row.get('nextAction') or 'none'} "
+                f"why={', '.join(row.get('priorityReasons', [])) if isinstance(row.get('priorityReasons'), list) else 'none'}"
+            )
+    else:
+        lines.append("- none")
+    lines.extend([
         "",
         "## Running Runs",
         "",
-    ]
+    ])
     if running_runs:
         for row in running_runs:
             lines.append(
@@ -2607,6 +2883,8 @@ def render_campaign_overview_markdown(overview: Mapping[str, Any]) -> str:
                 f"accepted_formalizations={row.get('acceptedFormalizationCount')} "
                 f"accepted_blockers={row.get('acceptedBlockerCount')} helper_notes={row.get('helperNoteCount')} "
                 f"helper_failed_calls={row.get('helperFailedCallCount')} "
+                f"activity_age={row.get('activityAgeSeconds') if row.get('activityAgeSeconds') is not None else 'none'} "
+                f"urgency={row.get('urgencyScore', 0)} "
                 f"blocker_notes={row.get('taskResultBlockerCount')}"
             )
     else:
@@ -2651,6 +2929,8 @@ def render_campaign_progress_markdown(overview: Mapping[str, Any]) -> str:
     status_buckets = overview.get("statusBuckets") if isinstance(overview.get("statusBuckets"), Mapping) else {}
     recommended_commands = overview.get("recommendedCommands") if isinstance(overview.get("recommendedCommands"), list) else []
     cooldown_state = overview.get("cooldownState") if isinstance(overview.get("cooldownState"), Mapping) else {}
+    risk_summary = overview.get("riskSummary") if isinstance(overview.get("riskSummary"), Mapping) else {}
+    operator_queue = overview.get("operatorQueue") if isinstance(overview.get("operatorQueue"), list) else []
 
     lines = [
         f"# Campaign Progress: {campaign_id}",
@@ -2670,10 +2950,32 @@ def render_campaign_progress_markdown(overview: Mapping[str, Any]) -> str:
         f"- Last recovery at: `{overview.get('lastRecoveryAt') or 'none'}`",
         f"- Status buckets: `{json.dumps(status_buckets, sort_keys=True)}`",
         f"- Cooldown state: `{json.dumps(cooldown_state, sort_keys=True)}`",
+        f"- Likely bottleneck: `{risk_summary.get('likelyBottleneck') or 'unknown'}`",
+        f"- Recoverable runs: `{risk_summary.get('recoverableRunCount', 0)}`",
+        f"- Helper failed calls: `{risk_summary.get('helperFailedCallCount', 0)}`",
+        f"- Helper cooldown runs: `{risk_summary.get('helperCooldownRunCount', 0)}`",
+        f"- Stale active runs: `{risk_summary.get('staleRunCount', 0)}`",
+        "",
+        "## Operator Queue",
+        "",
+    ]
+    if operator_queue:
+        for row in operator_queue[:8]:
+            if not isinstance(row, Mapping):
+                continue
+            lines.append(
+                f"- `{row.get('runId')}` kind={row.get('priorityKind')} score={row.get('priorityScore')} "
+                f"next={row.get('nextAction') or 'none'} "
+                f"why={', '.join(row.get('priorityReasons', [])) if isinstance(row.get('priorityReasons'), list) else 'none'}"
+            )
+    else:
+        lines.append("- none")
+
+    lines.extend([
         "",
         "## Running",
         "",
-    ]
+    ])
     if running_runs:
         for row in running_runs[:8]:
             lines.append(
@@ -2684,6 +2986,9 @@ def render_campaign_progress_markdown(overview: Mapping[str, Any]) -> str:
                 f"helper_notes={row.get('helperNoteCount')} "
                 f"helper_failed_calls={row.get('helperFailedCallCount')} "
                 f"helper_failed_reasons={json.dumps(row.get('helperFailedReasonCounts', {}), sort_keys=True)} "
+                f"helper_cooldown_count={row.get('helperCooldownCount', 0)} "
+                f"activity_age={row.get('activityAgeSeconds') if row.get('activityAgeSeconds') is not None else 'none'} "
+                f"urgency={row.get('urgencyScore', 0)} "
                 f"blocker_notes={row.get('taskResultBlockerCount')}"
             )
     else:
@@ -2755,6 +3060,8 @@ def render_campaign_progress_html(overview: Mapping[str, Any]) -> str:
     recommended_commands = overview.get("recommendedCommands") if isinstance(overview.get("recommendedCommands"), list) else []
     cooldown_state = overview.get("cooldownState") if isinstance(overview.get("cooldownState"), Mapping) else {}
     status_buckets = overview.get("statusBuckets") if isinstance(overview.get("statusBuckets"), Mapping) else {}
+    risk_summary = overview.get("riskSummary") if isinstance(overview.get("riskSummary"), Mapping) else {}
+    operator_queue = overview.get("operatorQueue") if isinstance(overview.get("operatorQueue"), list) else []
 
     running_rows: list[str] = []
     for row in running_runs[:12]:
@@ -2768,8 +3075,33 @@ def render_campaign_progress_html(overview: Mapping[str, Any]) -> str:
                     f"phase={_html_code(row.get('livePhase') or 'unknown')}",
                     f"iter={_html_code(row.get('latestIteration') or '(none)')}",
                     f"remaining={_html_code(row.get('remainingTargetCount', 0))}",
+                    f"urgency={_html_code(row.get('urgencyScore', 0))}",
                     f"helper_notes={_html_code(row.get('helperNoteCount', 0))}",
                     f"helper_failed_calls={_html_code(row.get('helperFailedCallCount', 0))}",
+                    f"cooldown={_html_code(row.get('helperCooldownCount', 0))}",
+                ]
+            )
+        )
+
+    operator_rows: list[str] = []
+    for row in operator_queue[:12]:
+        if not isinstance(row, Mapping):
+            continue
+        reasons = ", ".join(
+            str(item)
+            for item in row.get("priorityReasons", [])
+            if isinstance(item, str)
+        ) or "none"
+        top_failed = _reason_rows_text(row.get("topHelperFailedReasons", []) if isinstance(row.get("topHelperFailedReasons"), list) else [])
+        operator_rows.append(
+            " ".join(
+                [
+                    _html_code(row.get("runId", "unknown")),
+                    f"kind={_html_code(row.get('priorityKind') or 'unknown')}",
+                    f"score={_html_code(row.get('priorityScore', 0))}",
+                    f"next={_html_code(row.get('nextAction') or 'none')}",
+                    f"why={_html_text(reasons)}",
+                    f"helper_failed={_html_code(top_failed)}",
                 ]
             )
         )
@@ -2976,9 +3308,20 @@ def render_campaign_progress_html(overview: Mapping[str, Any]) -> str:
         <div class="card"><div class="eyebrow">Accepted Blockers</div><div class="metric">{_html_text(target_counts.get('acceptedBlockers', 0))}</div></div>
         <div class="card"><div class="eyebrow">ETA</div><div class="metric">{_html_text(eta.get('etaText', 'unknown'))}</div></div>
       </div>
+      <div class="metric-grid">
+        <div class="card"><div class="eyebrow">Likely Bottleneck</div><div class="metric">{_html_text(risk_summary.get('likelyBottleneck', 'unknown'))}</div></div>
+        <div class="card"><div class="eyebrow">Recoverable Runs</div><div class="metric">{_html_text(risk_summary.get('recoverableRunCount', 0))}</div></div>
+        <div class="card"><div class="eyebrow">Helper Failed Calls</div><div class="metric">{_html_text(risk_summary.get('helperFailedCallCount', 0))}</div></div>
+        <div class="card"><div class="eyebrow">Helper Cooldown Runs</div><div class="metric">{_html_text(risk_summary.get('helperCooldownRunCount', 0))}</div></div>
+        <div class="card"><div class="eyebrow">Stale Active Runs</div><div class="metric">{_html_text(risk_summary.get('staleRunCount', 0))}</div></div>
+      </div>
     </section>
 
     <div class="section-grid">
+      <section class="card">
+        <h2>Operator Queue</h2>
+        <ul>{_html_list_items(operator_rows)}</ul>
+      </section>
       <section class="card">
         <h2>Running</h2>
         <ul>{_html_list_items(running_rows)}</ul>
@@ -3006,6 +3349,10 @@ def render_campaign_progress_html(overview: Mapping[str, Any]) -> str:
       <section class="card">
         <h2>Status Buckets</h2>
         <div class="json-block">{_html_text(json.dumps(status_buckets, indent=2, sort_keys=True))}</div>
+      </section>
+      <section class="card">
+        <h2>Risk Summary</h2>
+        <div class="json-block">{_html_text(json.dumps(risk_summary, indent=2, sort_keys=True))}</div>
       </section>
       <section class="card">
         <h2>Cooldown State</h2>

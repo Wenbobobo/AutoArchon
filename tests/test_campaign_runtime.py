@@ -3041,6 +3041,18 @@ def test_build_campaign_overview_surfaces_run_progress_summary_signals(tmp_path:
         json.dumps({"active": True, "lastHeartbeatAt": now, "status": "running"}, sort_keys=True),
     )
     write(
+        campaign_root / "control" / "orchestrator-watchdog.json",
+        json.dumps(
+            {
+                "watchdogStatus": "running",
+                "restartCount": 1,
+                "providerCooldownUntil": "2026-04-15T05:00:00+00:00",
+                "providerCooldownSeconds": 300,
+            },
+            sort_keys=True,
+        ),
+    )
+    write(
         run_root / "workspace" / ".archon" / "supervisor" / "progress-summary.json",
         json.dumps(
             {
@@ -3059,6 +3071,9 @@ def test_build_campaign_overview_surfaces_run_progress_summary_signals(tmp_path:
                     "countsByReason": {"lsp_timeout": 1, "missing_infrastructure": 1},
                     "countsByPhase": {"prover": 2},
                     "failedCallsByReason": {"provider_transport": 1},
+                    "cooldownState": {
+                        "activeReasons": [{"phase": "prover", "reason": "provider_transport", "relPath": "FATEM/1.lean"}]
+                    },
                 },
                 "taskResultsSummary": {
                     "counts": {"resolved": 0, "blocker": 1, "other": 0},
@@ -3081,7 +3096,14 @@ def test_build_campaign_overview_surfaces_run_progress_summary_signals(tmp_path:
     assert running["helperReasonCounts"] == {"lsp_timeout": 1, "missing_infrastructure": 1}
     assert running["helperFailedCallCount"] == 1
     assert running["helperFailedReasonCounts"] == {"provider_transport": 1}
+    assert running["helperCooldownCount"] == 1
+    assert running["urgencyScore"] > 0
     assert running["taskResultBlockerCount"] == 1
+    assert overview["riskSummary"]["likelyBottleneck"] == "provider_cooldown"
+    assert overview["riskSummary"]["helperFailedCallCount"] == 1
+    assert overview["riskSummary"]["helperCooldownRunCount"] == 1
+    assert overview["operatorQueue"][0]["runId"] == "teacher-001"
+    assert overview["operatorQueue"][0]["priorityKind"] == "running"
 
     overview_result = subprocess.run(
         [
@@ -3100,17 +3122,24 @@ def test_build_campaign_overview_surfaces_run_progress_summary_signals(tmp_path:
     assert overview_result.returncode == 0, overview_result.stderr
     progress_markdown = (campaign_root / "control" / "progress-summary.md").read_text(encoding="utf-8")
     assert "phase=proving" in progress_markdown
+    assert "Likely bottleneck: `provider_cooldown`" in progress_markdown
+    assert "## Operator Queue" in progress_markdown
     assert "helper_notes=2" in progress_markdown
     assert 'helper_failed_calls=1' in progress_markdown
     assert 'helper_failed_reasons={"provider_transport": 1}' in progress_markdown
+    assert "helper_cooldown_count=1" in progress_markdown
     assert "blocker_notes=1" in progress_markdown
     progress_payload = json.loads((campaign_root / "control" / "progress-summary.json").read_text(encoding="utf-8"))
     assert "statusBuckets" in progress_payload
     assert "recommendedCommands" in progress_payload
     assert "recentTransitions" in progress_payload
     assert "cooldownState" in progress_payload
+    assert "riskSummary" in progress_payload
+    assert "operatorQueue" in progress_payload
     assert progress_payload["runningRuns"][0]["helperFailedCallCount"] == 1
     assert progress_payload["runningRuns"][0]["helperFailedReasonCounts"] == {"provider_transport": 1}
+    assert progress_payload["riskSummary"]["likelyBottleneck"] == "provider_cooldown"
+    assert progress_payload["operatorQueue"][0]["runId"] == "teacher-001"
     assert progress_payload["paths"]["progressSummaryHtmlPath"].endswith("control/progress-summary.html")
     recommended_commands = [row["command"] for row in progress_payload["recommendedCommands"]]
     assert any("autoarchon-campaign-observe" in command for command in recommended_commands)
@@ -3717,6 +3746,7 @@ def test_build_campaign_overview_and_postmortem_surface_watchdog_cooldown_and_ca
     assert overview["watchdogRuntime"]["providerCooldownUntil"] == "2026-04-14T12:00:00+00:00"
     assert overview["watchdogRuntime"]["likelyCause"] == "likely_provider_transport"
     assert overview["watchdogRuntime"]["resourceSnapshot"]["loadPerCpu"] == 0.2
+    assert overview["riskSummary"]["likelyBottleneck"] == "provider_cooldown"
 
     archive_payload = archive_campaign_postmortem(campaign_root, heartbeat_seconds=0)
     assert "provider_transport_instability" in archive_payload["incidentTags"]

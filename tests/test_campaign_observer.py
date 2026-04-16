@@ -65,6 +65,9 @@ def test_campaign_observer_serves_progress_dashboard_and_refreshes_surface(tmp_p
                     "countsByReason": {"lsp_timeout": 1},
                     "countsByPhase": {"prover": 1},
                     "failedCallsByReason": {"provider_transport": 1},
+                    "cooldownState": {
+                        "activeReasons": [{"phase": "prover", "reason": "provider_transport", "relPath": "FATEM/1.lean"}]
+                    },
                 },
                 "taskResultsSummary": {
                     "counts": {"resolved": 0, "blocker": 0, "other": 0},
@@ -94,12 +97,15 @@ def test_campaign_observer_serves_progress_dashboard_and_refreshes_surface(tmp_p
         assert response.status == 200
         assert "AutoArchon Campaign Progress" in body
         assert "teacher-001" in body
+        assert "Operator Queue" in body
+        assert "Likely Bottleneck" in body
         assert "helper_failed_calls=<code>1</code>" in body
         assert progress_html.exists()
         progress_payload = json.loads((campaign_root / "control" / "progress-summary.json").read_text(encoding="utf-8"))
         assert progress_payload["paths"]["progressSummaryHtmlPath"].endswith("control/progress-summary.html")
         assert progress_payload["runningRuns"][0]["runId"] == "teacher-001"
         assert progress_payload["runningRuns"][0]["helperFailedReasonCounts"] == {"provider_transport": 1}
+        assert progress_payload["operatorQueue"][0]["runId"] == "teacher-001"
     finally:
         server.shutdown()
         server.server_close()
