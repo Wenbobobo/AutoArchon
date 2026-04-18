@@ -54,6 +54,25 @@ bash scripts/install_repo_skill.sh
 
 `setup.sh` verifies `uv`, `elan`, `lean`, `lake`, and `codex`. After installing repo skills, start a fresh Codex session so `$archon-orchestrator` and `$archon-supervisor` are available.
 
+## Migration and Recovery
+
+Use GitHub as the primary source of truth for code and the HF datasets as the migration/failover bundle for local config, curated campaign state, and operator session archives.
+
+The current recovery runbook lives in [docs/migration-recovery.md](docs/migration-recovery.md). It covers:
+
+- downloading the public and private HF dataset bundles
+- verifying checksums and decrypting `*.gpg` archives
+- restoring `examples/helper.env`, curated `runs/campaigns/`, and Codex session archives
+- re-cloning pinned upstream benchmark repos from `manifests/repo-lock.json`
+- validating the rebuilt host with `uv`, `lean`, helper healthcheck, and a launch-contract probe
+
+Minimal entrypoint:
+
+```bash
+hf download Garydesu/AutoArchon_Public --repo-type dataset --local-dir /path/to/restore/hf-public
+hf download Garydesu/AutoArchon_Private --repo-type dataset --local-dir /path/to/restore/hf-private
+```
+
 ## Fastest Campaign Start
 
 This is the main user path.
