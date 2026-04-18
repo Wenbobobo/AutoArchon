@@ -21,6 +21,7 @@ def test_pyproject_declares_core_autoarchon_entrypoints():
     scripts = payload["project"]["scripts"]
 
     assert {
+        "autoarchon-backup-workspace-to-hf",
         "autoarchon-campaign-archive",
         "autoarchon-campaign-observe",
         "autoarchon-campaign-status",
@@ -54,6 +55,7 @@ def test_pyproject_declares_core_autoarchon_entrypoints():
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required for AutoArchon public entrypoint smoke tests")
 def test_uv_run_help_smokes_for_core_entrypoints():
     commands = [
+        ("autoarchon-backup-workspace-to-hf", "public-repo-id"),
         ("autoarchon-campaign-archive", "prune-workspace-lake"),
         ("autoarchon-campaign-observe", "refresh-seconds"),
         ("autoarchon-campaign-overview", "markdown"),
