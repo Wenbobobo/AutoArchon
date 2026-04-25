@@ -58,7 +58,7 @@ export function useLogStream(selectedFile: string): UseLogStreamResult {
           updateEntries(logs);
           return logs.length;
         })
-        .catch((e) => {
+        .catch((_e) => {
           return -1;
         });
     }
@@ -108,7 +108,7 @@ export function useLogStream(selectedFile: string): UseLogStreamResult {
       } catch { /* skip non-JSON */ }
     };
 
-    ws.onclose = (ev) => {
+    ws.onclose = (_ev) => {
       if (cancelled) return;
       setStreaming(false);
       if (!wsConnected || !wsReady) startPolling();
