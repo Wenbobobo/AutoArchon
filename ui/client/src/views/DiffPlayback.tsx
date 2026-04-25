@@ -481,9 +481,9 @@ export default function DiffPlayback() {
         {totalEntries > 0 && (
           <div className={styles.toolbar}>
             <div className={styles.stepNav}>
-              <button className={styles.btn} onClick={goPrev} disabled={currentIdx <= 0}>◀</button>
+              <button className={styles.btn} onClick={goPrev} disabled={currentIdx <= 0} aria-label="Previous step" title="Previous step">◀</button>
               <span className={styles.stepInfo}>{currentIdx + 1} / {totalEntries}</span>
-              <button className={styles.btn} onClick={goNext} disabled={currentIdx >= totalEntries - 1}>▶</button>
+              <button className={styles.btn} onClick={goNext} disabled={currentIdx >= totalEntries - 1} aria-label="Next step" title="Next step">▶</button>
             </div>
             {currentEntry && <span className={styles.iterLabel}>{currentEntry.iteration} · {stepLabel}</span>}
             <div className={styles.compareControls}>
@@ -564,7 +564,7 @@ export default function DiffPlayback() {
                 fromFile={compareMode === 'previous'
                   ? (currentIdx === 0 ? '(initial)' : timeline![currentIdx - 1]?.file)
                   : (compareEntry?.file || '(initial)')}
-                toFile={currentEntry.file}
+                toFile={currentEntry?.file || ""}
                 addedLines={displayDiff.addedLines}
                 removedLines={displayDiff.removedLines}
                 activeId={activeId}

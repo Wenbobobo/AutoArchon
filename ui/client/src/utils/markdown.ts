@@ -4,7 +4,7 @@ export function markdownToHtml(content: string): string {
 
   // Step 1: extract fenced code blocks to protect them
   const codeBlocks: string[] = [];
-  let result = content.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+  let result = content.replace(/```(\w*)\n([\s\S]*?)```/g, (_, _lang, code) => {
     codeBlocks.push(`<pre><code>${code}</code></pre>`);
     return `\x00CODE${codeBlocks.length - 1}\x00`;
   });
