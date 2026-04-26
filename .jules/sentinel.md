@@ -1,0 +1,4 @@
+## 2025-02-28 - Regex typo preventing API key redaction
+**Vulnerability:** The API key redaction regex `(?i)(api key provided:\s*)([^\\s,]+)` contained an extra backslash `\\s` instead of `\s`. This meant it matched any character except backslash, the letter 's', or a comma. API keys containing 's' were not being fully matched and redacted.
+**Learning:** Raw strings (`r"..."`) in Python treat `\\s` as literally `\` and `s`. When building character classes like `[^\s]`, using `[^\\s]` inside a raw string will mistakenly interpret `\s` as literal characters instead of the whitespace escape sequence.
+**Prevention:** Always test regex boundary conditions carefully, particularly when using raw strings in combination with character classes like `\w`, `\d`, or `\s`. Use `[^\s]` correctly inside `r"..."` strings.

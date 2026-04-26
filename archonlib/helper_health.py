@@ -14,7 +14,7 @@ GEMINI_STYLE_MODEL_RE = re.compile(r"^gemini", re.IGNORECASE)
 REDACTION_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"sk-[A-Za-z0-9*._-]+"), "sk-[redacted]"),
     (re.compile(r"AIza[0-9A-Za-z_-]+"), "AIza[redacted]"),
-    (re.compile(r"(?i)(api key provided:\s*)([^\\s,]+)"), r"\1[redacted]"),
+    (re.compile(r"(?i)(api key provided:\s*)([^\s,]+)"), r"\1[redacted]"),
     (re.compile(r"(?i)(authorization:\s*bearer\s+)(\S+)"), r"\1[redacted]"),
 )
 

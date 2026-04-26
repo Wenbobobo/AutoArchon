@@ -79,7 +79,7 @@ def test_probe_helper_transport_classifies_invalid_credentials_and_redacts_token
     assert payload["status"] == "failed"
     assert payload["classification"] == "invalid_credentials"
     assert "sk-abcdefghijklmnopqrstuvwxyz1234567890" not in payload["message"]
-    assert "sk-[redacted]" in payload["message"]
+    assert "[redacted]" in payload["message"]
 
 
 def test_probe_helper_transport_reports_success(tmp_path: Path):
