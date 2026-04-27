@@ -196,22 +196,25 @@ def pack_directory(source_dir: Path, dest_prefix: Path, *, passphrase: str) -> P
             source_dir.name,
         ]
     )
-    run_checked(
+    subprocess.run(
         [
             "gpg",
             "--batch",
             "--yes",
             "--pinentry-mode",
             "loopback",
-            "--passphrase",
-            passphrase,
+            "--passphrase-fd",
+            "0",
             "--symmetric",
             "--cipher-algo",
             "AES256",
             "--output",
             str(encrypted_path),
             str(tar_zst_path),
-        ]
+        ],
+        input=f"{passphrase}\n",
+        text=True,
+        check=True,
     )
     tar_zst_path.unlink()
     return encrypted_path
